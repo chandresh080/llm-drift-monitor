@@ -1,0 +1,39 @@
+# LLM Drift Monitor Configuration
+
+# Target LLM adapter configuration
+target:
+  type: "fake"  # Options: "fake", "local", "openai-compatible" (not implemented)
+  model_id: "fake-llm-v1"
+  temperature: 0.7
+  max_tokens: 100
+
+# Embedding configuration
+embeddings:
+  model_name: "sentence-transformers/all-MiniLM-L6-v2"  # Small, free, offline after download
+  device: "cpu"
+
+# Reference window configuration
+reference:
+  window_size: 50  # Number of runs to use for reference
+  auto_create: true  # Automatically create reference if it doesn't exist
+  min_runs: 10  # Minimum runs needed before tests are meaningful
+
+# Monitoring configuration
+monitoring:
+  batch_size: 10  # Number of prompts to run per cycle
+  random_seed: 42  # For reproducibility
+
+# Alert configuration
+alerts:
+  significance_threshold: 0.05  # p-value threshold before correction
+  quality_degradation_threshold: 0.3  # Minimum proportion of invalid responses to flag as quality issue
+  min_sample_size: 10  # Minimum sample size for statistical tests
+
+# Persistence
+data:
+  db_path: "data/drift_monitor.db"
+
+# Dashboard
+dashboard:
+  port: 8501
+  host: "127.0.0.1"

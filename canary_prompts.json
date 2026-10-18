@@ -1,0 +1,15 @@
+{
+  "version": "1.0.0",
+  "prompts": [
+    "What is the capital of France?",
+    "Explain photosynthesis in simple terms.",
+    "Summarize the concept of machine learning.",
+    "List three benefits of renewable energy.",
+    "What are the main parts of a cell?",
+    "Describe the water cycle briefly.",
+    "What is the difference between HTTP and HTTPS?",
+    "Explain the concept of gravity.",
+    "Name three programming languages and their uses.",
+    "What is climate change and why does it matter?"
+  ]
+}
