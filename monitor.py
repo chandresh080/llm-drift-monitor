@@ -466,7 +466,65 @@ class LLMDriftMonitor:
         
         # Generate alerts
         alerts = self._generate_alerts(results)
-        
+
+        # Log drift run to MLflow
+        try:
+            from tracking import drift_run, log_drift_run, get_git_hash
+            from drift_tests import compute_median_bandwidth
+            
+            bandwidth = 1.0
+            if len(ref_embeddings) >= 2 and len(cur_embeddings) >= 2:
+                import numpy as np
+                all_emb = np.vstack([ref_embeddings, cur_embeddings])
+                bandwidth = round(compute_median_bandwidth(all_emb), 4)
+
+            flagged_count = int(
+                results.get('ks_significant', 0) +
+                results.get('proportion_z_significant', 0) +
+                results.get('mmd_significant', 0)
+            )
+
+            total_tokens = sum(cur_lengths) / 4.0 if cur_lengths else 0.0
+
+            with drift_run(
+                run_name=f"drift_run_{results.get('timestamp', 'unknown')}",
+                experiment_name="llm-drift-daily",
+                tags={"run_type": "daily_probe", "model": str(self.adapter.model_id)}
+            ) as run:
+                log_drift_run(
+                    run,
+                    params={
+                        'target_provider': type(self.adapter).__name__,
+                        'model': self.adapter.model_id,
+                        'prompt_set_version': self.canary_prompts.get('version'),
+                        'embedding_model': self.config['embeddings']['model_name'],
+                        'alpha': self.config['alerts']['significance_threshold'],
+                        'ref_window_size': ref_size,
+                        'cur_window_size': cur_size,
+                        'kernel_bandwidth': bandwidth,
+                        'git_hash': get_git_hash(),
+                        'seed': self.random_seed,
+                    },
+                    metrics={
+                        'ks_stat': results.get('ks_statistic'),
+                        'z_stat': results.get('proportion_z_stat'),
+                        'mmd_stat': results.get('mmd_statistic'),
+                        'ks_pvalue': results.get('ks_pvalue'),
+                        'z_pvalue': results.get('proportion_z_pvalue'),
+                        'mmd_pvalue': results.get('mmd_pvalue'),
+                        'bh_ks_pvalue': results.get('ks_adjusted_pvalue'),
+                        'bh_z_pvalue': results.get('proportion_z_adjusted_pvalue'),
+                        'bh_mmd_pvalue': results.get('mmd_adjusted_pvalue'),
+                        'flagged_probes': flagged_count,
+                        'mean_latency': 0.0,
+                        'token_counts': total_tokens,
+                    },
+                    artifacts={'drift_report': results},
+                )
+        except Exception as e:
+            # MLflow logging failure should never crash the monitoring pipeline
+            pass
+
         return {
             'run_ids': run_ids,
             'tests_run': True,

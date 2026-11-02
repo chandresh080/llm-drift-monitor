@@ -127,6 +127,27 @@ def run(
     print(f"[power] Complete. Saved to {csv_path} and {plot_path}")
     print("[power] Key Takeaway: To catch a 1.0\u03c3 shift with \u226580% power at \u03b1=0.05, N=50 probes/window is required. For shifts \u22652.0\u03c3, N=25 is sufficient.")
 
+    from tracking import drift_run, log_drift_run, get_git_hash
+    with drift_run(f"experiment_power_seed{seed}", experiment_name="llm-drift-experiments", tags={"experiment": "power"}) as run:
+        power_metrics = {}
+        for r in results:
+            delta_str = str(r['delta']).replace('.', '_')
+            power_metrics[f"power_{r['test']}_d{delta_str}_n{r['n']}"] = r['power']
+
+        log_drift_run(
+            run,
+            params={
+                'experiment': 'power',
+                'seed': seed,
+                'n_sims': n_sims,
+                'n_permutations': n_permutations,
+                'alpha': alpha,
+                'git_hash': get_git_hash(),
+            },
+            metrics=power_metrics,
+            artifact_files=[csv_path, plot_path]
+        )
+
     return {'results': results}
 
 

@@ -201,6 +201,30 @@ def run(
     for r, d in zip(fa_rows, delay_rows):
         print(f"  {r['rule']:<8} | False Alarms/100d: {r['false_alarms_per_100_days']:<5.1f} | Mean Delay: {d['mean_detection_delay_days']} days | Detect Rate: {d['detection_rate_pct']}%")
 
+    from tracking import drift_run, log_drift_run, get_git_hash
+    with drift_run(f"experiment_delay_seed{seed}", experiment_name="llm-drift-experiments", tags={"experiment": "delay"}) as run:
+        delay_metrics = {}
+        for r_item in fa_rows:
+            delay_metrics[f"false_alarms_per_100d_{r_item['rule']}"] = r_item['false_alarms_per_100_days']
+        for d_item in delay_rows:
+            delay_metrics[f"mean_delay_{d_item['rule']}"] = d_item['mean_detection_delay_days']
+            delay_metrics[f"detect_rate_{d_item['rule']}"] = d_item['detection_rate_pct']
+
+        log_drift_run(
+            run,
+            params={
+                'experiment': 'delay',
+                'seed': seed,
+                'n_trials': n_trials,
+                'shift_day': SHIFT_DAY,
+                'horizon_days': DAYS,
+                'shift_magnitude_sigma': SHIFT_MAGNITUDE,
+                'git_hash': get_git_hash(),
+            },
+            metrics=delay_metrics,
+            artifact_files=[plot_path, fa_csv, delay_csv, traj_csv]
+        )
+
     return {'false_alarms': fa_rows, 'delay': delay_rows}
 
 

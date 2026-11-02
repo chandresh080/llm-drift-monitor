@@ -67,3 +67,7 @@ sentence_transformers_cache/
 
 # Logs
 *.log
+
+# MLflow
+mlruns/
+mlflow.db

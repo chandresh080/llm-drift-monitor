@@ -135,6 +135,32 @@ def run(
     for row in fpr_rows:
         print(f"  {row['test']:<14} | Raw FPR: {row['fpr_raw']:.4f} | BH FPR: {row['fpr_bh']:.4f}")
 
+    from tracking import drift_run, log_drift_run, get_git_hash
+    with drift_run(f"experiment_calibration_seed{seed}", experiment_name="llm-drift-experiments", tags={"experiment": "calibration"}) as run:
+        log_drift_run(
+            run,
+            params={
+                'experiment': 'calibration',
+                'seed': seed,
+                'alpha': alpha,
+                'n_sims': n_sims,
+                'n_per_window': n_per_window,
+                'n_permutations': n_permutations,
+                'git_hash': get_git_hash(),
+            },
+            metrics={
+                'fpr_ks_raw': fpr_rows[0]['fpr_raw'],
+                'fpr_ks_bh': fpr_rows[0]['fpr_bh'],
+                'fpr_z_raw': fpr_rows[1]['fpr_raw'],
+                'fpr_z_bh': fpr_rows[1]['fpr_bh'],
+                'fpr_mmd_raw': fpr_rows[2]['fpr_raw'],
+                'fpr_mmd_bh': fpr_rows[2]['fpr_bh'],
+                'fpr_any_raw': fpr_rows[3]['fpr_raw'],
+                'fpr_any_bh': fpr_rows[3]['fpr_bh'],
+            },
+            artifact_files=[hist_path, fpr_csv, csv_path]
+        )
+
     return {'n_sims': n_sims, 'fpr': fpr_rows}
 
 

@@ -123,6 +123,25 @@ def run(
     print(f"[sensitivity] Complete. Saved to {csv_path} and {plot_path}")
     print("[sensitivity] Conclusion: Conclusions are invariant to 200 vs 1000 permutations. Median heuristic bandwidth ensures robust power across both MiniLM (384D) and MPNet (768D), whereas fixed \u03c3=1.0 collapses under high dimensionality.")
 
+    from tracking import drift_run, log_drift_run, get_git_hash
+    with drift_run(f"experiment_sensitivity_seed{seed}", experiment_name="llm-drift-experiments", tags={"experiment": "sensitivity"}) as run:
+        sens_metrics = {}
+        for r in results:
+            model_short = "minilm" if "MiniLM" in r['model_name'] else "mpnet"
+            sens_metrics[f"power_{model_short}_{r['bandwidth_mode']}_p{r['permutations']}"] = r['power_at_0.05']
+
+        log_drift_run(
+            run,
+            params={
+                'experiment': 'sensitivity',
+                'seed': seed,
+                'n_trials': n_trials,
+                'git_hash': get_git_hash(),
+            },
+            metrics=sens_metrics,
+            artifact_files=[csv_path, plot_path]
+        )
+
     return {'results': results}
 
 

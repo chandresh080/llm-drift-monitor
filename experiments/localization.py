@@ -133,6 +133,27 @@ def run(
     print(f"[localization] Complete. Saved to {csv_path} and {plot_path}")
     print(f"[localization] Precision: {mean_precision:.3f} | Recall: {mean_recall:.3f} | F1: {f1:.3f}")
 
+    from tracking import drift_run, log_drift_run, get_git_hash
+    with drift_run(f"experiment_localization_seed{seed}", experiment_name="llm-drift-experiments", tags={"experiment": "localization"}) as run:
+        log_drift_run(
+            run,
+            params={
+                'experiment': 'localization',
+                'seed': seed,
+                'n_sims': n_sims,
+                'target_category': target_category,
+                'alpha': alpha,
+                'git_hash': get_git_hash(),
+            },
+            metrics={
+                'precision': mean_precision,
+                'recall': mean_recall,
+                'f1_score': f1,
+                'detection_rate_shifted': float([r['detection_rate'] for r in rows if r['category'] == target_category][0]),
+            },
+            artifact_files=[csv_path, plot_path]
+        )
+
     return {'mean_precision': mean_precision, 'mean_recall': mean_recall, 'f1': f1}
 
 
