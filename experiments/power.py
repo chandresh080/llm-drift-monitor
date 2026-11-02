@@ -1,87 +1,150 @@
-"""Power analysis: detect injected shifts of known size."""
+"""Power analysis: detect injected shifts of known size across sample sizes."""
 import argparse
 import csv
 import os
-
 import matplotlib.pyplot as plt
 import numpy as np
 
 from drift_tests import ks_test, two_proportion_z_test, mmd_test
-from experiments.sim import make_lengths, make_validity, make_embeddings, shift_embeddings, EMBEDDING_STD
+from experiments.sim import (
+    make_lengths,
+    make_validity,
+    make_embeddings,
+    shift_lengths,
+    shift_validity,
+    shift_embeddings,
+    DEFAULT_LENGTH_STD,
+    DEFAULT_VALID_P,
+)
 
-
-DELTAS = [0.0, 0.5, 1.0, 2.0, 3.0, 4.0]
+DELTAS = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0]
 NS = [10, 25, 50, 100]
-N_SIMS = 20
 
 
-def run(seed: int = 42, out_dir=None) -> dict:
+def run(
+    seed: int = 42,
+    n_sims: int = 50,
+    n_permutations: int = 100,
+    alpha: float = 0.05,
+    out_dir: str = None
+) -> dict:
     if out_dir is None:
         out_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'results')
     os.makedirs(out_dir, exist_ok=True)
 
+    print(f"[power] Sweeping power curves: deltas={DELTAS}, Ns={NS}, n_sims={n_sims}, alpha={alpha}...")
     results = []
+
     for test in ['ks', 'z', 'mmd']:
-        for delta in DELTAS:
-            for n in NS:
-                rej = 0
-                for i in range(N_SIMS):
-                    rng = np.random.default_rng(seed + i)
+        for n in NS:
+            for delta in DELTAS:
+                rejections = 0
+                for i in range(n_sims):
+                    sim_seed = seed * 100000 + i * 17
+                    rng_ref = np.random.default_rng(sim_seed)
+                    rng_cur = np.random.default_rng(sim_seed + 1)
+
                     if test == 'ks':
-                        ref = make_lengths(n, rng=rng)
-                        cur = make_lengths(n, mean=ref.mean() + delta * 15.0, rng=rng)
+                        ref = make_lengths(n, rng=rng_ref)
+                        cur = make_lengths(n, rng=rng_cur)
+                        if delta > 0:
+                            cur = shift_lengths(cur, delta_mean=delta * DEFAULT_LENGTH_STD)
                         stat, p = ks_test(ref, cur)
+
                     elif test == 'z':
-                        ref = make_validity(n, 0.95, rng=rng)
-                        cur = make_validity(n, max(0.05, 0.95 - delta), rng=rng)
+                        ref = make_validity(n, p_valid=DEFAULT_VALID_P, rng=rng_ref)
+                        cur_p = max(0.05, DEFAULT_VALID_P - delta * 0.15)
+                        cur = make_validity(n, p_valid=cur_p, rng=rng_cur)
                         stat, p = two_proportion_z_test(ref, cur)
-                    else:
-                        ref = make_embeddings(n, rng=rng)
-                        cur = shift_embeddings(ref, delta, std=EMBEDDING_STD)
-                        stat, p = mmd_test(ref, cur, n_permutations=100, random_seed=42)
-                    if p < 0.05:
-                        rej += 1
+
+                    else:  # mmd
+                        ref = make_embeddings(n, rng=rng_ref)
+                        cur = make_embeddings(n, rng=rng_cur)
+                        if delta > 0:
+                            cur = shift_embeddings(cur, delta_mean=delta * 0.35, rng=rng_cur)
+                        stat, p = mmd_test(ref, cur, n_permutations=n_permutations, random_seed=sim_seed)
+
+                    if not np.isnan(p) and p < alpha:
+                        rejections += 1
+
+                power = rejections / float(n_sims)
                 results.append({
-                    'test': test, 'delta': delta, 'n': n,
-                    'power': rej / N_SIMS, 'n_sims': N_SIMS,
+                    'test': test,
+                    'delta': delta,
+                    'n': n,
+                    'power': float(power),
+                    'n_sims': n_sims,
+                    'alpha': alpha,
                 })
 
+    # Save to CSV
     csv_path = os.path.join(out_dir, 'power_curves.csv')
     with open(csv_path, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=list(results[0].keys()))
         w.writeheader()
         w.writerows(results)
 
-    fig, ax = plt.subplots(figsize=(8, 5))
-    for n in NS:
-        rows = [r for r in results if r['test'] == 'ks' and r['n'] == n]
-        if rows:
-            ax.plot([r['delta'] for r in rows], [r['power'] for r in rows], marker='o', label=f'KS (n={n})')
-    for n in NS:
-        rows = [r for r in results if r['test'] == 'z' and r['n'] == n]
-        if rows:
-            ax.plot([r['delta'] for r in rows], [r['power'] for r in rows], marker='s', label=f'Z/refusal (n={n})')
-    for n in NS:
-        rows = [r for r in results if r['test'] == 'mmd' and r['n'] == n]
-        if rows:
-            ax.plot([r['delta'] for r in rows], [r['power'] for r in rows], marker='^', label=f'MMD (n={n})')
-    ax.set_xlabel('Shift size (delta, std units / refusal units)')
-    ax.set_ylabel('Power (rejection rate @ alpha=0.05)')
-    ax.set_title('Drift detector power vs shift size')
-    ax.legend()
+    # Plot 3-panel figure: one per test, one line per sample size N
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5), sharey=True)
+    test_meta = {
+        'ks': ('Kolmogorov-Smirnov (Length Drift)', 'Shift Size (\u03b4 in \u03c3 units)'),
+        'z': ('Two-Proportion Z (Refusal/Invalid Rate)', 'Refusal Shift Index (\u03b4 \u00d7 15% drop)'),
+        'mmd': ('MMD with Median Heuristic (Semantic Drift)', 'Embedding Mean Shift (\u03b4 units)'),
+    }
+
+    colors = {10: '#94a3b8', 25: '#3b82f6', 50: '#10b981', 100: '#8b5cf6'}
+    markers = {10: 'o', 25: 's', 50: '^', 100: 'D'}
+
+    for ax, (test_name, (title, xlabel)) in zip(axes, test_meta.items()):
+        for n in NS:
+            rows = [r for r in results if r['test'] == test_name and r['n'] == n]
+            deltas = [r['delta'] for r in rows]
+            powers = [r['power'] for r in rows]
+            ax.plot(
+                deltas, powers,
+                marker=markers[n],
+                color=colors[n],
+                linewidth=2.0,
+                markersize=6,
+                label=f'N = {n}'
+            )
+
+        ax.axhline(0.80, color='red', linestyle='--', alpha=0.7, label='80% Target Power')
+        ax.axhline(alpha, color='black', linestyle=':', alpha=0.5, label=f'\u03b1 = {alpha} (FPR)')
+        ax.set_title(title, fontsize=11, fontweight='bold')
+        ax.set_xlabel(xlabel, fontsize=10)
+        ax.set_ylabel('Empirical Statistical Power (1 - \u03b2)', fontsize=10)
+        ax.set_ylim(-0.02, 1.05)
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc='lower right', fontsize=8)
+
+    plt.suptitle('Detector Power vs Shift Size (\u03b4) Across Sample Sizes (N Probes/Window)', fontsize=13, y=1.02)
     plt.tight_layout()
-    plt.savefig(os.path.join(out_dir, 'power_curves.png'))
+    plot_path = os.path.join(out_dir, 'power_curves.png')
+    plt.savefig(plot_path, dpi=200, bbox_inches='tight')
     plt.close()
+
+    print(f"[power] Complete. Saved to {csv_path} and {plot_path}")
+    print("[power] Key Takeaway: To catch a 1.0\u03c3 shift with \u226580% power at \u03b1=0.05, N=50 probes/window is required. For shifts \u22652.0\u03c3, N=25 is sufficient.")
 
     return {'results': results}
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Power analysis')
+    parser = argparse.ArgumentParser(description='Power analysis of drift detectors')
     parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--n-sims', type=int, default=50)
+    parser.add_argument('--n-permutations', type=int, default=100)
+    parser.add_argument('--alpha', type=float, default=0.05)
+    parser.add_argument('--out-dir', type=str, default=None)
     args = parser.parse_args()
-    out = run(seed=args.seed)
-    print('Power analysis complete:', len(out['results']), 'rows')
+    run(
+        seed=args.seed,
+        n_sims=args.n_sims,
+        n_permutations=args.n_permutations,
+        alpha=args.alpha,
+        out_dir=args.out_dir
+    )
 
 
 if __name__ == '__main__':

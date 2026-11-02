@@ -130,6 +130,22 @@ class TestMMD:
         stat, pval = mmd_test(X, Y)
         assert pval >= 0.05
 
+    def test_mmd_median_heuristic_high_dimensional(self):
+        """MMD with median heuristic should properly detect shifts in 384 dimensions."""
+        np.random.seed(42)
+        X = np.random.normal(0, 1, (30, 384)).tolist()
+        # Null test: same distribution
+        Y_null = np.random.normal(0, 1, (30, 384)).tolist()
+        stat_null, pval_null = mmd_test(X, Y_null, n_permutations=100, random_seed=42)
+        assert not np.isnan(pval_null)
+        assert pval_null > 0.01  # Not rejected under null
+
+        # Shifted test: mean shifted by 1.0 along all dimensions
+        Y_shifted = (np.random.normal(0, 1, (30, 384)) + 0.5).tolist()
+        stat_shifted, pval_shifted = mmd_test(X, Y_shifted, n_permutations=100, random_seed=42)
+        assert not np.isnan(pval_shifted)
+        assert pval_shifted < 0.05  # Detected under shift
+
 class TestPipelineIntegration:
     def test_fake_adapter_pipeline(self):
         """Test complete pipeline with fake adapter."""

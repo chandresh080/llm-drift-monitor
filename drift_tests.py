@@ -74,60 +74,90 @@ def rbf_kernel(x: np.ndarray, y: np.ndarray, sigma: float = 1.0) -> float:
     """Compute RBF kernel k(x,y) = exp(-||x-y||^2 / (2*sigma^2))"""
     if sigma <= 0:
         sigma = 1.0
-    diff = x - y
-    dist_sq = np.sum(diff ** 2)
-    return np.exp(-dist_sq / (2 * sigma ** 2))
+    diff = np.asarray(x, dtype=float) - np.asarray(y, dtype=float)
+    dist_sq = float(np.sum(diff ** 2))
+    return float(np.exp(-dist_sq / (2.0 * sigma ** 2)))
 
-def mmd_squared(X: np.ndarray, Y: np.ndarray, sigma: float = 1.0) -> float:
+def compute_median_bandwidth(Z: np.ndarray) -> float:
+    """
+    Compute RBF kernel bandwidth sigma using the median heuristic on pairwise Euclidean distances.
+    """
+    Z_arr = np.asarray(Z, dtype=float)
+    n = len(Z_arr)
+    if n < 2:
+        return 1.0
+    diff = Z_arr[:, np.newaxis, :] - Z_arr[np.newaxis, :, :]
+    dist_sq = np.sum(diff ** 2, axis=-1)
+    i_upper = np.triu_indices(n, k=1)
+    dists = np.sqrt(np.maximum(dist_sq[i_upper], 0.0))
+    # Filter out exact duplicates / zero distances if possible
+    positive_dists = dists[dists > 1e-6]
+    if len(positive_dists) > 0:
+        med = float(np.median(positive_dists))
+    else:
+        med = float(np.median(dists)) if len(dists) > 0 else 1.0
+    return med if med > 1e-6 else 1.0
+
+def _compute_kernel_matrix(Z: np.ndarray, sigma: Optional[float] = None) -> Tuple[np.ndarray, float]:
+    """Compute the full RBF kernel matrix and effective bandwidth sigma."""
+    diff = Z[:, np.newaxis, :] - Z[np.newaxis, :, :]
+    dist_sq = np.sum(diff ** 2, axis=-1)
+    if sigma is None or sigma <= 0:
+        sigma = compute_median_bandwidth(Z)
+    gamma = 1.0 / (2.0 * (sigma ** 2))
+    K = np.exp(-gamma * dist_sq)
+    return K, sigma
+
+def _unbiased_mmd2_from_kernel(K: np.ndarray, idx_x: np.ndarray, idx_y: np.ndarray) -> float:
+    """Calculate unbiased MMD^2 from precomputed kernel submatrices."""
+    m = len(idx_x)
+    n = len(idx_y)
+    if m < 2 or n < 2:
+        return 0.0
+    K_xx = K[np.ix_(idx_x, idx_x)]
+    K_yy = K[np.ix_(idx_y, idx_y)]
+    K_xy = K[np.ix_(idx_x, idx_y)]
+    term1 = (np.sum(K_xx) - np.trace(K_xx)) / (m * (m - 1))
+    term2 = (np.sum(K_yy) - np.trace(K_yy)) / (n * (n - 1))
+    term3 = np.sum(K_xy) / (m * n)
+    return float(term1 + term2 - 2.0 * term3)
+
+def mmd_squared(X: np.ndarray, Y: np.ndarray, sigma: Optional[float] = None) -> float:
     """
     Compute unbiased MMD^2 between two samples using RBF kernel.
+    If sigma is None or <= 0, the median heuristic bandwidth is used.
     
     MMD^2 = E[k(x,x')] + E[k(y,y')] - 2*E[k(x,y)]
     """
-    m = X.shape[0]
-    n = Y.shape[0]
+    X_arr = np.asarray(X, dtype=float)
+    Y_arr = np.asarray(Y, dtype=float)
+    m = X_arr.shape[0]
+    n = Y_arr.shape[0]
     
     if m < 2 or n < 2:
-        return 0.0  # Need at least 2 samples per group for unbiased estimate
+        return 0.0
     
-    # Term 1: k(x_i, x_j) for i != j
-    term1 = 0.0
-    for i in range(m):
-        for j in range(m):
-            if i != j:
-                term1 += rbf_kernel(X[i], X[j], sigma=sigma)
-    term1 /= (m * (m - 1))
-    
-    # Term 2: k(y_i, y_j) for i != j
-    term2 = 0.0
-    for i in range(n):
-        for j in range(n):
-            if i != j:
-                term2 += rbf_kernel(Y[i], Y[j], sigma=sigma)
-    term2 /= (n * (n - 1))
-    
-    # Term 3: k(x_i, y_j)
-    term3 = 0.0
-    for i in range(m):
-        for j in range(n):
-            term3 += rbf_kernel(X[i], Y[j], sigma=sigma)
-    term3 /= (m * n)
-    
-    mmd_sq = term1 + term2 - 2 * term3
-    return max(0.0, mmd_sq)  # Ensure non-negative
+    Z = np.vstack([X_arr, Y_arr])
+    K, _ = _compute_kernel_matrix(Z, sigma=sigma)
+    idx_x = np.arange(m)
+    idx_y = np.arange(m, m + n)
+    mmd_sq = _unbiased_mmd2_from_kernel(K, idx_x, idx_y)
+    return max(0.0, mmd_sq)
 
 def mmd_test(X: List[List[float]], Y: List[List[float]], 
              n_permutations: int = 1000, 
              random_seed: int = 42,
-             sigma: float = 1.0) -> Tuple[float, float]:
+             sigma: Optional[float] = None) -> Tuple[float, float]:
     """
-    Perform MMD test using permutation-based p-values.
+    Perform MMD test using fast vectorized kernel permutation testing.
+    Uses median heuristic bandwidth if sigma is None or <= 0.
     
     Args:
-        X: Reference embeddings (list of vectors)
-        Y: Current embeddings (list of vectors)
+        X: Reference embeddings (list or array of vectors)
+        Y: Current embeddings (list or array of vectors)
         n_permutations: Number of permutations
         random_seed: Random seed for reproducibility
+        sigma: RBF kernel bandwidth (None for median heuristic)
     
     Returns:
         (mmd_statistic, pvalue)
@@ -135,35 +165,38 @@ def mmd_test(X: List[List[float]], Y: List[List[float]],
     if len(X) == 0 or len(Y) == 0:
         return 0.0, 1.0
     
-    # Convert to numpy arrays
-    X_arr = np.array(X)
-    Y_arr = np.array(Y)
-    
+    X_arr = np.asarray(X, dtype=float)
+    Y_arr = np.asarray(Y, dtype=float)
     m = X_arr.shape[0]
     n = Y_arr.shape[0]
     
-    # Compute observed MMD^2
-    mmd_obs_sq = mmd_squared(X_arr, Y_arr, sigma=sigma)
-    mmd_obs = np.sqrt(mmd_obs_sq) if mmd_obs_sq >= 0 else 0.0
+    if m < 2 or n < 2:
+        return 0.0, 1.0
     
-    # Permutation test
-    rng = random.Random(random_seed)
-    combined = np.vstack([X_arr, Y_arr])
+    Z = np.vstack([X_arr, Y_arr])
+    K, _ = _compute_kernel_matrix(Z, sigma=sigma)
+    idx_x = np.arange(m)
+    idx_y = np.arange(m, m + n)
+    
+    # Compute observed unbiased MMD^2 (can be slightly negative under null)
+    mmd_obs_sq = _unbiased_mmd2_from_kernel(K, idx_x, idx_y)
+    mmd_obs_stat = float(np.sqrt(max(0.0, mmd_obs_sq)))
+    
+    if n_permutations <= 0:
+        return mmd_obs_stat, 1.0
+        
+    rng = np.random.default_rng(random_seed)
+    all_indices = np.arange(m + n)
     count_larger = 0
     
     for _ in range(n_permutations):
-        # Permute indices
-        indices = list(range(m + n))
-        rng.shuffle(indices)
-        X_perm = combined[indices[:m]]
-        Y_perm = combined[indices[m:m + n]]
-        mmd_perm_sq = mmd_squared(X_perm, Y_perm, sigma=sigma)
-        if mmd_perm_sq >= mmd_obs_sq - 1e-10:  # Allow for numerical precision
+        perm = rng.permutation(all_indices)
+        perm_stat_sq = _unbiased_mmd2_from_kernel(K, perm[:m], perm[m:])
+        if perm_stat_sq >= mmd_obs_sq - 1e-12:
             count_larger += 1
-    
-    # Use plus-one correction for Monte Carlo p-value
-    pvalue = (count_larger + 1) / (n_permutations + 1) if n_permutations > 0 else 1.0
-    return float(mmd_obs), float(max(0.0, min(1.0, pvalue)))
+            
+    pvalue = (count_larger + 1) / (n_permutations + 1)
+    return mmd_obs_stat, float(max(0.0, min(1.0, pvalue)))
 
 def benjamini_hochberg_correction(pvalues: List[float], alpha: float = 0.05) -> Tuple[List[float], List[bool]]:
     """

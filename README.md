@@ -93,6 +93,42 @@ pytest -v
 
 The deterministic fake adapter is intended for tests. The default runtime target is local Ollama; after the model and sentence-embedding weights are cached, inference can run without a paid API. Test and real-model runs should be kept separate in the database.
 
+## Unit of Sampling and Statistical Independence
+
+A critical consideration in monitoring LLM behavioral drift is defining the **unit of sampling**:
+
+1. **Non-Independence of Repeated Probes**: Responses generated from the exact same prompt share semantic context, stylistic constraints, and prompt-conditioned priors. Treating repeated outputs from a tiny prompt set (e.g. 10 static prompts) as independent and identically distributed (i.i.d.) observations introduces clustering and artificially inflates degrees of freedom, leading to miscalibrated test statistics.
+2. **Stratified Canary Prompt Design**: To establish meaningful behavioral coverage, the monitor uses 40 canary prompts versioned in [`canary_prompts.json`](file:///home/cheenu/sandbox/llm-drift-monitor/canary_prompts.json) across five functional categories:
+   - **Factual**: Direct knowledge retrieval and explanatory fidelity.
+   - **Reasoning**: Multi-step deductive, arithmetic, and logic puzzles.
+   - **Code**: Algorithmic implementation, complexity analysis, and query syntax.
+   - **Refusal**: Safety boundary evaluation and refusal trigger compliance.
+   - **Formatting**: Structured outputs with hard length, markdown, XML, or JSON schemas.
+3. **Sampling Strategy**: Responses are sampled per prompt at temperature $T > 0$ to capture generation variance (aleatoric uncertainty), while prompt-level stratification isolates domain-specific shifts. Two-sample statistical tests (KS, z-test, MMD) are evaluated across windows of prompt-response pairs, with per-category localization tests adjusting for multiple comparisons via Benjamini–Hochberg.
+
+## Phase 1 Synthetic Benchmark Suite
+
+The `experiments/` suite benchmarks detector sensitivity, false positive rates, detection delay, and category localization using controlled synthetic distribution shifts:
+
+```bash
+# 1. Calibration: False-positive rates under the null (alpha=0.05) & p-value uniformity
+python -m experiments.calibration --seed 42 --n-sims 1000
+
+# 2. Power Analysis: Power vs shift size (delta) across sample sizes N
+python -m experiments.power --seed 42
+
+# 3. Detection Delay: 90-day sequential horizon comparing Single-window, k-of-n, and CUSUM
+python -m experiments.delay --seed 42
+
+# 4. Localization: Shift isolation to specific categories with Benjamini-Hochberg FDR control
+python -m experiments.localization --seed 42
+
+# 5. Sensitivity: Model dimension (MiniLM vs MPNet), kernel bandwidths, & permutation counts
+python -m experiments.sensitivity --seed 42
+```
+
+Benchmark artifacts (CSVs and PNG plots) are written directly to `results/`.
+
 ## Configuration Notes
 
 - Set `target.type: "fake"` for deterministic tests, or `target.type: "local"` to use the local Ollama model. `model_id`, `base_url`, timeout, temperature, and max tokens are configurable.

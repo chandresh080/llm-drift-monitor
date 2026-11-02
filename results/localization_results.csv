@@ -1,5 +1,7 @@
-category,shifted,p,rejected
-factual,True,1.9381285075999106e-11,True
-reasoning,False,0.914993219397903,False
-code,False,0.995531553175167,False
-refusal,False,0.914993219397903,False
+category,is_shifted,n_sims,detections,detection_rate,alpha,mean_precision,mean_recall,f1_score
+factual,0,100,1,0.01,0.05,,,
+reasoning,0,100,1,0.01,0.05,,,
+code,1,100,97,0.97,0.05,,,
+refusal,0,100,2,0.02,0.05,,,
+formatting,0,100,2,0.02,0.05,,,
+OVERALL_METRICS,-1,100,-1,0.97,0.05,0.94,0.97,0.9548

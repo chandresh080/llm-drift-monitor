@@ -2,111 +2,144 @@
 import argparse
 import csv
 import os
-
 import matplotlib.pyplot as plt
 import numpy as np
 
 from drift_tests import ks_test
-from experiments.sim import make_lengths, DEFAULT_LENGTH_STD
-
+from experiments.sim import make_lengths, shift_lengths, DEFAULT_LENGTH_MEAN, DEFAULT_LENGTH_STD
 
 DAYS = 90
 SHIFT_DAY = 45
-N_PER_WINDOW = 10
-K_OF_N_M = 5  # window length for k-of-n
-K_OF_N_K = 2  # reject if >= k of last m reject
-CUSUM_H = 2.0  # CUSUM threshold on drift score
+N_PER_WINDOW = 25
+K_OF_N_M = 5  # sliding window size
+K_OF_N_K = 2  # threshold rejections in window
+CUSUM_K = 0.5  # CUSUM reference allowance (half shift size)
+CUSUM_H = 3.5  # CUSUM decision boundary threshold
+SHIFT_MAGNITUDE = 1.2  # shift in std units
 
 
-def run(seed: int = 42, out_dir=None) -> dict:
+def run(
+    seed: int = 42,
+    n_trials: int = 100,
+    out_dir: str = None
+) -> dict:
     if out_dir is None:
         out_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'results')
     os.makedirs(out_dir, exist_ok=True)
 
-    day_rows = []
-    alerts = {'single': [], 'kofn': [], 'cusum': []}
-    first_alert = {'single': None, 'kofn': None, 'cusum': None}
-    cusum_stat = 0.0
-    rejects = []
+    print(f"[delay] Running 90-day sequential horizon across {n_trials} Monte Carlo trials (shift at day {SHIFT_DAY})...")
 
-    for day in range(DAYS):
-        rng = np.random.default_rng(seed + day)
-        ref_len = make_lengths(N_PER_WINDOW, rng=rng)
-        cur_len = make_lengths(N_PER_WINDOW, rng=rng)
-        stat, p = ks_test(ref_len, cur_len)
-        reject = bool(p < 0.05)
-        rejects.append(reject)
+    trial_delays = {'single': [], 'kofn': [], 'cusum': []}
+    trial_false_alarms = {'single': [], 'kofn': [], 'cusum': []}
 
-        # drift score: standardized mean length difference
-        drift_score = (float(np.mean(cur_len)) - float(np.mean(ref_len))) / DEFAULT_LENGTH_STD
-        cusum_stat = max(cusum_stat + drift_score, 0.0) - max(cusum_stat - 0.0, 0.0) if False else cusum_stat + drift_score
-        cusum_alert = cusum_stat > CUSUM_H
-        if cusum_alert:
-            cusum_stat = 0.0
-        if cusum_alert and day >= SHIFT_DAY:
-            alerts['cusum'].append(day)
-            if first_alert['cusum'] is None:
-                first_alert['cusum'] = day
+    sample_daily_trajectory = []
 
-        # single-window alert
-        if day >= SHIFT_DAY and reject:
-            alerts['single'].append(day)
-            if first_alert['single'] is None:
-                first_alert['single'] = day
+    for trial in range(n_trials):
+        trial_seed = seed * 10000 + trial * 97
+        rng = np.random.default_rng(trial_seed)
 
-        # k-of-n: alert if >= k of last m windows reject
-        window_flags = rejects[max(0, day - K_OF_N_M + 1):day + 1]
-        kofn_reject = sum(window_flags) >= K_OF_N_K
-        if kofn_reject and day >= SHIFT_DAY:
-            alerts['kofn'].append(day)
-            if first_alert['kofn'] is None:
-                first_alert['kofn'] = day
+        # Baseline reference window fixed per monitoring deployment
+        ref_samples = make_lengths(N_PER_WINDOW * 2, rng=rng)
 
-        day_rows.append({
-            'day': day,
-            'ks_p': float(p),
-            'reject': int(reject),
-            'drift_score': float(drift_score),
-            'cusum': float(cusum_stat),
-            'cusum_alert': int(cusum_alert),
-        })
+        single_rejects = []
+        cusum_stat = 0.0
 
-    # False alarms per 100 days during baseline (days < SHIFT_DAY)
-    baseline_days = SHIFT_DAY  # days 0..44
-    false_alarms = {
-        'single': len([d for d in alerts['single'] if d < SHIFT_DAY]),
-        'kofn': len([d for d in alerts['kofn'] if d < SHIFT_DAY]),
-        'cusum': len([d for d in alerts['cusum'] if d < SHIFT_DAY]),
-    }
+        fa_counts = {'single': 0, 'kofn': 0, 'cusum': 0}
+        first_alert = {'single': None, 'kofn': None, 'cusum': None}
+
+        for day in range(DAYS):
+            day_rng = np.random.default_rng(trial_seed + day)
+            cur_samples = make_lengths(N_PER_WINDOW, rng=day_rng)
+
+            # Inject shift on or after SHIFT_DAY
+            is_shifted = (day >= SHIFT_DAY)
+            if is_shifted:
+                cur_samples = shift_lengths(cur_samples, delta_mean=SHIFT_MAGNITUDE * DEFAULT_LENGTH_STD)
+
+            # 1. Single window KS test
+            stat, p = ks_test(ref_samples, cur_samples)
+            single_alert = bool(p < 0.05)
+            single_rejects.append(single_alert)
+
+            # 2. k-of-n persistence
+            window = single_rejects[max(0, day - K_OF_N_M + 1):day + 1]
+            kofn_alert = bool(sum(window) >= K_OF_N_K)
+
+            # 3. CUSUM on standardized drift score
+            # Drift score = normalized sample mean difference
+            drift_score = (float(np.mean(cur_samples)) - float(np.mean(ref_samples))) / (DEFAULT_LENGTH_STD / np.sqrt(N_PER_WINDOW))
+            cusum_stat = max(0.0, cusum_stat + drift_score - CUSUM_K)
+            cusum_alert = bool(cusum_stat > CUSUM_H)
+            if cusum_alert:
+                cusum_stat = 0.0  # reset after alarm
+
+            # Record alerts
+            alerts_today = {
+                'single': single_alert,
+                'kofn': kofn_alert,
+                'cusum': cusum_alert
+            }
+
+            for rule, alerted in alerts_today.items():
+                if alerted:
+                    if not is_shifted:
+                        fa_counts[rule] += 1
+                    else:
+                        if first_alert[rule] is None:
+                            first_alert[rule] = day
+
+            # Save first trial trajectory for reporting and plotting
+            if trial == 0:
+                sample_daily_trajectory.append({
+                    'day': day,
+                    'is_shifted': int(is_shifted),
+                    'ks_p': float(p),
+                    'single_alert': int(single_alert),
+                    'kofn_alert': int(kofn_alert),
+                    'drift_score': float(drift_score),
+                    'cusum_stat': float(cusum_stat),
+                    'cusum_alert': int(cusum_alert),
+                })
+
+        for rule in ['single', 'kofn', 'cusum']:
+            trial_false_alarms[rule].append(fa_counts[rule])
+            # If never alerted after day 45, censor at maximum horizon delay
+            delay = (first_alert[rule] - SHIFT_DAY) if first_alert[rule] is not None else (DAYS - SHIFT_DAY)
+            trial_delays[rule].append(delay)
+
+    # Summary tables
+    baseline_days = SHIFT_DAY
     fa_rows = []
-    for rule, n_alerts in false_alarms.items():
+    delay_rows = []
+
+    for rule in ['single', 'kofn', 'cusum']:
+        mean_fa = float(np.mean(trial_false_alarms[rule]))
+        fa_per_100_days = float((mean_fa / baseline_days) * 100.0)
+        mean_delay = float(np.mean(trial_delays[rule]))
+        median_delay = float(np.median(trial_delays[rule]))
+        detection_rate = float(np.mean([d < (DAYS - SHIFT_DAY) for d in trial_delays[rule]]))
+
         fa_rows.append({
             'rule': rule,
             'alpha': 0.05,
             'horizon_days': DAYS,
             'shift_day': SHIFT_DAY,
             'baseline_days': baseline_days,
-            'false_alarms': n_alerts,
-            'false_alarms_per_100_days': n_alerts / baseline_days * 100.0 if baseline_days > 0 else 0.0,
+            'mean_false_alarms_in_baseline': mean_fa,
+            'false_alarms_per_100_days': round(fa_per_100_days, 2),
         })
 
-    delay_rows = []
-    for rule, first in first_alert.items():
-        delay = (first - SHIFT_DAY) if first is not None else (DAYS - SHIFT_DAY)
         delay_rows.append({
             'rule': rule,
             'alpha': 0.05,
             'shift_day': SHIFT_DAY,
-            'first_alert_day': first,
-            'mean_detection_delay': delay,
+            'shift_magnitude_sigma': SHIFT_MAGNITUDE,
+            'mean_detection_delay_days': round(mean_delay, 2),
+            'median_detection_delay_days': round(median_delay, 2),
+            'detection_rate_pct': round(detection_rate * 100.0, 1),
         })
 
-    alerts_csv = os.path.join(out_dir, 'delay_alerts.csv')
-    with open(alerts_csv, 'w', newline='') as f:
-        w = csv.DictWriter(f, fieldnames=list(day_rows[0].keys()))
-        w.writeheader()
-        w.writerows(day_rows)
-
+    # Save CSVs
     fa_csv = os.path.join(out_dir, 'delay_false_alarms.csv')
     with open(fa_csv, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=list(fa_rows[0].keys()))
@@ -119,28 +152,65 @@ def run(seed: int = 42, out_dir=None) -> dict:
         w.writeheader()
         w.writerows(delay_rows)
 
-    fig, ax = plt.subplots(figsize=(8, 5))
-    for rule, n_alerts in false_alarms.items():
-        ax.bar(rule, n_alerts / baseline_days * 100.0, label=f'{rule} false alarms / 100 days')
-    ax.set_ylabel('False alarms (per 100 baseline days)')
-    ax.set_title('False alarms over baseline window')
-    ax.legend()
+    traj_csv = os.path.join(out_dir, 'delay_alerts.csv')
+    with open(traj_csv, 'w', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=list(sample_daily_trajectory[0].keys()))
+        w.writeheader()
+        w.writerows(sample_daily_trajectory)
+
+    # Plot Tradeoff: False Alarm Rate vs Mean Detection Delay
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5.5))
+
+    # Scatter plot: Delay vs False Alarm Rate
+    rule_labels = {'single': 'Single Window (p < 0.05)', 'kofn': f'k-of-n ({K_OF_N_K}-of-{K_OF_N_M})', 'cusum': f'CUSUM (h={CUSUM_H})'}
+    colors = {'single': '#ef4444', 'kofn': '#3b82f6', 'cusum': '#10b981'}
+    markers = {'single': 'o', 'kofn': 's', 'cusum': '^'}
+
+    for r_item, d_item in zip(fa_rows, delay_rows):
+        rule = r_item['rule']
+        x = r_item['false_alarms_per_100_days']
+        y = d_item['mean_detection_delay_days']
+        ax1.scatter(x, y, color=colors[rule], marker=markers[rule], s=140, label=rule_labels[rule], zorder=5)
+        ax1.annotate(f" {rule.upper()}\n (FA: {x:.1f}, Delay: {y:.1f}d)", (x, y), textcoords="offset points", xytext=(8, -4), fontsize=9)
+
+    ax1.set_title('Operational Trade-off: Detection Delay vs False Alarms', fontsize=11, fontweight='bold')
+    ax1.set_xlabel('False Alarms per 100 Days (Lower is Better)', fontsize=10)
+    ax1.set_ylabel('Mean Detection Delay in Days (Lower is Better)', fontsize=10)
+    ax1.grid(True, alpha=0.3)
+    ax1.legend(loc='upper right', fontsize=9)
+
+    # Subplot 2: Trajectory of trial 0 showing CUSUM vs Single alert behavior
+    days = [r['day'] for r in sample_daily_trajectory]
+    cusum_vals = [r['cusum_stat'] for r in sample_daily_trajectory]
+    ax2.plot(days, cusum_vals, color='#10b981', linewidth=1.8, label='CUSUM Statistic')
+    ax2.axhline(CUSUM_H, color='red', linestyle='--', label=f'Threshold h={CUSUM_H}')
+    ax2.axvline(SHIFT_DAY, color='gray', linestyle=':', linewidth=1.5, label=f'Injected Shift (Day {SHIFT_DAY})')
+    ax2.set_title('Sample 90-Day Deployment Run: CUSUM Drift Tracking', fontsize=11, fontweight='bold')
+    ax2.set_xlabel('Day', fontsize=10)
+    ax2.set_ylabel('CUSUM Statistic', fontsize=10)
+    ax2.grid(True, alpha=0.3)
+    ax2.legend(loc='upper left', fontsize=9)
+
+    plt.suptitle('Sequential Monitoring Benchmark (90-Day Simulation with Day 45 Drift)', fontsize=13, y=1.02)
     plt.tight_layout()
-    plt.savefig(os.path.join(out_dir, 'delay_false_alarm_rate.png'))
+    plot_path = os.path.join(out_dir, 'delay_false_alarm_rate.png')
+    plt.savefig(plot_path, dpi=200, bbox_inches='tight')
     plt.close()
 
-    return {
-        'false_alarms': fa_rows,
-        'detection_delay': delay_rows,
-    }
+    print(f"[delay] Complete. Saved to {out_dir}")
+    for r, d in zip(fa_rows, delay_rows):
+        print(f"  {r['rule']:<8} | False Alarms/100d: {r['false_alarms_per_100_days']:<5.1f} | Mean Delay: {d['mean_detection_delay_days']} days | Detect Rate: {d['detection_rate_pct']}%")
+
+    return {'false_alarms': fa_rows, 'delay': delay_rows}
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Detection delay / false alarm simulation')
+    parser = argparse.ArgumentParser(description='Sequential detection delay vs false alarm benchmark')
     parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--n-trials', type=int, default=100)
+    parser.add_argument('--out-dir', type=str, default=None)
     args = parser.parse_args()
-    out = run(seed=args.seed)
-    print('Delay analysis complete:', out)
+    run(seed=args.seed, n_trials=args.n_trials, out_dir=args.out_dir)
 
 
 if __name__ == '__main__':
