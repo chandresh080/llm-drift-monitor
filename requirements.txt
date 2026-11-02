@@ -11,3 +11,4 @@ plotly>=5.15.0
 torch>=2.0.0
 torchvision>=0.15.0
 torchaudio>=2.0.0
+python-dotenv>=1.0.0

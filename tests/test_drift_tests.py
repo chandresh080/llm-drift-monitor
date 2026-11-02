@@ -136,20 +136,21 @@ class TestPipelineIntegration:
         from monitor import LLMDriftMonitor
         import tempfile
         import os
+        import yaml
         
-        # Create temp config
+        # Keep this storage smoke test independent of a local Ollama installation.
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = os.path.join(tmpdir, "test.db")
-            # We'll test with actual config but override db
-            monitor = LLMDriftMonitor()
-            monitor.storage.clear_all()
-            monitor.storage.db_path = db_path
-            # Re-init
-            monitor.storage = monitor.storage.__class__(db_path)
-            
-            # Run probes
+            with open("config.yaml", "r") as config_file:
+                config = yaml.safe_load(config_file)
+            config["target"] = {"type": "fake", "model_id": "fake-test", "temperature": 0.0}
+            config["data"]["db_path"] = db_path
+            config_path = os.path.join(tmpdir, "test-config.yaml")
+            with open(config_path, "w") as config_file:
+                yaml.safe_dump(config, config_file)
+
+            monitor = LLMDriftMonitor(config_path=config_path)
+            monitor.embedder.extract_embedding = lambda text: [float(len(text)), 1.0]
             run_ids = monitor.run_canary_probes(num_prompts=5)
             assert len(run_ids) == 5
-            
-            # Store should have data
-            assert monitor.storage.count_successful_runs() >= 0
+            assert monitor.storage.count_successful_runs() == 5

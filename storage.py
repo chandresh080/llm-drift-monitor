@@ -3,6 +3,7 @@ import os
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 import json
+from contextlib import contextmanager
 
 class DriftMonitorStorage:
     """SQLite storage for LLM drift monitoring data."""
@@ -15,7 +16,7 @@ class DriftMonitorStorage:
     
     def _init_db(self):
         """Initialize database schema."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._db() as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS probe_runs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -70,8 +71,7 @@ class DriftMonitorStorage:
                     mmd_significant INTEGER,
                     bh_significant_tests TEXT,  -- JSON list
                     overall_drift_detected INTEGER,
-                    overall_quality_degradation INTEGER,
-                    FOREIGN KEY (timestamp) REFERENCES probe_runs (timestamp)
+                    overall_quality_degradation INTEGER
                 )
             """)
             conn.execute("""
@@ -101,7 +101,7 @@ class DriftMonitorStorage:
                         run_status: str,
                         adapter_type: str) -> int:
         """Insert a probe run and return its ID."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._db() as conn:
             cursor = conn.execute("""
                 INSERT INTO probe_runs (
                     timestamp, prompt_version, prompt_text, model_id,
@@ -117,7 +117,7 @@ class DriftMonitorStorage:
     
     def insert_response_features(self, run_id: int, response_length: int, is_valid: bool):
         """Insert response features for a run."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._db() as conn:
             conn.execute("""
                 INSERT INTO response_features (run_id, response_length, is_valid)
                 VALUES (?, ?, ?)
@@ -128,7 +128,7 @@ class DriftMonitorStorage:
         """Insert embedding for a run."""
         # Convert numpy floats to Python floats for JSON serialization
         embedding = [float(x) for x in embedding]
-        with sqlite3.connect(self.db_path) as conn:
+        with self._db() as conn:
             conn.execute("""
                 INSERT INTO embeddings (run_id, embedding_blob)
                 VALUES (?, ?)
@@ -137,7 +137,7 @@ class DriftMonitorStorage:
     
     def insert_test_results(self, results: Dict[str, Any]):
         """Insert test results."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._db() as conn:
             conn.execute("""
                 INSERT INTO test_results (
                     timestamp, reference_size, current_size,
@@ -164,7 +164,7 @@ class DriftMonitorStorage:
     
     def insert_alert(self, alert: Dict[str, Any]):
         """Insert an alert."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._db() as conn:
             conn.execute("""
                 INSERT INTO alerts (
                     timestamp, alert_type, severity, message,
@@ -180,7 +180,7 @@ class DriftMonitorStorage:
     
     def get_all_runs(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """Get all probe runs."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._db() as conn:
             conn.row_factory = sqlite3.Row
             query = "SELECT * FROM probe_runs ORDER BY timestamp DESC"
             if limit:
@@ -188,64 +188,28 @@ class DriftMonitorStorage:
             cursor = conn.execute(query)
             return [dict(row) for row in cursor.fetchall()]
     
-    def get_reference_runs(self, limit: int = 50, exclude_run_ids: List[int] = None) -> List[Dict[str, Any]]:
-        """Get runs for reference window (earliest stable reference set)."""
-        exclude_run_ids = exclude_run_ids or []
-        with sqlite3.connect(self.db_path) as conn:
+    def get_all_runs_ordered(self) -> List[Dict[str, Any]]:
+        """Get all probe runs in chronological order (oldest first)."""
+        with self._db() as conn:
             conn.row_factory = sqlite3.Row
-            if exclude_run_ids:
-                placeholders = ','.join('?' for _ in exclude_run_ids)
-                query = f"""
-                    SELECT * FROM probe_runs 
-                    WHERE run_status = 'success'
-                    AND id NOT IN ({placeholders})
-                    ORDER BY timestamp ASC 
-                    LIMIT ?
-                """
-                cursor = conn.execute(query, tuple(exclude_run_ids + [limit]))
-            else:
-                query = """
-                    SELECT * FROM probe_runs 
-                    WHERE run_status = 'success'
-                    ORDER BY timestamp ASC 
-                    LIMIT ?
-                """
-                cursor = conn.execute(query, (limit,))
-            return [dict(row) for row in cursor.fetchall()]
+            cur = conn.execute("SELECT * FROM probe_runs ORDER BY timestamp ASC, id ASC")
+            return [dict(r) for r in cur.fetchall()]
     
-    def get_current_window_runs(self, limit: int = 10, exclude_run_ids: List[int] = None) -> List[Dict[str, Any]]:
-        """Get recent runs for current comparison window."""
-        exclude_run_ids = exclude_run_ids or []
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            if exclude_run_ids:
-                placeholders = ','.join('?' for _ in exclude_run_ids)
-                query = f"""
-                    SELECT * FROM probe_runs 
-                    WHERE run_status = 'success'
-                    AND id NOT IN ({placeholders})
-                    ORDER BY timestamp DESC 
-                    LIMIT ?
-                """
-                cursor = conn.execute(query, tuple(exclude_run_ids + [limit]))
-            else:
-                query = """
-                    SELECT * FROM probe_runs 
-                    WHERE run_status = 'success'
-                    ORDER BY timestamp DESC 
-                    LIMIT ?
-                """
-                cursor = conn.execute(query, (limit,))
-            # Return in chronological order
-            runs = [dict(row) for row in cursor.fetchall()]
-            runs.reverse()
-            return runs
+    @contextmanager
+    def _db(self):
+        """Provide a sqlite connection that commits on success / rolls back on error."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            yield conn
+            conn.commit()
+        finally:
+            conn.close()
     
     def get_response_lengths_for_runs(self, run_ids: List[int]) -> List[float]:
         """Get response lengths for given run IDs."""
         if not run_ids:
             return []
-        with sqlite3.connect(self.db_path) as conn:
+        with self._db() as conn:
             placeholders = ','.join('?' for _ in run_ids)
             cursor = conn.execute(f"""
                 SELECT response_length FROM probe_runs 
@@ -257,7 +221,7 @@ class DriftMonitorStorage:
         """Get validity flags (1=valid, 0=invalid) for given run IDs."""
         if not run_ids:
             return []
-        with sqlite3.connect(self.db_path) as conn:
+        with self._db() as conn:
             placeholders = ','.join('?' for _ in run_ids)
             if include_failed:
                 cursor = conn.execute(f"""
@@ -275,7 +239,7 @@ class DriftMonitorStorage:
         """Get embeddings for given run IDs."""
         if not run_ids:
             return []
-        with sqlite3.connect(self.db_path) as conn:
+        with self._db() as conn:
             conn.row_factory = sqlite3.Row
             placeholders = ','.join('?' for _ in run_ids)
             cursor = conn.execute(f"""
@@ -295,7 +259,7 @@ class DriftMonitorStorage:
     
     def get_all_test_results(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """Get all test results."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._db() as conn:
             conn.row_factory = sqlite3.Row
             query = "SELECT * FROM test_results ORDER BY timestamp DESC"
             if limit:
@@ -305,7 +269,7 @@ class DriftMonitorStorage:
     
     def get_all_alerts(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """Get all alerts."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._db() as conn:
             conn.row_factory = sqlite3.Row
             query = "SELECT * FROM alerts ORDER BY timestamp DESC"
             if limit:
@@ -319,13 +283,13 @@ class DriftMonitorStorage:
     
     def count_successful_runs(self) -> int:
         """Count total successful runs."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._db() as conn:
             cursor = conn.execute("SELECT COUNT(*) FROM probe_runs WHERE run_status = 'success'")
             return cursor.fetchone()[0]
     
     def clear_all(self):
         """Clear all data (for testing)."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._db() as conn:
             conn.execute("DELETE FROM embeddings")
             conn.execute("DELETE FROM response_features")
             conn.execute("DELETE FROM test_results")

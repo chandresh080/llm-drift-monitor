@@ -1,0 +1,5 @@
+category,shifted,p,rejected
+factual,True,1.9381285075999106e-11,True
+reasoning,False,0.914993219397903,False
+code,False,0.995531553175167,False
+refusal,False,0.914993219397903,False

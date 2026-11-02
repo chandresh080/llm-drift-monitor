@@ -22,7 +22,7 @@ def load_storage():
 
 def main():
     st.title("📊 LLM Drift Monitor")
-    st.markdown("Detecting silent quality degradation without labeled ground truth")
+    st.markdown("Canary-based behavioral drift signals; quality impact requires separate validation.")
     
     storage = load_storage()
     
@@ -56,10 +56,10 @@ def show_overview(storage):
         col2.metric("Recent Drift Detections", recent_drift)
         
         recent_quality = sum(1 for tr in test_results if tr['overall_quality_degradation'])
-        col3.metric("Recent Quality Degradations", recent_quality)
+        col3.metric("Recent Invalid-Response Flags", recent_quality)
     else:
         col2.metric("Recent Drift Detections", 0)
-        col3.metric("Recent Quality Degradations", 0)
+        col3.metric("Recent Invalid-Response Flags", 0)
     
     alerts = storage.get_all_alerts(limit=10)
     col4.metric("Recent Alerts", len(alerts))

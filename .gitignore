@@ -55,6 +55,11 @@ htmlcov/
 # Streamlit
 .streamlit/
 
+# Environment variables / secrets
+.env
+.env.*
+!.env.example
+
 # Model cache (sentence-transformers)
 .cache/
 sentence_transformers_cache/

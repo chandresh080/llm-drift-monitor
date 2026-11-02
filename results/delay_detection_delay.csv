@@ -1,0 +1,4 @@
+rule,alpha,shift_day,first_alert_day,mean_detection_delay
+single,0.05,45,63,18
+kofn,0.05,45,,45
+cusum,0.05,45,,45

@@ -1,0 +1,4 @@
+rule,alpha,horizon_days,shift_day,baseline_days,false_alarms,false_alarms_per_100_days
+single,0.05,90,45,45,0,0.0
+kofn,0.05,90,45,45,0,0.0
+cusum,0.05,90,45,45,0,0.0

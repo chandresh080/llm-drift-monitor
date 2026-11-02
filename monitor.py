@@ -1,9 +1,11 @@
 import json
 import yaml
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 import random
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from storage import DriftMonitorStorage
 from embeddings import EmbeddingExtractor
@@ -26,8 +28,10 @@ class FakeLLMAdapter:
             f"Based on the input, the answer involves considering multiple factors.",
             f"This is a simulated response for testing purposes.",
         ]
-        # Pick response based on hash of prompt for consistency
-        idx = hash(prompt) % len(base_responses)
+        # Pick response based on deterministic hash (stable across processes)
+        import hashlib
+        h = hashlib.md5(f"{self.seed}:{prompt}".encode()).hexdigest()
+        idx = int(h, 16) % len(base_responses)
         response = base_responses[idx]
         
         # Add slight variation
@@ -41,24 +45,133 @@ class FakeLLMAdapter:
         return [self.generate(p) for p in prompts]
 
 class LocalLLMAdapter:
-    """Placeholder for local LLM adapter. Not implemented to keep things minimal."""
-    
-    def __init__(self, model_id: str = "local-model"):
+    """Call a local Ollama model over HTTP without a hosted API key."""
+
+    def __init__(self, model_id: str = "llama3.2:1b",
+                 base_url: str = "http://localhost:11434",
+                 timeout: float = 120.0,
+                 temperature: float = 0.0,
+                 max_tokens: int = 128):
         self.model_id = model_id
-        raise NotImplementedError("Local LLM adapter not implemented in minimal version")
+        self.base_url = base_url.rstrip("/")
+        self.timeout = float(timeout)
+        self.temperature = float(temperature)
+        self.max_tokens = int(max_tokens)
+
+    def generate(self, prompt: str) -> str:
+        """Generate one response using Ollama's non-streaming endpoint."""
+        payload = json.dumps({
+            "model": self.model_id,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "temperature": self.temperature,
+                "num_predict": self.max_tokens,
+            },
+        }).encode("utf-8")
+        request = Request(
+            f"{self.base_url}/api/generate",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=self.timeout) as response:
+                result = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Ollama returned HTTP {exc.code}: {detail}") from exc
+        except URLError as exc:
+            raise RuntimeError(
+                f"Cannot reach Ollama at {self.base_url}. Start Ollama and pull "
+                f"the configured model ({self.model_id})."
+            ) from exc
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise RuntimeError("Ollama returned an invalid JSON response") from exc
+
+        generated = result.get("response")
+        if not isinstance(generated, str):
+            raise RuntimeError("Ollama response is missing the generated text")
+        return generated
+
+    def generate_batch(self, prompts: List[str]) -> List[str]:
+        """Generate responses sequentially, preserving prompt order."""
+        return [self.generate(prompt) for prompt in prompts]
 
 class OpenAICompatibleAdapter:
-    """Placeholder for OpenAI-compatible adapter. Not implemented."""
-    
-    def __init__(self, model_id: str = "gpt-3.5-turbo"):
+    """Call an OpenAI-compatible chat-completions API (e.g. Grok via api.x.ai, Gemini via Google)."""
+
+    def __init__(self, model_id: str = "gpt-3.5-turbo",
+                 api_key: Optional[str] = None,
+                 base_url: str = "https://api.openai.com/v1",
+                 timeout: float = 120.0,
+                 temperature: float = 0.0,
+                 max_tokens: int = 128):
         self.model_id = model_id
-        raise NotImplementedError("OpenAI-compatible adapter not implemented (no paid APIs allowed)")
+        self.api_key = api_key or os.environ.get("OPENAI_API_KEY") or ""
+        self.base_url = base_url.rstrip("/")
+        self.timeout = float(timeout)
+        self.temperature = float(temperature)
+        self.max_tokens = int(max_tokens)
+        if not self.api_key:
+            raise RuntimeError(
+                "OpenAI-compatible API key is required. Set OPENAI_API_KEY (e.g. in .env) "
+                "or pass api_key explicitly."
+            )
+
+    def generate(self, prompt: str) -> str:
+        """Generate one response using an OpenAI-compatible /chat/completions endpoint."""
+        payload = json.dumps({
+            "model": self.model_id,
+            "messages": [
+                {"role": "user", "content": prompt},
+            ],
+            "stream": False,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+        }).encode("utf-8")
+        request = Request(
+            f"{self.base_url}/chat/completions",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            },
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=self.timeout) as response:
+                result = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"OpenAI-compatible endpoint returned HTTP {exc.code}: {detail}") from exc
+        except URLError as exc:
+            raise RuntimeError(
+                f"Cannot reach OpenAI-compatible endpoint at {self.base_url}. Check the base URL and network."
+            ) from exc
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise RuntimeError("OpenAI-compatible response was invalid JSON") from exc
+
+        generated = result.get("choices", [{}])[0].get("message", {}).get("content")
+        if not isinstance(generated, str):
+            raise RuntimeError("OpenAI-compatible response is missing the generated text")
+        return generated
+
+    def generate_batch(self, prompts: List[str]) -> List[str]:
+        """Generate responses sequentially, preserving prompt order."""
+        return [self.generate(prompt) for prompt in prompts]
 
 class LLMDriftMonitor:
     """Main monitoring pipeline."""
     
     def __init__(self, config_path: str = "config.yaml"):
         self.config = self._load_config(config_path)
+        # Load environment variables from a local .env file (see .env.example)
+        try:
+            from dotenv import load_dotenv
+            load_dotenv()
+        except ImportError:
+            pass  # python-dotenv optional; fall back to process environment only
         self.storage = DriftMonitorStorage(self.config['data']['db_path'])
         
         # Initialize embedding extractor
@@ -97,10 +210,35 @@ class LLMDriftMonitor:
                 model_id=target_cfg.get('model_id', 'fake-llm-v1'),
                 seed=self.random_seed
             )
-        elif adapter_type == 'local':
-            return LocalLLMAdapter(model_id=target_cfg.get('model_id', 'local-model'))
+        elif adapter_type in ('local', 'ollama'):
+            return LocalLLMAdapter(
+                model_id=target_cfg.get('model_id', 'llama3.2:1b'),
+                base_url=target_cfg.get('base_url', 'http://localhost:11434'),
+                timeout=target_cfg.get('timeout_seconds', 120),
+                temperature=target_cfg.get('temperature', 0.0),
+                max_tokens=target_cfg.get('max_tokens', 128),
+            )
         elif adapter_type == 'openai-compatible':
-            return OpenAICompatibleAdapter(model_id=target_cfg.get('model_id', 'gpt-3.5-turbo'))
+            if os.environ.get('GEMINI_API_KEY'):
+                # Gemini (Google AI) via the OpenAI-compatible endpoint
+                return OpenAICompatibleAdapter(
+                    model_id=os.environ.get('GEMINI_MODEL') or 'gemini-3.8-flash',
+                    api_key=os.environ.get('GEMINI_API_KEY') or os.environ.get('OPENAI_API_KEY') or '',
+                    base_url=os.environ.get('GEMINI_BASE_URL') or 'https://generativelanguage.googleapis.com/v1beta/openai/',
+                )
+            if os.environ.get('GROQ_API_KEY'):
+                # Groq via the OpenAI-compatible endpoint
+                return OpenAICompatibleAdapter(
+                    model_id=os.environ.get('GROQ_MODEL') or 'llama-3.3-70b-versatile',
+                    api_key=os.environ.get('GROQ_API_KEY') or os.environ.get('OPENAI_API_KEY') or '',
+                    base_url=os.environ.get('GROQ_BASE_URL') or 'https://api.groq.com/openai/v1',
+                )
+            # Grok (xAI) via the OpenAI-compatible endpoint
+            return OpenAICompatibleAdapter(
+                model_id=os.environ.get('OPENAI_MODEL') or os.environ.get('XAI_MODEL') or 'grok-4.7',
+                api_key=os.environ.get('OPENAI_API_KEY') or os.environ.get('XAI_API_KEY') or '',
+                base_url=os.environ.get('OPENAI_BASE_URL') or os.environ.get('XAI_BASE_URL') or 'https://api.x.ai/v1',
+            )
         else:
             raise ValueError(f"Unknown adapter type: {adapter_type}")
     
@@ -132,8 +270,10 @@ class LLMDriftMonitor:
             run_status = 'success' if is_valid else 'failed'
             
             # Insert probe run
+            # Use proper timestamp with microseconds for uniqueness
+            probe_ts = timestamp if i == 0 else (datetime.fromisoformat(timestamp) + timedelta(milliseconds=i)).isoformat()
             run_id = self.storage.insert_probe_run(
-                timestamp=timestamp if i == 0 else f"{timestamp}-{i}",  # Make unique if same ts
+                timestamp=probe_ts,
                 prompt_version=prompt_version,
                 prompt_text=prompt,
                 model_id=model_id,
@@ -168,8 +308,7 @@ class LLMDriftMonitor:
         if successful_runs < min_runs:
             return False
         
-        # Reference is stored implicitly by taking first N successful runs
-        # The storage.get_reference_runs() handles this
+        # Reference is implicit: the first N successful runs form the baseline
         return True
     
     def has_sufficient_reference(self) -> bool:
@@ -196,32 +335,45 @@ class LLMDriftMonitor:
             }
         
         # Get reference and current windows
-        # Make windows disjoint to avoid overlap
-        ref_runs = self.storage.get_reference_runs(self.config['reference']['window_size'], exclude_run_ids=[])
+        # Windows are disjoint by construction: ref = oldest ref_size runs, cur = newest cur_size runs
+        ref_size = self.config['reference']['window_size']
+        cur_size = self.config['monitoring']['batch_size']
+        min_ref = self.config['reference'].get('min_runs', 10)
+
+        # Get all runs in order (including failed)
+        all_runs = self.storage.get_all_runs_ordered()
+
+        # Require complete windows (ref = oldest ref_size runs, cur = newest cur_size runs)
+        if len(all_runs) < ref_size + cur_size:
+            return {
+                'run_ids': run_ids,
+                'tests_run': False,
+                'reason': 'Insufficient disjoint reference data'
+            }
+
+        ref_runs = all_runs[:ref_size]
+        cur_runs = all_runs[-cur_size:]  # Most recent window
         ref_run_ids = self.storage.run_ids_from_runs(ref_runs)
-        cur_runs = self.storage.get_current_window_runs(
-            self.config['monitoring']['batch_size'], 
-            exclude_run_ids=ref_run_ids
-        )
         cur_run_ids = self.storage.run_ids_from_runs(cur_runs)
         
-        # If current window is empty due to overlap, just take recent without exclusion
-        if len(cur_runs) == 0:
-            cur_runs = self.storage.get_current_window_runs(self.config['monitoring']['batch_size'])
-            cur_run_ids = self.storage.run_ids_from_runs(cur_runs)
-            # Re-fetch ref without overlapping current
-            all_cur_ids = set(cur_run_ids)
-            ref_runs = [r for r in ref_runs if r['id'] not in all_cur_ids]
-            ref_run_ids = self.storage.run_ids_from_runs(ref_runs)
+        # If still insufficient reference, don't proceed with tests
+        if len(ref_runs) < min_ref:
+            # Don't run tests - insufficient disjoint reference
+            timestamp = datetime.now().isoformat()
+            return {
+                'run_ids': run_ids,
+                'tests_run': False,
+                'reason': 'Insufficient disjoint reference data'
+            }
         
-        # Extract features
+        # Extract features - track effective sample sizes
         ref_lengths = self.storage.get_response_lengths_for_runs(ref_run_ids)
         cur_lengths = self.storage.get_response_lengths_for_runs(cur_run_ids)
         
         ref_validity = self.storage.get_validity_for_runs(ref_run_ids, include_failed=True)
         cur_validity = self.storage.get_validity_for_runs(cur_run_ids, include_failed=True)
         
-        # Extract embeddings
+        # Extract embeddings (only for runs that have them)
         ref_embeddings = self.storage.get_embeddings_for_runs(ref_run_ids)
         cur_embeddings = self.storage.get_embeddings_for_runs(cur_run_ids)
         
@@ -232,34 +384,52 @@ class LLMDriftMonitor:
             'timestamp': timestamp,
             'reference_size': len(ref_runs),
             'current_size': len(cur_runs),
+            'ref_length_count': len(ref_lengths),
+            'cur_length_count': len(cur_lengths),
+            'ref_emb_count': len(ref_embeddings),
+            'cur_emb_count': len(cur_embeddings),
+            'ref_valid_count': len(ref_validity),
+            'cur_valid_count': len(cur_validity),
         }
         
         # KS test on response lengths
-        ks_stat, ks_pval = ks_test(ref_lengths, cur_lengths)
+        # Require sufficient usable samples
+        min_samples = self.config['alerts'].get('min_sample_size', 10)
+        if len(ref_lengths) < min_samples or len(cur_lengths) < min_samples:
+            ks_stat, ks_pval = float('nan'), 1.0
+        else:
+            ks_stat, ks_pval = ks_test(ref_lengths, cur_lengths)
         results['ks_statistic'] = ks_stat
         results['ks_pvalue'] = ks_pval
         results['ks_raw_pvalue'] = ks_pval
         
         # Two-proportion z-test on validity
-        prop_z_stat, prop_z_pval = two_proportion_z_test(ref_validity, cur_validity)
+        if len(ref_validity) < 5 or len(cur_validity) < 5:
+            prop_z_stat, prop_z_pval = float('nan'), 1.0
+        else:
+            prop_z_stat, prop_z_pval = two_proportion_z_test(ref_validity, cur_validity)
         results['proportion_z_stat'] = prop_z_stat
         results['proportion_z_pvalue'] = prop_z_pval
         results['proportion_z_raw_pvalue'] = prop_z_pval
         
         # MMD test on embeddings
-        mmd_stat, mmd_pval = mmd_test(
-            ref_embeddings, 
-            cur_embeddings, 
-            n_permutations=500,  # Smaller for speed
-            random_seed=self.random_seed
-        )
+        if len(ref_embeddings) < 2 or len(cur_embeddings) < 2:
+            mmd_stat, mmd_pval = 0.0, 1.0
+        else:
+            mmd_stat, mmd_pval = mmd_test(
+                ref_embeddings,
+                cur_embeddings,
+                n_permutations=500,  # Smaller for speed
+                random_seed=self.random_seed
+            )
         results['mmd_statistic'] = mmd_stat
         results['mmd_pvalue'] = mmd_pval
         results['mmd_raw_pvalue'] = mmd_pval
         
         # Benjamini-Hochberg correction on the three p-values
         pvalues = [ks_pval, prop_z_pval, mmd_pval]
-        adjusted_pvals, significant_flags = benjamini_hochberg_correction(pvalues, alpha=0.05)
+        alpha = self.config.get('alerts', {}).get('significance_threshold', 0.05)
+        adjusted_pvals, significant_flags = benjamini_hochberg_correction(pvalues, alpha=alpha)
         
         results['ks_adjusted_pvalue'] = adjusted_pvals[0] if len(adjusted_pvals) > 0 else 1.0
         results['ks_significant'] = 1 if len(significant_flags) > 0 and significant_flags[0] else 0
@@ -331,7 +501,7 @@ class LLMDriftMonitor:
                 'timestamp': timestamp,
                 'alert_type': 'quality_degradation',
                 'severity': 'high',
-                'message': 'Demonstrated quality degradation: high proportion of invalid responses',
+                'message': 'High empty/invalid-response rate heuristic; investigate possible quality impact.',
                 'ks_pvalue': results.get('ks_adjusted_pvalue'),
                 'proportion_z_pvalue': results.get('proportion_z_adjusted_pvalue'),
                 'mmd_pvalue': results.get('mmd_adjusted_pvalue'),

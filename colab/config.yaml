@@ -1,0 +1,31 @@
+target:
+  type: 'openai-compatible'
+  model_id: 'gemini-2.0-flash'
+  base_url: 'https://generativelanguage.googleapis.com/v1beta/openai/'
+  timeout_seconds: 180
+  temperature: 0.0
+  max_tokens: 256
+
+embeddings:
+  model_name: 'sentence-transformers/all-MiniLM-L6-v2'
+  device: 'cpu'
+
+reference:
+  window_size: 50
+  min_runs: 10
+
+monitoring:
+  batch_size: 10
+  random_seed: 42
+
+alerts:
+  significance_threshold: 0.05
+  quality_degradation_threshold: 0.3
+  min_sample_size: 10
+
+data:
+  db_path: '/content/drift_monitor.db'
+
+dashboard:
+  port: 8501
+  host: '127.0.0.1'
