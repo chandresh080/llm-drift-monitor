@@ -8,5 +8,16 @@ services:
     envVars:
       - key: DRIFT_MONITOR_CONFIG
         value: /app/config.cloud.yaml
+      # Free tier: 512 MiB. mlflow import during runs tips it over — skip tracking
+      # on the host; test results and alerts persist in SQLite regardless.
+      - key: DRIFT_MONITOR_TRACKING
+        value: "0"
       - key: PYTHONUNBUFFERED
         value: "1"
+      # Free-tier RAM hygiene: cap glibc arenas + torch/transformers thread pools.
+      - key: MALLOC_ARENA_MAX
+        value: "2"
+      - key: OMP_NUM_THREADS
+        value: "1"
+      - key: TOKENIZERS_PARALLELISM
+        value: "false"
