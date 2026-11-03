@@ -1,0 +1,12 @@
+# Render Blueprint: deploys the FastAPI drift-monitor service from the repo Dockerfile.
+services:
+  - type: web
+    name: llm-drift-monitor-api
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: DRIFT_MONITOR_CONFIG
+        value: /app/config.cloud.yaml
+      - key: PYTHONUNBUFFERED
+        value: "1"

@@ -1,0 +1,32 @@
+# Cloud-hosted configuration (Render deployment).
+# No Ollama on hosted infra -> deterministic fake adapter keeps the demo self-contained.
+
+target:
+  type: "fake"
+  model_id: "fake-llm-v1"
+  temperature: 0.0
+
+embeddings:
+  model_name: "sentence-transformers/all-MiniLM-L6-v2"
+  device: "cpu"
+
+reference:
+  window_size: 50
+  auto_create: true
+  min_runs: 10
+
+monitoring:
+  batch_size: 10
+  random_seed: 42
+
+alerts:
+  significance_threshold: 0.05
+  quality_degradation_threshold: 0.3
+  min_sample_size: 10
+
+data:
+  db_path: "data/drift_monitor.db"
+
+dashboard:
+  port: 8501
+  host: "0.0.0.0"
