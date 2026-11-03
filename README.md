@@ -1,5 +1,10 @@
 # LLM Behavioral Drift Monitor — Project Report
 
+> **Live demo:** [llm-drift-monitor-api.onrender.com](https://llm-drift-monitor-api.onrender.com) —
+> dashboard at `/` (adjusted p-value history, alerts, one-click probe run). The demo runs a
+> deterministic fake adapter (no API keys); free tier, sleeps after ~15 min idle.
+[![CI](https://github.com/chandresh-pandey-ml/llm-drift-monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/chandresh-pandey-ml/llm-drift-monitor/actions/workflows/ci.yml)
+
 ## 1. Problem and what's being monitored
 
 We monitor **behavioral drift** in a single target LLM — the tendency of its responses
@@ -100,19 +105,29 @@ Outputs (CSVs + PNGs) land in `results/`.
 
 ## Operational state (Phases 2–4)
 
+- **Live deployment** (Render, free tier): the API serves the dashboard UI at `/` from
+  `web/` and the JSON API at the routes below. Demo history is seeded via
+  `scripts/generate_seed_db.py` (50 baseline probes → injected shift → BH-flagged drift
+  alerts on record), so a cold start shows real results; `POST /runs` extends it live.
+  MLflow tracking is disabled on the host (`DRIFT_MONITOR_TRACKING=0`) to fit the 512 MiB
+  free tier — TS local runs keep full MLflow logging.
 - **MLflow**: SQLite backend (`mlflow.db`); daily runs + experiment sweeps logged via
   `tracking.py`; server via Docker (port 5000).
 - **API**: FastAPI (`api.py`) — `POST /runs`, `GET /runs`, `GET /runs/{id}`, `GET /alerts`,
-  `GET /drift/latest`, `GET /drift/results`, `GET /health`.
-- **Dashboard**: Streamlit now reads via API (`DRIFT_MONITOR_API_URL`).
-- **CI**: ruff + pytest + fake-adapter smoke (`.github/workflows/ci.yml`).
-- **Docker**: `docker-compose.yml` (api, dashboard, mlflow).
+  `GET /drift/latest`, `GET /drift/results`, `GET /health`; dashboard at `/`.
+- **Dashboard**: hosted UI (`web/`) served by the API; local Streamlit variant reads via
+  the API (`DRIFT_MONITOR_API_URL`).
+- **CI**: ruff + pytest + fake-adapter smoke (`.github/workflows/ci.yml`) — green on `main`.
+- **Docker**: `render.yaml` (api service) and `docker-compose.yml` (api, dashboard, mlflow).
 
 ## Testing status
 
-- `pytest`: **24 passed** ✅ · `ruff check .`: **clean** ✅ · fake-adapter smoke: ✅
-- New Phase 4 tests: BH known example, windowing, alert persistence, adapter retry (mocked).
+- `pytest`: **24 passed** ✅ · `ruff check .`: **clean** ✅ · 8/8 sequential live runs on the
+  deployed instance ✅
+- Coverage: BH known example, windowing, alert persistence, adapter retry (mocked).
 
-## Next steps
+## Known deployment limitation
 
-- Phase 5 is complete as the short report above; remaining plan item was only the README rewrite itself.
+Render's free tier is 512 MiB with an ephemeral filesystem: SQLite data resets on
+redeploy/restart (the seeded demo history is baked into the image, so cold starts still
+show results), and MLflow tracking is disabled on the host. A paid instance restores both.
