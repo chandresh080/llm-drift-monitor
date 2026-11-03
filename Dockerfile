@@ -2,6 +2,11 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# Pre-install CPU-only torch stack first (no CUDA libs); requirements.txt
+# is satisfied by these (torch>=2.0.0) so pip won't re-pull CUDA builds.
+RUN pip install --no-cache-dir torch torchvision torchaudio \
+    --index-url https://download.pytorch.org/whl/cpu
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

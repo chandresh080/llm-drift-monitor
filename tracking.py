@@ -5,8 +5,6 @@ import subprocess
 from contextlib import contextmanager
 from typing import Any, Dict, Optional, List, Union
 
-import mlflow
-
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_TRACKING_URI = f"sqlite:///{os.path.join(PROJECT_ROOT, 'mlflow.db')}"
 MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", DEFAULT_TRACKING_URI)
@@ -45,6 +43,7 @@ def drift_run(
         experiment_name: MLflow experiment category ('llm-drift-daily' or 'llm-drift-experiments').
         tags: Optional run tags (e.g. {'run_type': 'daily_probe'}).
     """
+    import mlflow  # Lazy: mlflow is heavy (RAM); keep service startup light.
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     mlflow.set_experiment(experiment_name)
     with mlflow.start_run(run_name=run_name, tags=tags) as run:
@@ -63,6 +62,8 @@ def log_drift_run(
     """
     if run is None:
         return
+
+    import mlflow  # Lazy: mlflow is heavy (RAM); keep service startup light.
 
     # Log parameters
     if params:

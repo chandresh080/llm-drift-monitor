@@ -1,5 +1,4 @@
 import numpy as np
-from sentence_transformers import SentenceTransformer
 from typing import List, Tuple
 import logging
 
@@ -18,6 +17,7 @@ class EmbeddingExtractor:
     def model(self):
         """Lazy load the embedding model."""
         if self._model is None:
+            from sentence_transformers import SentenceTransformer
             self._model = SentenceTransformer(self.model_name, device=self.device)
         return self._model
     
