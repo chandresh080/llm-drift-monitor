@@ -7,6 +7,7 @@ import logging
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from monitor import LLMDriftMonitor
@@ -174,3 +175,17 @@ def health() -> Dict[str, Any]:
         "db": "ok" if db_ok else "unreachable",
         "provider": _get_monitor().adapter.model_id,
     }
+
+
+# ---------- dashboard UI (served from the same origin; API stays untouched) ----------
+
+_WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+
+if os.path.isdir(_WEB_DIR):
+    from fastapi.staticfiles import StaticFiles
+
+    app.mount("/static", StaticFiles(directory=_WEB_DIR), name="static")
+
+    @app.get("/", include_in_schema=False)
+    def index():
+        return FileResponse(os.path.join(_WEB_DIR, "index.html"))

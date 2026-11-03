@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM Drift Monitor</title>
+<meta name="description" content="Behavioral drift monitoring for LLMs: canary probes, statistical tests, BH correction.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23171917'/%3E%3Ccircle cx='16' cy='16' r='5.5' fill='%23C2542B'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="/">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="currentColor"/><circle cx="16" cy="16" r="5.5" fill="#C2542B"/></svg>
+      <span>LLM <em>Drift</em> Monitor</span>
+    </a>
+    <span id="health-pill" class="pill pill-muted"><span class="dot"></span>checking DB</span>
+  </div>
+</header>
+
+<main class="page">
+
+  <section class="masthead">
+    <div>
+      <h1>Behavioral drift, <span class="ghost">out of the blue.</span></h1>
+      <p class="lede">
+        Versioned canary prompts run against the target model. Responses are scored on
+        length, validity, and embeddings &mdash; KS, two-proportion&nbsp;z, and MMD tests,
+        Benjamini&ndash;Hochberg corrected at &alpha;&nbsp;=&nbsp;0.05.
+        Drift is a signal for investigation, not a verdict.
+      </p>
+    </div>
+    <div class="masthead-actions">
+      <button id="run-btn" class="btn btn-primary" type="button">Run monitoring cycle</button>
+      <p id="run-note" class="run-note">Adds 10 canary probes and recomputes the tests.</p>
+    </div>
+  </section>
+
+  <div id="banner" class="banner" hidden></div>
+
+  <section class="kpi-row" id="kpi-row">
+    <div class="kpi">
+      <h2 class="kpi-label">Latest drift status</h2>
+      <div id="kpi-drift" class="kpi-value">&mdash;</div>
+      <div id="kpi-drift-sub" class="kpi-sub">waiting for data</div>
+    </div>
+    <div class="kpi">
+      <h2 class="kpi-label">Flagged tests</h2>
+      <div id="kpi-flagged" class="kpi-value">&mdash;</div>
+      <div id="kpi-flagged-sub" class="kpi-sub">BH-corrected, &alpha; = 0.05</div>
+    </div>
+    <div class="kpi">
+      <h2 class="kpi-label">Probe runs stored</h2>
+      <div id="kpi-runs" class="kpi-value">&mdash;</div>
+      <div id="kpi-runs-sub" class="kpi-sub">canaries executed</div>
+    </div>
+    <div class="kpi">
+      <h2 class="kpi-label">Target adapter</h2>
+      <div id="kpi-provider" class="kpi-value">&mdash;</div>
+      <div id="kpi-provider-sub" class="kpi-sub">fake adapter &mdash; deterministic demo</div>
+    </div>
+  </section>
+
+  <section class="grid-tests">
+    <div class="panel">
+      <div class="panel-head">
+        <h3>Detectors &mdash; adjusted p-values, recent cycles</h3>
+        <span class="panel-hint">line = BH-adjusted p &middot; markers = significant (&lt; .05)</span>
+      </div>
+      <div id="pval-chart" class="pval-chart" aria-label="Adjusted p-value history">
+        <p class="empty">No test results yet. Trigger a monitoring cycle.</p>
+      </div>
+      <table class="data-table" id="results-table" hidden>
+        <thead>
+          <tr>
+            <th>Cycle</th><th class="num">KS&nbsp;p&darr;</th><th class="num">Z&nbsp;p&darr;</th>
+            <th class="num">MMD&nbsp;p&darr;</th><th>Flagged</th><th>Verdict</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h3>Alerts</h3><span class="panel-hint">newest first</span></div>
+      <ul id="alerts-list" class="alert-list"><li class="empty">No alerts.</li></ul>
+      <div class="panel-foot">
+        <h4>What the tests look at</h4>
+        <ul class="legend">
+          <li><b>KS</b> &mdash; response length distribution, canary vs. baseline</li>
+          <li><b>Z</b> &mdash; two-proportion test on invalid-response rate</li>
+          <li><b>MMD</b> &mdash; RBF-kernel divergence on response embeddings</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel panel-api">
+    <div class="panel-head"><h3>API</h3><span class="panel-hint">the UI is a thin layer &mdash; everything is at these routes</span></div>
+    <ul class="api-list">
+      <li><code>GET /health</code><span>DB + adapter state</span></li>
+      <li><code>POST /runs</code><span>start a probe + detection cycle</span></li>
+      <li><code>GET /runs</code><span>stored probe history</span></li>
+      <li><code>GET /drift/latest</code><span>most recent verdict</span></li>
+      <li><code>GET /drift/results</code><span>full test-result log</span></li>
+      <li><code>GET /alerts</code><span>alert history</span></li>
+    </ul>
+    <p class="api-note">Source, experiments, and evaluation at
+      <a href="https://github.com/chandresh-pandey-ml/llm-drift-monitor" target="_blank" rel="noopener">github.com/chandresh-pandey-ml/llm-drift-monitor</a>.
+      Demo runs on a deterministic fake adapter (no external API keys). Free-tier instance sleeps after ~15&nbsp;min idle; the first request takes up to a minute while it wakes.</p>
+  </section>
+
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
