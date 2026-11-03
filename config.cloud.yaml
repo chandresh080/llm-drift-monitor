@@ -25,7 +25,8 @@ alerts:
   min_sample_size: 10
 
 data:
-  db_path: "data/drift_monitor.db"
+  # Seeded demo database (committed); run probes extend it live at runtime.
+  db_path: "data/seed_drift.db"
 
 dashboard:
   port: 8501

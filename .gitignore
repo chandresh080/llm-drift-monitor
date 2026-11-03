@@ -27,10 +27,11 @@ ENV/
 .venv
 
 # Data files (runtime generated)
-data/
+data/*
 *.db
 *.sqlite
 *.sqlite3
+!data/seed_drift.db
 
 # IDE
 .vscode/
