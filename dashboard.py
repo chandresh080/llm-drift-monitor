@@ -1,12 +1,11 @@
+import os
+from types import SimpleNamespace
+
+import httpx
 import streamlit as st
 import pandas as pd
-import numpy as np
-from datetime import datetime
 import plotly.express as px
 import plotly.graph_objects as go
-from storage import DriftMonitorStorage
-from embeddings import EmbeddingExtractor
-import yaml
 
 st.set_page_config(
     page_title="LLM Drift Monitor",
@@ -15,16 +14,47 @@ st.set_page_config(
 )
 
 @st.cache_resource
-def load_storage():
-    with open('config.yaml', 'r') as f:
-        config = yaml.safe_load(f)
-    return DriftMonitorStorage(config['data']['db_path'])
+def load_api():
+    """Return a cached data source backed by the LLM drift monitor API."""
+    client = httpx.Client(
+        base_url=os.environ.get("DRIFT_MONITOR_API_URL", "http://localhost:8000"),
+        timeout=10.0,
+    )
+
+    def get_all_runs(limit=None):
+        params = {"limit": limit} if limit else None
+        resp = client.get("/runs", params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_all_alerts(limit=None):
+        params = {"limit": limit} if limit else None
+        resp = client.get("/alerts", params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_all_test_results(limit=None):
+        params = {"limit": limit} if limit else None
+        resp = client.get("/drift/results", params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+    def count_successful_runs():
+        runs = get_all_runs(limit=1000)
+        return sum(1 for r in runs if str(r.get("run_status")) == "success")
+
+    return SimpleNamespace(
+        get_all_runs=get_all_runs,
+        get_all_alerts=get_all_alerts,
+        get_all_test_results=get_all_test_results,
+        count_successful_runs=count_successful_runs,
+    )
 
 def main():
     st.title("📊 LLM Drift Monitor")
     st.markdown("Canary-based behavioral drift signals; quality impact requires separate validation.")
     
-    storage = load_storage()
+    data = load_api()
     
     # Sidebar
     st.sidebar.header("Navigation")
@@ -34,23 +64,23 @@ def main():
     )
     
     if page == "Overview":
-        show_overview(storage)
+        show_overview(data)
     elif page == "Run History":
-        show_run_history(storage)
+        show_run_history(data)
     elif page == "Drift Analysis":
-        show_drift_analysis(storage)
+        show_drift_analysis(data)
     elif page == "Alerts":
-        show_alerts(storage)
+        show_alerts(data)
 
-def show_overview(storage):
+def show_overview(data):
     st.header("Overview")
     
     col1, col2, col3, col4 = st.columns(4)
     
-    total_runs = storage.count_successful_runs()
+    total_runs = data.count_successful_runs()
     col1.metric("Successful Runs", total_runs)
     
-    test_results = storage.get_all_test_results(limit=10)
+    test_results = data.get_all_test_results(limit=10)
     if test_results:
         recent_drift = sum(1 for tr in test_results if tr['overall_drift_detected'])
         col2.metric("Recent Drift Detections", recent_drift)
@@ -61,7 +91,7 @@ def show_overview(storage):
         col2.metric("Recent Drift Detections", 0)
         col3.metric("Recent Invalid-Response Flags", 0)
     
-    alerts = storage.get_all_alerts(limit=10)
+    alerts = data.get_all_alerts(limit=10)
     col4.metric("Recent Alerts", len(alerts))
     
     st.markdown("---")
@@ -83,10 +113,10 @@ def show_overview(storage):
     Changes in response length, validity signals, or embeddings may reflect harmless variations.
     """)
 
-def show_run_history(storage):
+def show_run_history(data):
     st.header("Run History")
     
-    runs = storage.get_all_runs(limit=100)
+    runs = data.get_all_runs(limit=100)
     if not runs:
         st.info("No runs yet. Run monitoring cycle first.")
         return
@@ -104,10 +134,10 @@ def show_run_history(storage):
                      title='Response Length Trend')
         st.plotly_chart(fig, use_container_width=True)
 
-def show_drift_analysis(storage):
+def show_drift_analysis(data):
     st.header("Drift Analysis")
     
-    test_results = storage.get_all_test_results(limit=20)
+    test_results = data.get_all_test_results(limit=20)
     if not test_results:
         st.info("No test results yet. Run monitoring cycle first.")
         return
@@ -133,10 +163,10 @@ def show_drift_analysis(storage):
         fig.update_layout(yaxis_title="Adjusted p-value", xaxis_title="Timestamp")
         st.plotly_chart(fig, use_container_width=True)
 
-def show_alerts(storage):
+def show_alerts(data):
     st.header("Alerts")
     
-    alerts = storage.get_all_alerts(limit=100)
+    alerts = data.get_all_alerts(limit=100)
     if not alerts:
         st.info("No alerts yet.")
         return

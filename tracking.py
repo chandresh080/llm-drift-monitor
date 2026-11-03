@@ -1,7 +1,6 @@
 """MLflow tracking utilities for drift monitoring runs and experiments."""
 
 import os
-import json
 import subprocess
 from contextlib import contextmanager
 from typing import Any, Dict, Optional, List, Union

@@ -1,6 +1,6 @@
 import numpy as np
 from sentence_transformers import SentenceTransformer
-from typing import List, Union, Tuple
+from typing import List, Tuple
 import logging
 
 logger = logging.getLogger(__name__)

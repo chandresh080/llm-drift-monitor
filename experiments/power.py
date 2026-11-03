@@ -11,7 +11,6 @@ from experiments.sim import (
     make_validity,
     make_embeddings,
     shift_lengths,
-    shift_validity,
     shift_embeddings,
     DEFAULT_LENGTH_STD,
     DEFAULT_VALID_P,

@@ -1,8 +1,9 @@
 import json
 import yaml
 import os
+import time
 from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 import random
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -10,6 +11,52 @@ from urllib.request import Request, urlopen
 from storage import DriftMonitorStorage
 from embeddings import EmbeddingExtractor
 from drift_tests import ks_test, two_proportion_z_test, mmd_test, benjamini_hochberg_correction
+
+
+def _post_json_with_retry(
+    url: str,
+    payload: Dict[str, Any],
+    timeout: float,
+    max_retries: int = 3,
+    base_delay: float = 1.0,
+    label: str = "OpenAI-compatible endpoint",
+    headers: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """POST a JSON payload, retrying transient failures (HTTP 429/5xx, network error, timeout).
+
+    Uses exponential backoff with jitter between attempts.
+    """
+    data = json.dumps(payload).encode("utf-8")
+    backoff = float(base_delay)
+    last_error: Optional[Exception] = None
+    for attempt in range(max_retries + 1):
+        try:
+            request = Request(
+                url,
+                data=data,
+                headers=headers or {"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urlopen(request, timeout=timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            status = exc.code
+            detail = exc.read().decode("utf-8", errors="replace")
+            last_error = RuntimeError(f"{label} returned HTTP {status}: {detail}")
+            if attempt < max_retries and (status == 429 or status >= 500):
+                time.sleep(backoff * (0.5 + random.random()))
+                backoff *= 2.0
+                continue
+            raise last_error from exc
+        except (URLError, TimeoutError, OSError) as exc:
+            last_error = RuntimeError(f"Cannot reach {label} at {url}. Check the endpoint and network.")
+            if attempt < max_retries:
+                time.sleep(backoff * (0.5 + random.random()))
+                backoff *= 2.0
+                continue
+            raise last_error from exc
+    raise last_error
+
 
 class FakeLLMAdapter:
     """Fake LLM adapter for testing. Completely offline, no paid APIs."""
@@ -25,8 +72,8 @@ class FakeLLMAdapter:
         base_responses = [
             f"Response to: {prompt[:50]}... This is a generated answer.",
             f"Here's an explanation: {prompt}",
-            f"Based on the input, the answer involves considering multiple factors.",
-            f"This is a simulated response for testing purposes.",
+            "Based on the input, the answer involves considering multiple factors.",
+            "This is a simulated response for testing purposes.",
         ]
         # Pick response based on deterministic hash (stable across processes)
         import hashlib
@@ -51,16 +98,18 @@ class LocalLLMAdapter:
                  base_url: str = "http://localhost:11434",
                  timeout: float = 120.0,
                  temperature: float = 0.0,
-                 max_tokens: int = 128):
+                 max_tokens: int = 128,
+                 max_retries: int = 3):
         self.model_id = model_id
         self.base_url = base_url.rstrip("/")
         self.timeout = float(timeout)
         self.temperature = float(temperature)
         self.max_tokens = int(max_tokens)
+        self.max_retries = int(max_retries)
 
     def generate(self, prompt: str) -> str:
         """Generate one response using Ollama's non-streaming endpoint."""
-        payload = json.dumps({
+        payload = {
             "model": self.model_id,
             "prompt": prompt,
             "stream": False,
@@ -68,27 +117,15 @@ class LocalLLMAdapter:
                 "temperature": self.temperature,
                 "num_predict": self.max_tokens,
             },
-        }).encode("utf-8")
-        request = Request(
-            f"{self.base_url}/api/generate",
-            data=payload,
+        }
+        result = _post_json_with_retry(
+            url=f"{self.base_url}/api/generate",
+            payload=payload,
+            timeout=self.timeout,
+            max_retries=self.max_retries,
+            label="Ollama",
             headers={"Content-Type": "application/json"},
-            method="POST",
         )
-        try:
-            with urlopen(request, timeout=self.timeout) as response:
-                result = json.loads(response.read().decode("utf-8"))
-        except HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Ollama returned HTTP {exc.code}: {detail}") from exc
-        except URLError as exc:
-            raise RuntimeError(
-                f"Cannot reach Ollama at {self.base_url}. Start Ollama and pull "
-                f"the configured model ({self.model_id})."
-            ) from exc
-        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-            raise RuntimeError("Ollama returned an invalid JSON response") from exc
-
         generated = result.get("response")
         if not isinstance(generated, str):
             raise RuntimeError("Ollama response is missing the generated text")
@@ -106,13 +143,15 @@ class OpenAICompatibleAdapter:
                  base_url: str = "https://api.openai.com/v1",
                  timeout: float = 120.0,
                  temperature: float = 0.0,
-                 max_tokens: int = 128):
+                 max_tokens: int = 128,
+                 max_retries: int = 3):
         self.model_id = model_id
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY") or ""
         self.base_url = base_url.rstrip("/")
         self.timeout = float(timeout)
         self.temperature = float(temperature)
         self.max_tokens = int(max_tokens)
+        self.max_retries = int(max_retries)
         if not self.api_key:
             raise RuntimeError(
                 "OpenAI-compatible API key is required. Set OPENAI_API_KEY (e.g. in .env) "
@@ -121,7 +160,7 @@ class OpenAICompatibleAdapter:
 
     def generate(self, prompt: str) -> str:
         """Generate one response using an OpenAI-compatible /chat/completions endpoint."""
-        payload = json.dumps({
+        payload = {
             "model": self.model_id,
             "messages": [
                 {"role": "user", "content": prompt},
@@ -129,29 +168,18 @@ class OpenAICompatibleAdapter:
             "stream": False,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
-        }).encode("utf-8")
-        request = Request(
-            f"{self.base_url}/chat/completions",
-            data=payload,
+        }
+        result = _post_json_with_retry(
+            url=f"{self.base_url}/chat/completions",
+            payload=payload,
+            timeout=self.timeout,
+            max_retries=self.max_retries,
+            label="OpenAI-compatible endpoint",
             headers={
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {self.api_key}",
             },
-            method="POST",
         )
-        try:
-            with urlopen(request, timeout=self.timeout) as response:
-                result = json.loads(response.read().decode("utf-8"))
-        except HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"OpenAI-compatible endpoint returned HTTP {exc.code}: {detail}") from exc
-        except URLError as exc:
-            raise RuntimeError(
-                f"Cannot reach OpenAI-compatible endpoint at {self.base_url}. Check the base URL and network."
-            ) from exc
-        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-            raise RuntimeError("OpenAI-compatible response was invalid JSON") from exc
-
         generated = result.get("choices", [{}])[0].get("message", {}).get("content")
         if not isinstance(generated, str):
             raise RuntimeError("OpenAI-compatible response is missing the generated text")
@@ -251,7 +279,6 @@ class LLMDriftMonitor:
         if num_prompts is not None:
             prompts = prompts[:num_prompts]
         
-        batch_size = self.config['monitoring']['batch_size']
         prompt_version = self.canary_prompts['version']
         model_id = self.adapter.model_id
         timestamp = datetime.now().isoformat()
@@ -302,7 +329,6 @@ class LLMDriftMonitor:
         if min_runs is None:
             min_runs = self.config['reference']['min_runs']
         
-        ref_size = self.config['reference']['window_size']
         successful_runs = self.storage.count_successful_runs()
         
         if successful_runs < min_runs:
@@ -521,7 +547,7 @@ class LLMDriftMonitor:
                     },
                     artifacts={'drift_report': results},
                 )
-        except Exception as e:
+        except Exception:
             # MLflow logging failure should never crash the monitoring pipeline
             pass
 

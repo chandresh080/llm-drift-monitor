@@ -59,8 +59,6 @@ def run(
 
         # Calculate trial precision and recall
         tp = 1 if target_category in flagged_cats else 0
-        fp = len(flagged_cats) - tp
-        precision = (tp / len(flagged_cats)) if len(flagged_cats) > 0 else 1.0 if tp == 0 and len(flagged_cats) == 0 else 0.0
         # If nothing flagged, precision is considered 1.0 (no false alarms) or 0.0
         prec_metric = (tp / len(flagged_cats)) if len(flagged_cats) > 0 else 0.0
         recall = float(tp)  # since exactly 1 shifted category

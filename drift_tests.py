@@ -1,8 +1,7 @@
 import numpy as np
 from scipy import stats
 from scipy.stats import ks_2samp
-import random
-from typing import List, Tuple, Dict, Any, Optional
+from typing import List, Tuple, Optional
 
 def ks_test(reference_data: List[float], current_data: List[float]) -> Tuple[float, float]:
     """

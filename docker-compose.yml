@@ -1,0 +1,29 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - MLFLOW_TRACKING_URI=sqlite:///data/mlflow.db
+      - DRIFT_MONITOR_CONFIG=/app/config.yaml
+
+  dashboard:
+    build: .
+    ports:
+      - "8501:8501"
+    command: streamlit run dashboard.py --server.port 8501 --server.address 0.0.0.0
+    environment:
+      - DRIFT_MONITOR_API_URL=http://api:8000
+    depends_on:
+      - api
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:latest
+    ports:
+      - "5000:5000"
+    environment:
+      - MLFLOW_TRACKING_URI=sqlite:////mlruns/mlflow.db
+    volumes:
+      - ./mlruns:/mlruns

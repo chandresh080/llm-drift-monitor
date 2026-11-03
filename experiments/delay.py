@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from drift_tests import ks_test
-from experiments.sim import make_lengths, shift_lengths, DEFAULT_LENGTH_MEAN, DEFAULT_LENGTH_STD
+from experiments.sim import make_lengths, shift_lengths, DEFAULT_LENGTH_STD
 
 DAYS = 90
 SHIFT_DAY = 45

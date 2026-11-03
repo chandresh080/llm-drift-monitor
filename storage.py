@@ -1,7 +1,6 @@
 import sqlite3
 import os
-from datetime import datetime
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 import json
 from contextlib import contextmanager
 
@@ -253,7 +252,7 @@ class DriftMonitorStorage:
                 try:
                     emb = json.loads(row['embedding_blob'])
                     embeddings.append(emb)
-                except:
+                except Exception:
                     continue
             return embeddings
     

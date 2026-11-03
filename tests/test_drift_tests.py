@@ -1,12 +1,9 @@
-import pytest
 import numpy as np
 from drift_tests import (
     ks_test, 
     two_proportion_z_test, 
     mmd_test, 
-    benjamini_hochberg_correction,
-    rbf_kernel,
-    mmd_squared
+    benjamini_hochberg_correction
 )
 
 class TestKSTest:
@@ -76,10 +73,21 @@ class TestBenjaminiHochberg:
         pvals = [0.001, 0.04, 0.2, 0.8]
         adj, sig = benjamini_hochberg_correction(pvals, alpha=0.05)
         assert len(adj) == 4
-        assert sig[0] == True  # 0.001
-        assert sig[1] == False  # 0.04 (with correct BH adjustment)
-        assert sig[2] == False  # 0.2
-        assert sig[3] == False  # 0.8
+        assert sig[0]  # 0.001
+        assert not sig[1]  # 0.04 (with correct BH adjustment)
+        assert not sig[2]  # 0.2
+        assert not sig[3]  # 0.8
+    
+    def test_bh_known_example(self):
+        """BH correction against a hand-computable known example."""
+        pvals = [0.001, 0.01, 0.02, 0.03, 0.5]
+        adj, sig = benjamini_hochberg_correction(pvals, alpha=0.05)
+        expected_adj = [0.005, 0.025, 0.0333333333, 0.0375, 0.5]
+        assert len(adj) == 5
+        for got, want in zip(adj, expected_adj):
+            assert abs(float(got) - want) < 1e-9
+        assert all(bool(s) for s in sig[:4])
+        assert not bool(sig[4])
     
     def test_bh_empty(self):
         """BH correction should handle empty list."""
