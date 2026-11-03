@@ -161,6 +161,17 @@ def get_drift_results(limit: int = 20) -> list:
     return storage.get_all_test_results(limit=limit)
 
 
+@app.get("/stats")
+def get_stats() -> Dict[str, Any]:
+    """Exact counts for the dashboard headers."""
+    storage = _get_storage()
+    return {
+        "probe_runs": storage.count_all_runs(),
+        "test_results": storage.count_test_results(),
+        "alerts": storage.count_alerts(),
+    }
+
+
 @app.get("/health")
 def health() -> Dict[str, Any]:
     """Check DB and (optionally) provider health."""

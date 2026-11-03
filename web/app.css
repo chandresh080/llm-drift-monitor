@@ -1,4 +1,4 @@
-/* LLM Drift Monitor — dashboard styles.
+/* Drift Monitor dashboard styles.
    Design system: paper background, ink text, single copper accent,
    hairline borders, tabular numerals. No gradients, no shadows. */
 
@@ -11,7 +11,6 @@
   --hairline: #E4E4DD;
   --hairline-strong: #D2D2C9;
   --accent: #B34A1E;
-  --accent-dark: #93371300;
   --accent-ink: #933713;
   --ok: #22663F;
   --ok-bg: #EDF4EE;
@@ -66,25 +65,10 @@ html, body {
   justify-content: space-between;
 }
 
-.brand {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  text-decoration: none;
-  color: var(--ink);
+.topbar-title {
   font-weight: 650;
   font-size: 15px;
   letter-spacing: -0.01em;
-}
-
-.brand em {
-  font-style: normal;
-  color: var(--accent-ink);
-}
-
-.brand-mark {
-  width: 22px;
-  height: 22px;
   color: var(--ink);
 }
 
@@ -117,6 +101,13 @@ html, body {
 .pill-bad { color: var(--alert); border-color: var(--alert-line); background: var(--alert-bg); }
 .pill-bad .dot { background: var(--alert); }
 .pill-muted { color: var(--ink-3); }
+.pill-wake { color: var(--warn); border-color: #EBDFA8; background: var(--warn-bg); }
+.pill-wake .dot { background: var(--warn); animation: pulse 1.4s ease-in-out infinite; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
 
 /* ---------- masthead ---------- */
 

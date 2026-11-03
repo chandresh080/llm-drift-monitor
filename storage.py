@@ -285,7 +285,25 @@ class DriftMonitorStorage:
         with self._db() as conn:
             cursor = conn.execute("SELECT COUNT(*) FROM probe_runs WHERE run_status = 'success'")
             return cursor.fetchone()[0]
-    
+
+    def count_all_runs(self) -> int:
+        """Count every probe run (successful or not)."""
+        with self._db() as conn:
+            cursor = conn.execute("SELECT COUNT(*) FROM probe_runs")
+            return cursor.fetchone()[0]
+
+    def count_test_results(self) -> int:
+        """Count saved drift-test cycles."""
+        with self._db() as conn:
+            cursor = conn.execute("SELECT COUNT(*) FROM test_results")
+            return cursor.fetchone()[0]
+
+    def count_alerts(self) -> int:
+        """Count saved alerts."""
+        with self._db() as conn:
+            cursor = conn.execute("SELECT COUNT(*) FROM alerts")
+            return cursor.fetchone()[0]
+
     def clear_all(self):
         """Clear all data (for testing)."""
         with self._db() as conn:

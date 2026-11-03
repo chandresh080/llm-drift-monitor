@@ -3,20 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>LLM Drift Monitor</title>
-<meta name="description" content="Behavioral drift monitoring for LLMs: canary probes, statistical tests, BH correction.">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23171917'/%3E%3Ccircle cx='16' cy='16' r='5.5' fill='%23C2542B'/%3E%3C/svg%3E">
+<title>Drift Monitor - Dashboard</title>
+<meta name="description" content="A small monitoring dashboard that checks whether an LLM's answers quietly change over time.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23171917'/%3E%3Ccircle cx='16' cy='16' r='5' fill='%23C2542B'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
 
 <header class="topbar">
   <div class="topbar-inner">
-    <a class="brand" href="/">
-      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="currentColor"/><circle cx="16" cy="16" r="5.5" fill="#C2542B"/></svg>
-      <span>LLM <em>Drift</em> Monitor</span>
-    </a>
-    <span id="health-pill" class="pill pill-muted"><span class="dot"></span>checking DB</span>
+    <span class="topbar-title">Drift Monitor</span>
+    <span id="health-pill" class="pill"><span class="dot"></span>starting</span>
   </div>
 </header>
 
@@ -24,59 +21,59 @@
 
   <section class="masthead">
     <div>
-      <h1>Behavioral drift, <span class="ghost">out of the blue.</span></h1>
+      <h1>Is the model changing?</h1>
       <p class="lede">
-        Versioned canary prompts run against the target model. Responses are scored on
-        length, validity, and embeddings &mdash; KS, two-proportion&nbsp;z, and MMD tests,
-        Benjamini&ndash;Hochberg corrected at &alpha;&nbsp;=&nbsp;0.05.
-        Drift is a signal for investigation, not a verdict.
+        Each check sends the same test prompts to the target model and compares the new
+        answers with the answers saved earlier. Three small tests look for changes in how
+        long the answers are, how often they come back empty, and what they mean overall.
+        When something changes, the page says so, and a person decides what it means.
       </p>
     </div>
     <div class="masthead-actions">
-      <button id="run-btn" class="btn btn-primary" type="button">Run monitoring cycle</button>
-      <p id="run-note" class="run-note">Adds 10 canary probes and recomputes the tests.</p>
+      <button id="run-btn" class="btn btn-primary" type="button">Run a check now</button>
+      <p id="run-note" class="run-note">Adds 10 new test prompts. The stats need 60 saved answers (about 6 checks) before the tests can run.</p>
     </div>
   </section>
 
   <div id="banner" class="banner" hidden></div>
 
-  <section class="kpi-row" id="kpi-row">
+  <section class="kpi-row">
     <div class="kpi">
-      <h2 class="kpi-label">Latest drift status</h2>
-      <div id="kpi-drift" class="kpi-value">&mdash;</div>
-      <div id="kpi-drift-sub" class="kpi-sub">waiting for data</div>
+      <h2 class="kpi-label">Drift status</h2>
+      <div id="kpi-drift" class="kpi-value">Loading</div>
+      <div id="kpi-drift-sub" class="kpi-sub">newest check vs saved answers</div>
     </div>
     <div class="kpi">
-      <h2 class="kpi-label">Flagged tests</h2>
-      <div id="kpi-flagged" class="kpi-value">&mdash;</div>
-      <div id="kpi-flagged-sub" class="kpi-sub">BH-corrected, &alpha; = 0.05</div>
+      <h2 class="kpi-label">Tests that fired</h2>
+      <div id="kpi-flagged" class="kpi-value">Loading</div>
+      <div id="kpi-flagged-sub" class="kpi-sub">statements below 0.05 count as fired</div>
     </div>
     <div class="kpi">
-      <h2 class="kpi-label">Probe runs stored</h2>
-      <div id="kpi-runs" class="kpi-value">&mdash;</div>
-      <div id="kpi-runs-sub" class="kpi-sub">canaries executed</div>
+      <h2 class="kpi-label">Answers saved</h2>
+      <div id="kpi-runs" class="kpi-value">Loading</div>
+      <div id="kpi-runs-sub" class="kpi-sub">each check adds 10 more</div>
     </div>
     <div class="kpi">
-      <h2 class="kpi-label">Target adapter</h2>
-      <div id="kpi-provider" class="kpi-value">&mdash;</div>
-      <div id="kpi-provider-sub" class="kpi-sub">fake adapter &mdash; deterministic demo</div>
+      <h2 class="kpi-label">Adapter in use</h2>
+      <div id="kpi-provider" class="kpi-value">Loading</div>
+      <div id="kpi-provider-sub" class="kpi-sub">demo runs a fake model, no API keys</div>
     </div>
   </section>
 
   <section class="grid-tests">
     <div class="panel">
       <div class="panel-head">
-        <h3>Detectors &mdash; adjusted p-values, recent cycles</h3>
-        <span class="panel-hint">line = BH-adjusted p &middot; markers = significant (&lt; .05)</span>
+        <h3>P values over recent checks</h3>
+        <span class="panel-hint">small p values are interesting. Dots sit under the dashed threshold.</span>
       </div>
-      <div id="pval-chart" class="pval-chart" aria-label="Adjusted p-value history">
-        <p class="empty">No test results yet. Trigger a monitoring cycle.</p>
+      <div id="pval-chart" class="pval-chart">
+        <p class="empty">Loading results...</p>
       </div>
       <table class="data-table" id="results-table" hidden>
         <thead>
           <tr>
-            <th>Cycle</th><th class="num">KS&nbsp;p&darr;</th><th class="num">Z&nbsp;p&darr;</th>
-            <th class="num">MMD&nbsp;p&darr;</th><th>Flagged</th><th>Verdict</th>
+            <th>When</th><th class="num">Length p</th><th class="num">Empty p</th>
+            <th class="num">Meaning p</th><th>Tests fired</th><th>Outcome</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -85,31 +82,36 @@
 
     <div class="panel">
       <div class="panel-head"><h3>Alerts</h3><span class="panel-hint">newest first</span></div>
-      <ul id="alerts-list" class="alert-list"><li class="empty">No alerts.</li></ul>
+      <ul id="alerts-list" class="alert-list"><li class="empty">Loading alerts...</li></ul>
       <div class="panel-foot">
-        <h4>What the tests look at</h4>
+        <h4>What the three tests do</h4>
         <ul class="legend">
-          <li><b>KS</b> &mdash; response length distribution, canary vs. baseline</li>
-          <li><b>Z</b> &mdash; two-proportion test on invalid-response rate</li>
-          <li><b>MMD</b> &mdash; RBF-kernel divergence on response embeddings</li>
+          <li><b>Length</b> is the letters-per-answer test. It asks whether answers got noticeably longer or shorter.</li>
+          <li><b>Empty</b> is the share of unhelpful answers. A jump usually means the model started refusing or breaking.</li>
+          <li><b>Meaning</b> is the text embedding test. It catches answers that drifted in topic or tone even when the looks are similar.</li>
         </ul>
       </div>
     </div>
   </section>
 
   <section class="panel panel-api">
-    <div class="panel-head"><h3>API</h3><span class="panel-hint">the UI is a thin layer &mdash; everything is at these routes</span></div>
+    <div class="panel-head">
+      <h3>You do not need this page</h3>
+      <span class="panel-hint">the service is also a plain JSON API. Try any of these in a browser.</span>
+    </div>
     <ul class="api-list">
-      <li><code>GET /health</code><span>DB + adapter state</span></li>
-      <li><code>POST /runs</code><span>start a probe + detection cycle</span></li>
-      <li><code>GET /runs</code><span>stored probe history</span></li>
-      <li><code>GET /drift/latest</code><span>most recent verdict</span></li>
-      <li><code>GET /drift/results</code><span>full test-result log</span></li>
-      <li><code>GET /alerts</code><span>alert history</span></li>
+      <li><a href="/health"><code>GET /health</code></a><span>is the service up</span></li>
+      <li><a href="/drift/latest"><code>GET /drift/latest</code></a><span>the most recent outcome</span></li>
+      <li><a href="/drift/results"><code>GET /drift/results</code></a><span>the full result log</span></li>
+      <li><a href="/alerts"><code>GET /alerts</code></a><span>saved alert history</span></li>
+      <li><a href="/runs"><code>GET /runs</code></a><span>stored answers, page by page</span></li>
+      <li><a href="/stats"><code>GET /stats</code></a><span>exact counts</span></li>
+      <li><code>POST /runs</code><span>start a new check</span></li>
     </ul>
-    <p class="api-note">Source, experiments, and evaluation at
-      <a href="https://github.com/chandresh-pandey-ml/llm-drift-monitor" target="_blank" rel="noopener">github.com/chandresh-pandey-ml/llm-drift-monitor</a>.
-      Demo runs on a deterministic fake adapter (no external API keys). Free-tier instance sleeps after ~15&nbsp;min idle; the first request takes up to a minute while it wakes.</p>
+    <p class="api-note">Source and the full write up are in
+      <a href="https://github.com/chandresh-pandey-ml/llm-drift-monitor" target="_blank" rel="noopener">the GitHub repo</a>.
+      The demo runs a scripted fake model so no real provider is ever called.
+      This is a free hosting plan, so the page goes to sleep when nobody visits. If a load feels slow, wait about a minute and refresh.</p>
   </section>
 
 </main>
