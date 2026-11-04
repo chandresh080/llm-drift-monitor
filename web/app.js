@@ -2,6 +2,9 @@
 "use strict";
 
 const ALPHA = 0.05;
+const FETCH_TIMEOUT_MS = 45000;   /* free tier cold starts can take a while */
+const WAKE_MAX_TRIES = 10;
+const WAKE_WAIT_MS = 8000;
 const $ = (id) => document.getElementById(id);
 
 const state = {
@@ -47,7 +50,7 @@ function cleanAlertMessage(msg) {
   const m1 = m.match(/Significant tests: \[(.*?)]/);
   if (m1) {
     const tests = m1[1].replace(/['"]/g, "").trim();
-    return "The tests that fired: " + (tests ? tests : "none") + ".";
+    return "Tests that fired: " + (tests ? tests : "none") + ".";
   }
   return m;
 }
@@ -74,14 +77,14 @@ function setPill(cls, text) {
 
 function renderHeadlineHealth() {
   if (!state.awake) {
-    setPill("pill-wake", "waking up, one moment");
+    setPill("pill-wake", "connecting");
     return;
   }
   const h = state.health;
   if (h && h.status === "ok") {
-    setPill("pill-ok", "service online");
+    setPill("pill-ok", "online");
   } else {
-    setPill("pill-bad", "service in trouble");
+    setPill("pill-bad", "degraded");
   }
 }
 
@@ -90,44 +93,43 @@ function renderKpis() {
   const l = state.latest;
   const driftEl = $("kpi-drift"), driftSub = $("kpi-drift-sub");
   driftEl.classList.remove("kpi-ok", "kpi-bad");
-  if (!l || l.drift_detected === null || l.drift_detected === undefined) {
-    driftEl.textContent = "Not enough data";
-    driftSub.textContent = "a few more checks and this fills in";
+  if (!state.awake) {
+    driftEl.textContent = "...";
+    driftSub.textContent = "connecting to the service";
+  } else if (!l || l.drift_detected === null || l.drift_detected === undefined) {
+    driftEl.textContent = "Pending";
+    driftSub.textContent = "not enough stored responses yet";
   } else if (Number(l.drift_detected) === 1) {
-    driftEl.textContent = "Drift seen";
+    driftEl.textContent = "Drift detected";
     driftEl.classList.add("kpi-bad");
-    driftSub.textContent = "worth a second look. Alerts below say which tests fired.";
+    driftSub.textContent = "the latest cycle differs from the baseline";
   } else {
-    driftEl.textContent = "Looks stable";
+    driftEl.textContent = "Stable";
     driftEl.classList.add("kpi-ok");
-    driftSub.textContent = "newest answers match the saved baseline";
+    driftSub.textContent = "the latest cycle matches the baseline";
   }
 
   /* Tests that fired */
   const flagged = (l && l.flagged_tests) || [];
   const flaggedEl = $("kpi-flagged");
-  flaggedEl.textContent = flagged.length ? flagged.join(" and ") : "None";
+  flaggedEl.textContent = flagged.length ? flagged.join(", ") : "None";
   flaggedEl.classList.toggle("kpi-flag", flagged.length > 0);
-  $("kpi-flagged-sub").textContent = state.awake
-    ? "next check can change this"
-    : "";
 
-  /* Answers saved: exact count from /stats */
+  /* Responses stored: exact count from /stats */
   const count = (state.stats && state.stats.probe_runs);
-  $("kpi-runs").textContent = (count !== null && count !== undefined) ? String(count) : "0";
-  $("kpi-runs-sub").textContent = state.awake
-    ? "each check adds 10 more"
-    : "counts appear once the service is awake";
+  $("kpi-runs").textContent = (state.awake && count !== null && count !== undefined)
+    ? String(count) : "...";
 
   /* Adapter */
-  $("kpi-provider").textContent = (state.health && state.health.provider) || "unknown";
+  $("kpi-provider").textContent = (state.awake && state.health && state.health.provider)
+    ? state.health.provider : "...";
 }
 
 function renderChart() {
   const wrap = $("pval-chart");
   const results = state.results.slice().reverse(); /* oldest to newest */
   if (!results.length) {
-    wrap.innerHTML = `<p class="empty">No check results yet. Press "Run a check now" above, a few times if needed.</p>`;
+    wrap.innerHTML = `<p class="empty">No results recorded yet.</p>`;
     return;
   }
 
@@ -139,9 +141,9 @@ function renderChart() {
   const xOf = (i) => ((i / (N - 1 || 1)) * 708 + 6).toFixed(1);
 
   const series = [
-    { key: "ks_pvalue", title: "Answer length (KS test)" },
-    { key: "proportion_z_pvalue", title: "Share of empty answers (z test)" },
-    { key: "mmd_pvalue", title: "What answers mean (embedding test)" },
+    { key: "ks_pvalue", title: "Response length (KS test)" },
+    { key: "proportion_z_pvalue", title: "Share of empty responses (z test)" },
+    { key: "mmd_pvalue", title: "Response semantics (MMD test)" },
   ];
 
   let html = "";
@@ -178,7 +180,7 @@ function renderTable() {
     const fired = parseFlagged(r);
     const firedHtml = fired.length
       ? fired.map((f) => `<b>${escapeHtml(f)}</b>`).join(", ")
-      : `<span class="none">nothing</span>`;
+      : `<span class="none">none</span>`;
     return `<tr>
       <td class="ts">${fmtTime(r.timestamp)}</td>
       <td class="num">${cellP(r, "ks_pvalue")}</td>
@@ -194,7 +196,7 @@ function renderAlerts() {
   const list = $("alerts-list");
   const rows = state.alerts.slice(0, 8);
   if (!rows.length) {
-    list.innerHTML = `<li class="empty">Nothing has fired yet. Alerts appear here when a check finds a real change.</li>`;
+    list.innerHTML = `<li class="empty">No alerts recorded yet.</li>`;
     return;
   }
   list.innerHTML = rows.map((a) => {
@@ -210,34 +212,35 @@ function renderAlerts() {
 }
 
 function renderAll() {
-  renderHeadlineHealth();
-  renderKpis();
-  renderChart();
-  renderTable();
-  renderAlerts();
+  /* Each panel renders on its own: a failure in one never blocks the others,
+     and placeholders are replaced as soon as their data arrives. */
+  for (const fn of [renderHeadlineHealth, renderKpis, renderChart, renderTable, renderAlerts]) {
+    try { fn(); } catch (err) { console.error("render failed:", fn.name, err); }
+  }
 }
 
-/* ---------- data loading (with wake-up handling) ---------- */
-
-const WAKE_TRIES = 12;
-const WAKE_WAIT_MS = 8000;
+/* ---------- data loading ---------- */
 
 async function fetchJson(path, options = {}) {
-  const res = await fetch(path, options);
-  if (!res.ok) throw new Error(`HTTP ${res.status} on ${path}`);
-  return res.json();
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(path, { ...options, signal: ctrl.signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status} on ${path}`);
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function loadAll() {
-  const pillWasAwake = state.awake;
   try {
-    /* Health first: it is the cheapest call and reveals whether we are awake. */
+    /* Health first: the cheapest call, and it tells us the service is up. */
     const health = await fetchJson("/health");
     state.health = health;
     state.awake = true;
-    if (!pillWasAwake) banner("Service is awake. Loading the latest numbers.");
 
-    /* Everything else can load independently; missing pieces render as pending. */
+    /* The rest loads independently; a failure in one piece leaves the others intact. */
     const [stats, latest, results, alerts] = await Promise.all([
       fetchJson("/stats").catch(() => null),
       fetchJson("/drift/latest").catch(() => null),
@@ -248,27 +251,36 @@ async function loadAll() {
     state.latest = latest;
     state.results = results || [];
     state.alerts = alerts || [];
-    banner("");
     renderAll();
     return true;
   } catch (err) {
-    /* Probably asleep. Say so, wait, try again. Do not show fake numbers. */
+    /* Almost certainly a sleeping instance. Keep placeholders, never fake numbers. */
     state.awake = false;
-    state.stats = null;
-    state.latest = null;
-    renderHeadlineHealth();
-    banner("The demo host is waking up. This takes about a minute on the free plan. The page keeps trying by itself.");
-    await new Promise((r) => setTimeout(r, WAKE_WAIT_MS));
+    renderAll();
     return false;
   }
 }
 
-async function waitForService() {
-  for (let i = 0; i < WAKE_TRIES; i++) {
-    const ok = await loadAll();
-    if (ok) return;
-  }
-  banner("Still waking after a couple of minutes. Refresh the page, or come back shortly.");
+/* One wake loop for the whole page; every caller shares it. */
+let wakePromise = null;
+
+function ensureAwake() {
+  if (state.awake) return Promise.resolve(true);
+  if (wakePromise) return wakePromise;
+  wakePromise = (async () => {
+    banner("The free hosting plan pauses this service between visits. Waking it up now; this takes up to a minute.");
+    for (let i = 0; i < WAKE_MAX_TRIES; i++) {
+      if (await loadAll()) {
+        banner("Connected. Panels below show the stored results.");
+        return true;
+      }
+      await new Promise((r) => setTimeout(r, WAKE_WAIT_MS));
+    }
+    banner("Still waking after a couple of minutes. Refresh the page or try again shortly.");
+    return false;
+  })();
+  wakePromise.finally(() => { wakePromise = null; });
+  return wakePromise;
 }
 
 /* ---------- run a check ---------- */
@@ -280,53 +292,72 @@ async function runCheck() {
   runInFlight = true;
   const btn = $("run-btn"), note = $("run-note");
   btn.disabled = true;
-  btn.textContent = "Checking...";
+  btn.textContent = "Running...";
   try {
-    // Make sure we are awake before starting a run.
-    if (!state.awake) await waitForService();
+    if (!await ensureAwake()) {
+      note.textContent = "The service did not come up in time. Try again in a minute.";
+      return;
+    }
+
     const started = await fetchJson("/runs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
     });
     const runId = started.run_id;
-    note.textContent = "Running. This takes up to a minute on the free plan.";
+    note.textContent = "Running. Ten responses are collected, which takes up to a minute.";
+
     for (let i = 0; i < 120; i++) {
       await new Promise((r) => setTimeout(r, 2000));
       const st = await fetchJson("/runs/" + runId).catch(() => null);
       if (!st) continue;
+
       if (st.status === "completed") {
+        /* The verdict lives inside the monitoring result payload. */
         const r = st.result || {};
         if (r.tests_run) {
-          note.textContent = r.overall_drift_detected
-            ? "Done. The answers changed. See the panel above for which tests fired."
-            : "Done. Answers look steady, nothing fired.";
-          banner("Check finished. Panels updated.");
+          const inner = r.results || {};
+          const fired = Array.isArray(inner.bh_significant_tests)
+            ? inner.bh_significant_tests : [];
+          /* Read the final verdict back from the stored results so the note
+             always matches the panels above. */
+          const latest = await fetchJson("/drift/latest").catch(() => null);
+          if (latest) { state.latest = latest; renderKpis(); }
+          const drifted = latest
+            ? Number(latest.drift_detected) === 1
+            : Number(inner.overall_drift_detected) === 1;
+          note.textContent = drifted
+            ? "Drift detected in this cycle. The panels above show which tests fired."
+            : "Cycle complete. No significant differences from the baseline.";
+          if (drifted && fired.length) {
+            banner("Drift detected: " + fired.join(", ") + " fired at alpha 0.05.");
+          }
         } else {
-          note.textContent = "Done. 10 answers stored. At least 60 saved answers are needed for the tests.";
-          banner("10 answers stored. Run a few more checks to fill the baseline.");
+          note.textContent = "Cycle complete. Ten responses stored. Tests begin once 60 responses are stored.";
         }
-        break;
+        await loadAll();
+        return;
       }
       if (st.status === "failed") {
         note.textContent = "That run failed. Wait a moment and try again.";
         banner("The last run did not finish: " + (st.error || "unknown issue"));
-        break;
+        return;
       }
     }
+    note.textContent = "The run is still going in the background. Panels update when it finishes.";
   } catch (err) {
     banner("Could not start a check: " + err.message);
-    note.textContent = "No new answers were added.";
+    note.textContent = "No new responses were recorded.";
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Run a check";
+    runInFlight = false;
   }
-  btn.disabled = false;
-  btn.textContent = "Run a check now";
-  runInFlight = false;
-  loadAll();
 }
 
 /* ---------- start ---------- */
 
 $("run-btn").addEventListener("click", runCheck);
-waitForService();
+ensureAwake();
 setInterval(() => {
   if (!runInFlight && document.visibilityState === "visible" && state.awake) loadAll();
 }, 60000);

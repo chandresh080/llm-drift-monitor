@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Drift Monitor - Dashboard</title>
-<meta name="description" content="A small monitoring dashboard that checks whether an LLM's answers quietly change over time.">
+<meta name="description" content="Monitors whether an LLM's responses change over time using canary prompts and statistical tests.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23171917'/%3E%3Cline x1='6' y1='21' x2='15' y2='21' stroke='%236C726B' stroke-width='2.5' stroke-linecap='round'/%3E%3Cpath d='M15 21 L21 21 L26 11' fill='none' stroke='%23C2542B' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/static/app.css">
 </head>
@@ -19,7 +19,7 @@
       </svg>
       Drift Monitor
     </span>
-    <span id="health-pill" class="pill"><span class="dot"></span>starting</span>
+    <span id="health-pill" class="pill"><span class="dot"></span>connecting</span>
   </div>
 </header>
 
@@ -29,15 +29,15 @@
     <div>
       <h1>Is the model changing?</h1>
       <p class="lede">
-        Each check sends the same test prompts to the target model and compares the new
-        answers with the answers saved earlier. Three small tests look for changes in how
-        long the answers are, how often they come back empty, and what they mean overall.
-        When something changes, the page says so, and a person decides what it means.
+        Every cycle sends the same set of canary prompts to the target model and compares
+        the new responses against the recorded baseline. Responses are scored on length,
+        validity, and semantic content. Three statistical tests look for differences;
+        significant ones are flagged as alerts for human review.
       </p>
     </div>
     <div class="masthead-actions">
-      <button id="run-btn" class="btn btn-primary" type="button">Run a check now</button>
-      <p id="run-note" class="run-note">Adds 10 new test prompts. The stats need 60 saved answers (about 6 checks) before the tests can run.</p>
+      <button id="run-btn" class="btn btn-primary" type="button">Run a check</button>
+      <p id="run-note" class="run-note">Each run records 10 responses. Statistical tests begin once 60 responses are stored.</p>
     </div>
   </section>
 
@@ -46,39 +46,39 @@
   <section class="kpi-row">
     <div class="kpi">
       <h2 class="kpi-label">Drift status</h2>
-      <div id="kpi-drift" class="kpi-value">Loading</div>
-      <div id="kpi-drift-sub" class="kpi-sub">newest check vs saved answers</div>
+      <div id="kpi-drift" class="kpi-value">...</div>
+      <div id="kpi-drift-sub" class="kpi-sub">most recent cycle vs baseline</div>
     </div>
     <div class="kpi">
       <h2 class="kpi-label">Tests that fired</h2>
-      <div id="kpi-flagged" class="kpi-value">Loading</div>
-      <div id="kpi-flagged-sub" class="kpi-sub">statements below 0.05 count as fired</div>
+      <div id="kpi-flagged" class="kpi-value">...</div>
+      <div id="kpi-flagged-sub" class="kpi-sub">p values below 0.05 after correction</div>
     </div>
     <div class="kpi">
-      <h2 class="kpi-label">Answers saved</h2>
-      <div id="kpi-runs" class="kpi-value">Loading</div>
-      <div id="kpi-runs-sub" class="kpi-sub">each check adds 10 more</div>
+      <h2 class="kpi-label">Responses stored</h2>
+      <div id="kpi-runs" class="kpi-value">...</div>
+      <div id="kpi-runs-sub" class="kpi-sub">each cycle records 10 more</div>
     </div>
     <div class="kpi">
-      <h2 class="kpi-label">Adapter in use</h2>
-      <div id="kpi-provider" class="kpi-value">Loading</div>
-      <div id="kpi-provider-sub" class="kpi-sub">demo runs a fake model, no API keys</div>
+      <h2 class="kpi-label">Target adapter</h2>
+      <div id="kpi-provider" class="kpi-value">...</div>
+      <div id="kpi-provider-sub" class="kpi-sub">no external calls leave this instance</div>
     </div>
   </section>
 
   <section class="grid-tests">
     <div class="panel">
       <div class="panel-head">
-        <h3>P values over recent checks</h3>
-        <span class="panel-hint">small p values are interesting. Dots sit under the dashed threshold.</span>
+        <h3>Adjusted p values, recent cycles</h3>
+        <span class="panel-hint">points below the dashed 0.05 line are significant</span>
       </div>
       <div id="pval-chart" class="pval-chart">
-        <p class="empty">Loading results...</p>
+        <p class="empty">No cycles recorded yet.</p>
       </div>
       <table class="data-table" id="results-table" hidden>
         <thead>
           <tr>
-            <th>When</th><th class="num">Length p</th><th class="num">Empty p</th>
+            <th>Cycle</th><th class="num">Length p</th><th class="num">Empty p</th>
             <th class="num">Meaning p</th><th>Tests fired</th><th>Outcome</th>
           </tr>
         </thead>
@@ -88,13 +88,13 @@
 
     <div class="panel">
       <div class="panel-head"><h3>Alerts</h3><span class="panel-hint">newest first</span></div>
-      <ul id="alerts-list" class="alert-list"><li class="empty">Loading alerts...</li></ul>
+      <ul id="alerts-list" class="alert-list"><li class="empty">Loading...</li></ul>
       <div class="panel-foot">
-        <h4>What the three tests do</h4>
+        <h4>Detector reference</h4>
         <ul class="legend">
-          <li><b>Length</b> is the letters-per-answer test. It asks whether answers got noticeably longer or shorter.</li>
-          <li><b>Empty</b> is the share of unhelpful answers. A jump usually means the model started refusing or breaking.</li>
-          <li><b>Meaning</b> is the text embedding test. It catches answers that drifted in topic or tone even when the looks are similar.</li>
+          <li><b>Length</b> (KS test): compares the distribution of response lengths.</li>
+          <li><b>Empty</b> (z test): tracks the rate of malformed or refused responses.</li>
+          <li><b>Meaning</b> (MMD test): compares response embeddings to detect semantic drift.</li>
         </ul>
       </div>
     </div>
@@ -102,22 +102,21 @@
 
   <section class="panel panel-api">
     <div class="panel-head">
-      <h3>You do not need this page</h3>
-      <span class="panel-hint">the service is also a plain JSON API. Try any of these in a browser.</span>
+      <h3>REST API</h3>
+      <span class="panel-hint">the dashboard is one client of this service; every route returns JSON</span>
     </div>
     <ul class="api-list">
-      <li><a href="/health"><code>GET /health</code></a><span>is the service up</span></li>
-      <li><a href="/drift/latest"><code>GET /drift/latest</code></a><span>the most recent outcome</span></li>
-      <li><a href="/drift/results"><code>GET /drift/results</code></a><span>the full result log</span></li>
-      <li><a href="/alerts"><code>GET /alerts</code></a><span>saved alert history</span></li>
-      <li><a href="/runs"><code>GET /runs</code></a><span>stored answers, page by page</span></li>
+      <li><a href="/health"><code>GET /health</code></a><span>service and database status</span></li>
+      <li><a href="/drift/latest"><code>GET /drift/latest</code></a><span>most recent outcome</span></li>
+      <li><a href="/drift/results"><code>GET /drift/results</code></a><span>full result log</span></li>
+      <li><a href="/alerts"><code>GET /alerts</code></a><span>alert history</span></li>
+      <li><a href="/runs"><code>GET /runs</code></a><span>stored responses</span></li>
       <li><a href="/stats"><code>GET /stats</code></a><span>exact counts</span></li>
-      <li><code>POST /runs</code><span>start a new check</span></li>
+      <li><code>POST /runs</code><span>start a new cycle</span></li>
     </ul>
-    <p class="api-note">Source and the full write up are in
-      <a href="https://github.com/chandresh-pandey-ml/llm-drift-monitor" target="_blank" rel="noopener">the GitHub repo</a>.
-      The demo runs a scripted fake model so no real provider is ever called.
-      This is a free hosting plan, so the page goes to sleep when nobody visits. If a load feels slow, wait about a minute and refresh.</p>
+    <p class="api-note">Source code and the full methodology are in
+      <a href="https://github.com/chandresh-pandey-ml/llm-drift-monitor" target="_blank" rel="noopener">the GitHub repository</a>.
+      This instance runs on Render's free plan and pauses between visits; allow up to a minute for the first request.</p>
   </section>
 
 </main>
