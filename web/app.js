@@ -3,7 +3,7 @@
 
 const ALPHA = 0.05;
 const FETCH_TIMEOUT_MS = 45000;   /* free tier cold starts can take a while */
-const WAKE_MAX_TRIES = 10;
+const WAKE_MAX_TRIES = 40;
 const WAKE_WAIT_MS = 8000;
 const $ = (id) => document.getElementById(id);
 
@@ -261,7 +261,7 @@ function ensureAwake() {
   if (state.awake) return Promise.resolve(true);
   if (wakePromise) return wakePromise;
   wakePromise = (async () => {
-    banner("The free hosting plan pauses this service between visits. Waking it up now; this takes up to a minute.");
+    banner("The free hosting plan pauses this service between visits, and deploys restart it too. Waking it up; this can take a few minutes. The page keeps trying by itself.");
     for (let i = 0; i < WAKE_MAX_TRIES; i++) {
       try {
         if (await loadAll()) {
@@ -273,7 +273,7 @@ function ensureAwake() {
       }
       await new Promise((r) => setTimeout(r, WAKE_WAIT_MS));
     }
-    banner("Still waking after a couple of minutes. Refresh the page or try again shortly.");
+    banner("Still not reachable after several minutes. Refresh the page, or check back shortly.");
     return false;
   })();
   wakePromise.finally(() => { wakePromise = null; });
@@ -292,16 +292,26 @@ async function runCheck() {
   btn.textContent = "Running...";
   try {
     if (!await ensureAwake()) {
-      note.textContent = "The service did not come up in time. Try again in a minute.";
+      note.textContent = "The service did not come up in time. Refresh the page and try again.";
       return;
     }
 
-    const started = await fetchJson("/runs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-    });
+    let started;
+    try {
+      started = await fetchJson("/runs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+    } catch (err) {
+      if (err.message && err.message.includes("429")) {
+        note.textContent = "A check was just started. It takes one to two minutes; the panels update when it finishes.";
+        await loadAll();
+        return;
+      }
+      throw err;
+    }
     const runId = started.run_id;
-    note.textContent = "Running. Ten responses are collected, which takes up to a minute.";
+    note.textContent = "Running. Ten responses are collected, which takes one to two minutes.";
 
     for (let i = 0; i < 120; i++) {
       await new Promise((r) => setTimeout(r, 2000));
