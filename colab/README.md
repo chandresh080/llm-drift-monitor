@@ -1,11 +1,11 @@
-# LLM Drift Monitor — Colab (Free Tier)
+# LLM Drift Monitor: Colab (Free Tier)
 
 Run the drift monitor against a free-tier OpenAI-compatible LLM from Google Colab.
 
 ## Files in this folder
 
-- `drift_monitor_colab.ipynb` — the notebook to upload/run in Colab
-- `config.yaml` — runtime config for the Colab environment
+- `drift_monitor_colab.ipynb`: the notebook to upload/run in Colab
+- `config.yaml`: runtime config for the Colab environment
 
 ## What to upload to Colab
 
@@ -26,6 +26,6 @@ In a new Colab notebook, upload the following files into `/content` (Colab file 
 ## Free-tier notes
 
 - Works with Gemini (e.g. `gemini-2.0-flash` via `https://generativelanguage.googleapis.com/v1beta/openai/`) or Grok (e.g. `grok-2` via `https://api.x.ai/v1`).
-- Free-tier API rate limits apply — keep probe batch sizes modest.
+- Free-tier API rate limits apply, keep probe batch sizes modest.
 - The first embedding run downloads `sentence-transformers/all-MiniLM-L6-v2` automatically.
 - The monitoring cycle may report insufficient reference data on a fresh database; run multiple cycles to build the reference window.
