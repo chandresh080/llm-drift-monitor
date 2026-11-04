@@ -70,6 +70,42 @@ Notes on the parts that are easy to get wrong:
   against any hosted OpenAI-compatible endpoint, so the monitor follows whatever the
   product actually calls in production.
 
+## Operational design
+
+The service runs in one small container, so the reliability choices are sized to that
+rather than borrowed from bigger deployments:
+
+- **Read cache.** Dashboard panels poll `/stats`, `/drift/latest`, `/drift/results`, and
+  `/alerts` through a 5 second TTL cache, so repeat polls and concurrent visitors collapse
+  into one set of queries per window. A finished cycle invalidates it, so panels never lag
+  behind a result.
+- **Single flight run queue.** Cycles write to SQLite and share the embedding model, so
+  they are serialized through a one worker queue. `POST /runs` accepts an `Idempotency-Key`
+  header and replays the original run id for duplicate submissions; a minimum interval
+  between submissions acts as a rate limit, returning `429` with `Retry-After`.
+- **Circuit breaker.** The target model adapter opens after three consecutive failed calls
+  and fails fast for a cooldown window, instead of paying full retries on every probe while
+  the endpoint is down. Retries themselves use exponential backoff with jitter on 429, 5xx,
+  timeouts, and network errors.
+- **Storage.** SQLite runs in WAL mode, so dashboard reads proceed while a cycle writes,
+  and every filter and ordering column is indexed.
+- **Observability.** `GET /metrics` exposes counters (cycles, failures, queue depth, cache
+  hit rate, rejections, peak memory, embedding model residency) in Prometheus text format.
+  Every request is logged as one structured JSON line with a correlation id (`X-Request-ID`
+  on both request and response), and run cycles log duration and outcome the same way.
+- **MLflow without the memory cost.** Each cycle logs its params, metrics, and the full
+  drift report to MLflow from a short lived subprocess: the serving process never imports
+  mlflow, so a memory capped deployment stays safe while every run still lands in the
+  tracking store, pinned to the exact git hash and config.
+
+Deliberately not used: read replicas, data sharding, and a CDN. There is one SQLite file
+per deployment, queried through indexed paths; sharding or replicas would add moving parts
+without a load problem to solve. Static assets are two files served from the same origin,
+so a CDN would only add a third place to cache. If the demo outgrows the free tier, the
+seams that matter are already in place: the tracking URI is configurable (a hosted MLflow
+backend drops in), the queue is the single place runs are admitted, and reads already go
+through one cache layer.
+
 ## How MLflow is used
 
 `tracking.py` wraps every daily run and every experiment sweep in an MLflow run, so

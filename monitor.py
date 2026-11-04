@@ -2,6 +2,7 @@ import json
 import yaml
 import os
 import time
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
@@ -26,6 +27,45 @@ def _generate_batch_concurrent(generate, prompts: List[str],
         return [generate(p) for p in prompts]
     with ThreadPoolExecutor(max_workers=min(max_workers, len(prompts))) as pool:
         return list(pool.map(generate, prompts))
+
+
+class CircuitBreaker:
+    """Fail fast when the target model is down instead of paying full retries.
+
+    After a run of consecutive failures every call raises immediately for a
+    cooldown window; the first call after the window probes the target again.
+    Successful calls reset the failure count.
+    """
+
+    def __init__(self, failure_threshold: int = 3, cooldown_seconds: float = 60.0):
+        self.failure_threshold = failure_threshold
+        self.cooldown_seconds = cooldown_seconds
+        self._consecutive_failures = 0
+        self._open_until = 0.0
+        self._lock = threading.Lock()
+
+    @property
+    def open(self) -> bool:
+        with self._lock:
+            return time.monotonic() < self._open_until
+
+    def before_call(self) -> None:
+        with self._lock:
+            if time.monotonic() < self._open_until:
+                raise RuntimeError(
+                    "Target model is unavailable (circuit open); retry after the cooldown")
+            self._consecutive_failures = 0
+
+    def record_success(self) -> None:
+        with self._lock:
+            self._consecutive_failures = 0
+
+    def record_failure(self) -> None:
+        with self._lock:
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= self.failure_threshold:
+                self._open_until = time.monotonic() + self.cooldown_seconds
+                self._consecutive_failures = 0
 
 
 def _post_json_with_retry(
@@ -121,9 +161,11 @@ class LocalLLMAdapter:
         self.temperature = float(temperature)
         self.max_tokens = int(max_tokens)
         self.max_retries = int(max_retries)
+        self.breaker = CircuitBreaker()
 
     def generate(self, prompt: str) -> str:
         """Generate one response using Ollama's non-streaming endpoint."""
+        self.breaker.before_call()
         payload = {
             "model": self.model_id,
             "prompt": prompt,
@@ -133,14 +175,19 @@ class LocalLLMAdapter:
                 "num_predict": self.max_tokens,
             },
         }
-        result = _post_json_with_retry(
-            url=f"{self.base_url}/api/generate",
-            payload=payload,
-            timeout=self.timeout,
-            max_retries=self.max_retries,
-            label="Ollama",
-            headers={"Content-Type": "application/json"},
-        )
+        try:
+            result = _post_json_with_retry(
+                url=f"{self.base_url}/api/generate",
+                payload=payload,
+                timeout=self.timeout,
+                max_retries=self.max_retries,
+                label="Ollama",
+                headers={"Content-Type": "application/json"},
+            )
+        except Exception:
+            self.breaker.record_failure()
+            raise
+        self.breaker.record_success()
         generated = result.get("response")
         if not isinstance(generated, str):
             raise RuntimeError("Ollama response is missing the generated text")
@@ -167,6 +214,7 @@ class OpenAICompatibleAdapter:
         self.temperature = float(temperature)
         self.max_tokens = int(max_tokens)
         self.max_retries = int(max_retries)
+        self.breaker = CircuitBreaker()
         if not self.api_key:
             raise RuntimeError(
                 "OpenAI-compatible API key is required. Set OPENAI_API_KEY (e.g. in .env) "
@@ -175,6 +223,7 @@ class OpenAICompatibleAdapter:
 
     def generate(self, prompt: str) -> str:
         """Generate one response using an OpenAI-compatible /chat/completions endpoint."""
+        self.breaker.before_call()
         payload = {
             "model": self.model_id,
             "messages": [
@@ -184,17 +233,22 @@ class OpenAICompatibleAdapter:
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
         }
-        result = _post_json_with_retry(
-            url=f"{self.base_url}/chat/completions",
-            payload=payload,
-            timeout=self.timeout,
-            max_retries=self.max_retries,
-            label="OpenAI-compatible endpoint",
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.api_key}",
-            },
-        )
+        try:
+            result = _post_json_with_retry(
+                url=f"{self.base_url}/chat/completions",
+                payload=payload,
+                timeout=self.timeout,
+                max_retries=self.max_retries,
+                label="OpenAI-compatible endpoint",
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self.api_key}",
+                },
+            )
+        except Exception:
+            self.breaker.record_failure()
+            raise
+        self.breaker.record_success()
         generated = result.get("choices", [{}])[0].get("message", {}).get("content")
         if not isinstance(generated, str):
             raise RuntimeError("OpenAI-compatible response is missing the generated text")
@@ -359,11 +413,16 @@ class LLMDriftMonitor:
         return successful_runs >= min_runs
 
     def _log_mlflow_run(self, results: Dict[str, Any], ref_size: int, cur_size: int,
-                        ref_embeddings: List[Any], cur_embeddings: List[Any],
+                        ref_embeddings: List[Any], cur_embeddings: List[float],
                         cur_lengths: List[float]) -> None:
-        """Best-effort MLflow logging of one monitoring cycle (Phase 2). Never raises."""
+        """Best-effort MLflow logging of one monitoring cycle. Never raises.
+
+        The logging happens in a short lived subprocess so mlflow (and its
+        memory footprint) never enters the serving process; this keeps a
+        memory capped deployment safe while every cycle still lands in MLflow.
+        """
         try:
-            from tracking import drift_run, log_drift_run, get_git_hash
+            from tracking import log_drift_run_detached, get_git_hash
             from drift_tests import compute_median_bandwidth
 
             bandwidth = 1.0
@@ -371,6 +430,11 @@ class LLMDriftMonitor:
                 import numpy as np
                 all_emb = np.vstack([ref_embeddings, cur_embeddings])
                 bandwidth = round(compute_median_bandwidth(all_emb), 4)
+
+            # The logging subprocess runs while this process may be near its
+            # memory ceiling (model held warm), so drop the model before mlflow
+            # exists in a second process. The next cycle reloads it on demand.
+            self.embedder.release()
 
             flagged_count = int(
                 results.get('ks_significant', 0) +
@@ -380,41 +444,38 @@ class LLMDriftMonitor:
 
             total_tokens = sum(cur_lengths) / 4.0 if cur_lengths else 0.0
 
-            with drift_run(
-                run_name=f"drift_run_{results.get('timestamp', 'unknown')}",
-                experiment_name="llm-drift-daily",
-                tags={"run_type": "daily_probe", "model": str(self.adapter.model_id)}
-            ) as run:
-                log_drift_run(
-                    run,
-                    params={
-                        'target_provider': type(self.adapter).__name__,
-                        'model': self.adapter.model_id,
-                        'prompt_set_version': self.canary_prompts.get('version'),
-                        'embedding_model': self.config['embeddings']['model_name'],
-                        'alpha': self.config['alerts']['significance_threshold'],
-                        'ref_window_size': ref_size,
-                        'cur_window_size': cur_size,
-                        'kernel_bandwidth': bandwidth,
-                        'git_hash': get_git_hash(),
-                        'seed': self.random_seed,
-                    },
-                    metrics={
-                        'ks_stat': results.get('ks_statistic'),
-                        'z_stat': results.get('proportion_z_stat'),
-                        'mmd_stat': results.get('mmd_statistic'),
-                        'ks_pvalue': results.get('ks_pvalue'),
-                        'z_pvalue': results.get('proportion_z_pvalue'),
-                        'mmd_pvalue': results.get('mmd_pvalue'),
-                        'bh_ks_pvalue': results.get('ks_adjusted_pvalue'),
-                        'bh_z_pvalue': results.get('proportion_z_adjusted_pvalue'),
-                        'bh_mmd_pvalue': results.get('mmd_adjusted_pvalue'),
-                        'flagged_probes': flagged_count,
-                        'mean_latency': 0.0,
-                        'token_counts': total_tokens,
-                    },
-                    artifacts={'drift_report': results},
-                )
+            log_drift_run_detached({
+                'run_name': f"drift_run_{results.get('timestamp', 'unknown')}",
+                'experiment_name': 'llm-drift-daily',
+                'tags': {"run_type": "daily_probe", "model": str(self.adapter.model_id)},
+                'params': {
+                    'target_provider': type(self.adapter).__name__,
+                    'model': self.adapter.model_id,
+                    'prompt_set_version': self.canary_prompts.get('version'),
+                    'embedding_model': self.config['embeddings']['model_name'],
+                    'alpha': self.config['alerts']['significance_threshold'],
+                    'ref_window_size': ref_size,
+                    'cur_window_size': cur_size,
+                    'kernel_bandwidth': bandwidth,
+                    'git_hash': get_git_hash(),
+                    'seed': self.random_seed,
+                },
+                'metrics': {
+                    'ks_stat': results.get('ks_statistic'),
+                    'z_stat': results.get('proportion_z_stat'),
+                    'mmd_stat': results.get('mmd_statistic'),
+                    'ks_pvalue': results.get('ks_pvalue'),
+                    'z_pvalue': results.get('proportion_z_pvalue'),
+                    'mmd_pvalue': results.get('mmd_pvalue'),
+                    'bh_ks_pvalue': results.get('ks_adjusted_pvalue'),
+                    'bh_z_pvalue': results.get('proportion_z_adjusted_pvalue'),
+                    'bh_mmd_pvalue': results.get('mmd_adjusted_pvalue'),
+                    'flagged_probes': flagged_count,
+                    'mean_latency': 0.0,
+                    'token_counts': total_tokens,
+                },
+                'artifacts': {'drift_report': results},
+            })
         except Exception:
             # MLflow logging failure should never crash the monitoring pipeline
             pass

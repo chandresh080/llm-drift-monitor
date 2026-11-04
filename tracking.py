@@ -1,7 +1,9 @@
 """MLflow tracking utilities for drift monitoring runs and experiments."""
 
+import json
 import os
 import subprocess
+import sys
 from contextlib import contextmanager
 from typing import Any, Dict, Optional, List, Union
 
@@ -13,6 +15,36 @@ MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", DEFAULT_TRACKING_URI
 def get_tracking_uri() -> str:
     """Return configured MLflow tracking URI."""
     return MLFLOW_TRACKING_URI
+
+
+def log_drift_run_detached(report: Dict[str, Any]) -> None:
+    """Log a drift run in a short lived subprocess and return immediately.
+
+    The report is piped to `python -m tracking` as JSON. mlflow is imported
+    only inside that process, so the serving process never pays its memory
+    cost or its import time. Failures are logged, never raised: tracking is
+    provenance, not a dependency of the pipeline.
+    """
+    payload = json.dumps(report).encode("utf-8")
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "tracking"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        cwd=PROJECT_ROOT,
+    )
+    try:
+        proc.stdin.write(payload)
+        proc.stdin.close()
+    except BrokenPipeError:
+        pass
+    # Reap asynchronously so a failed import does not leave a zombie.
+    def _wait():
+        err = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
+        if proc.wait() != 0 and err:
+            print(f"MLflow subprocess failed: {err.strip()[-500:]}", flush=True)
+    import threading
+    threading.Thread(target=_wait, daemon=True).start()
 
 
 def get_git_hash() -> str:
@@ -100,3 +132,23 @@ def log_drift_run(
             for file_path, artifact_dir in artifact_files.items():
                 if file_path and os.path.exists(file_path):
                     mlflow.log_artifact(file_path, artifact_path=artifact_dir)
+
+
+def _main() -> None:
+    """Subprocess entrypoint: read a run report as JSON from stdin and log it."""
+    report = json.loads(sys.stdin.read())
+    with drift_run(
+        run_name=report["run_name"],
+        experiment_name=report.get("experiment_name", "llm-drift-daily"),
+        tags=report.get("tags"),
+    ) as run:
+        log_drift_run(
+            run,
+            params=report.get("params"),
+            metrics=report.get("metrics"),
+            artifacts=report.get("artifacts"),
+        )
+
+
+if __name__ == "__main__":
+    _main()

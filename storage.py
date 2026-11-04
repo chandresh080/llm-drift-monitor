@@ -87,6 +87,16 @@ class DriftMonitorStorage:
                     overall_quality_degradation INTEGER
                 )
             """)
+            # Every read path filters or orders by these columns; without the
+            # indexes each dashboard poll scans the tables.
+            conn.executescript("""
+                CREATE INDEX IF NOT EXISTS idx_probe_runs_timestamp ON probe_runs (timestamp);
+                CREATE INDEX IF NOT EXISTS idx_probe_runs_status ON probe_runs (run_status);
+                CREATE INDEX IF NOT EXISTS idx_response_features_run ON response_features (run_id);
+                CREATE INDEX IF NOT EXISTS idx_embeddings_run ON embeddings (run_id);
+                CREATE INDEX IF NOT EXISTS idx_test_results_timestamp ON test_results (timestamp);
+                CREATE INDEX IF NOT EXISTS idx_alerts_timestamp ON alerts (timestamp);
+            """)
             conn.commit()
     
     def insert_probe_run(self, 
@@ -197,8 +207,10 @@ class DriftMonitorStorage:
     @contextmanager
     def _db(self):
         """Provide a sqlite connection that commits on success / rolls back on error."""
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=5.0)
         try:
+            # WAL lets dashboard reads proceed while a run cycle is writing.
+            conn.execute("PRAGMA journal_mode=WAL")
             yield conn
             conn.commit()
         finally:

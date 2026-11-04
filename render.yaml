@@ -8,10 +8,12 @@ services:
     envVars:
       - key: DRIFT_MONITOR_CONFIG
         value: /app/config/config.cloud.yaml
-      # Free tier: 512 MiB. mlflow import during runs tips it over, so skip tracking
-      # on the host; test results and alerts persist in SQLite regardless.
+      # Tracking is memory safe now: each cycle logs to MLflow from a short
+      # lived subprocess, so mlflow never enters the serving process. Runs
+      # land in the container's SQLite-backed mlflow.db; the free tier resets
+      # the disk on redeploy, so the store is per deployment lifetime.
       - key: DRIFT_MONITOR_TRACKING
-        value: "0"
+        value: "1"
       - key: PYTHONUNBUFFERED
         value: "1"
       # Free-tier RAM hygiene: cap glibc arenas + torch/transformers thread pools.
