@@ -193,10 +193,16 @@ def health() -> Dict[str, Any]:
 _WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 
 if os.path.isdir(_WEB_DIR):
-    from fastapi.staticfiles import StaticFiles
-
-    app.mount("/static", StaticFiles(directory=_WEB_DIR), name="static")
+    from fastapi.responses import FileResponse
 
     @app.get("/", include_in_schema=False)
     def index():
-        return FileResponse(os.path.join(_WEB_DIR, "index.html"))
+        return FileResponse(os.path.join(_WEB_DIR, "index.html"),
+                            headers={"Cache-Control": "no-store"})
+
+    @app.get("/static/{asset_name}", include_in_schema=False)
+    def static_asset(asset_name: str):
+        return FileResponse(
+            os.path.join(_WEB_DIR, os.path.basename(asset_name)),
+            headers={"Cache-Control": "no-store"},
+        )
