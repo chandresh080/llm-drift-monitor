@@ -4,8 +4,7 @@ A monitoring tool that watches whether an LLM's answers quietly change over time
 tells you when they do.
 
 Live demo: [llm-drift-monitor-api.onrender.com](https://llm-drift-monitor-api.onrender.com)
-(dashboard at `/`). It runs a scripted fake model, so nothing you do there calls a real
-provider or costs anything.
+(dashboard at `/`). The hosted demo is self-contained and needs no API keys.
 
 [![CI](https://github.com/chandresh-pandey-ml/llm-drift-monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/chandresh-pandey-ml/llm-drift-monitor/actions/workflows/ci.yml)
 
@@ -21,6 +20,76 @@ weeks later.
 Checking by hand doesn't work either. One answer tells you almost nothing, because
 models vary naturally from answer to answer. And reading dozens of answers every
 morning doesn't scale.
+
+## System design
+
+Everything is one pipeline: fixed prompts go out, answers come back, statistics decide
+whether the answers changed, and every step is recorded.
+
+```mermaid
+flowchart LR
+    SCHED(["cron job or POST /runs"]) --> M["monitor.py<br/>one monitoring cycle"]
+    CP[("canary_prompts.json<br/>40 versioned prompts")] --> M
+
+    M --> AD["adapter<br/>(pluggable target)"]
+    AD --> OLL["Ollama<br/>(local model)"]
+    AD --> PROV["OpenAI-compatible<br/>provider endpoint"]
+    OLL --> ANS["answers"]
+    PROV --> ANS
+
+    ANS --> FEAT["features:<br/>length, validity"]
+    ANS --> EMB["embeddings.py<br/>MiniLM on CPU"]
+
+    FEAT --> DB[("SQLite:<br/>probe_runs, features,<br/>embeddings, results, alerts")]
+    EMB --> DB
+
+    DB --> REF["reference window<br/>(oldest runs)"]
+    DB --> CUR["current window<br/>(newest runs)"]
+    REF --> T["drift_tests.py:<br/>KS, z, MMD"]
+    CUR --> T
+    T --> BH["Benjamini-Hochberg<br/>alpha = 0.05"]
+    BH --> AL["alerts"]
+    BH --> RES["test results"]
+    AL --> DB
+    RES --> DB
+
+    RES -.-> TRK["tracking.py<br/>MLflow: params, metrics, artifacts"]
+    TRK -.-> MUI["MLflow UI"]
+
+    DB --> API["FastAPI<br/>/runs, /drift, /alerts, /health"]
+    API --> DASH["web dashboard<br/>(same origin)"]
+    API --> CLI["any JSON client"]
+```
+
+Notes on the parts that are easy to get wrong:
+
+- Windows are disjoint by construction: the reference window is the oldest stored runs,
+  the current window is the newest run of the cycle. Tests never compare a run against
+  itself.
+- The adapter is pluggable. The same pipeline runs against a local model over Ollama or
+  against any hosted OpenAI-compatible endpoint, so the monitor follows whatever the
+  product actually calls in production.
+
+## How MLflow is used
+
+`tracking.py` wraps every daily run and every experiment sweep in an MLflow run, so
+each check is reproducible and comparable:
+
+| Captured | Examples |
+|---|---|
+| Params | target model, prompt set version, embedding model, alpha, window sizes, kernel bandwidth, git hash, seed |
+| Metrics | KS / z / MMD statistics, raw p values, BH-adjusted p values, number of flagged tests, token counts |
+| Artifacts | the full drift report as JSON |
+
+That makes two things possible. First, provenance: every alert on the dashboard
+corresponds to an MLflow run pinned to an exact commit and config. Second, iteration:
+detector configurations (embedding model, bandwidth heuristic, window sizes) are logged
+as separate runs, so the MLflow UI can compare them directly instead of trusting a
+notebook.
+
+Daily runs land in the `llm-drift-daily` experiment; experiment sweeps land in
+`llm-drift-experiments`. The backend is a local SQLite file, so the whole setup runs
+with no server and no credentials.
 
 ## How this project handles it
 
@@ -62,13 +131,13 @@ takes a `--seed`, so the numbers above can be regenerated.
 
 ## Try it
 
-- Live demo: open the URL above and press "Run a check now". Ten scripted answers get
-  stored, panels refresh. At least 60 saved answers are needed for the tests to run,
+- Live demo: open the URL above and press "Run a check now". Ten answers get stored
+  and the panels refresh. At least 60 saved answers are needed for the tests to run,
   and the demo history already contains a batch where the answers deliberately changed,
   so the alert panel has real entries on a fresh visit.
 - Local, no keys needed: `python -m scripts.generate_seed_db`, then
   `uvicorn api:app --port 8000` and open `http://localhost:8000`.
-- With your own local model (Ollama): point `config.yaml` at `target.type: local`
+- With your own local model (Ollama): point `config/config.yaml` at `target.type: local`
   and run `python -m main --run` as a daily cron job.
 
 The service is also a plain JSON API: `GET /health`, `GET /drift/latest`,
@@ -77,15 +146,16 @@ dashboard is a thin page over it.
 
 ## Repo layout
 
-- `monitor.py`: the pipeline: adapters (fake, Ollama, OpenAI-compatible), probe runs,
-  window comparisons, alerts. Retries with backoff on 429, 5xx, timeouts.
+- `monitor.py`: the pipeline: pluggable adapters, probe runs, window comparisons,
+  alerts. Retries with backoff on 429, 5xx, timeouts.
 - `drift_tests.py`: the three tests plus BH correction and the RBF kernel.
 - `storage.py`: SQLite schema and queries.
 - `embeddings.py`: MiniLM embeddings for the MMD test.
+- `tracking.py`: MLflow logging (see the section above).
 - `api.py`: FastAPI service; `web/` is the dashboard page it serves.
+- `config/`: runtime configs and the canary prompt set.
 - `scripts/generate_seed_db.py`: builds the demo history with a baked-in shift.
 - `experiments/`: the evaluation described above.
-- `tracking.py`: MLflow logging for local runs.
 
 ## Testing
 
@@ -101,5 +171,5 @@ and the retry behaviour of the network adapters with a mocked transport.
   would not be seen.
 - The numbers in "Does it actually work" come from simulations; real traffic windows
   are noisier than the synthetic ones.
-- On the free hosting tier the database resets on redeploys and MLflow logging is
-  switched off; locally both work fully.
+- The free hosting tier has a small memory budget and a database that resets on
+  redeploys; locally, persistence and MLflow logging are unrestricted.
