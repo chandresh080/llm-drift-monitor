@@ -10,7 +10,7 @@ from monitor import LLMDriftMonitor
 @pytest.fixture
 def fake_monitor(tmp_path):
     """LLMDriftMonitor wired to a fake adapter and an isolated temp database."""
-    with open("config.yaml", "r") as config_file:
+    with open("config/config.yaml", "r") as config_file:
         config = yaml.safe_load(config_file)
     config["target"] = {"type": "fake", "model_id": "fake-test", "temperature": 0.0}
     config["data"]["db_path"] = str(tmp_path / "test.db")

@@ -24,7 +24,7 @@ SHIFT_SEED = 999
 PROBES_PER_CYCLE = 10
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CLOUD_CONFIG = os.path.join(REPO_ROOT, "config.cloud.yaml")
+CLOUD_CONFIG = os.path.join(REPO_ROOT, "config", "config.cloud.yaml")
 SEED_DB = os.path.join(REPO_ROOT, "data", "seed_drift.db")
 
 

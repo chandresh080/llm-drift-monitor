@@ -20,7 +20,7 @@ logger = logging.getLogger("llm_drift_monitor.api")
 
 
 def _get_monitor() -> LLMDriftMonitor:
-    return LLMDriftMonitor(config_path=os.environ.get("DRIFT_MONITOR_CONFIG", "config.yaml"))
+    return LLMDriftMonitor(config_path=os.environ.get("DRIFT_MONITOR_CONFIG", "config/config.yaml"))
 
 
 def _get_storage() -> DriftMonitorStorage:

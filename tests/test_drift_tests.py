@@ -165,7 +165,7 @@ class TestPipelineIntegration:
         # Keep this storage smoke test independent of a local Ollama installation.
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = os.path.join(tmpdir, "test.db")
-            with open("config.yaml", "r") as config_file:
+            with open("config/config.yaml", "r") as config_file:
                 config = yaml.safe_load(config_file)
             config["target"] = {"type": "fake", "model_id": "fake-test", "temperature": 0.0}
             config["data"]["db_path"] = db_path

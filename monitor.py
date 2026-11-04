@@ -192,9 +192,9 @@ class OpenAICompatibleAdapter:
 class LLMDriftMonitor:
     """Main monitoring pipeline."""
     
-    def __init__(self, config_path: str = "config.yaml"):
+    def __init__(self, config_path: str = "config/config.yaml"):
         self.config = self._load_config(config_path)
-        # Load environment variables from a local .env file (see .env.example)
+        # Load environment variables from a local .env file (see config/.env.example)
         try:
             from dotenv import load_dotenv
             load_dotenv()
@@ -225,7 +225,7 @@ class LLMDriftMonitor:
     
     def _load_canary_prompts(self) -> Dict[str, Any]:
         """Load canary prompts."""
-        with open('canary_prompts.json', 'r') as f:
+        with open('config/canary_prompts.json', 'r') as f:
             return json.load(f)
     
     def _create_adapter(self):
