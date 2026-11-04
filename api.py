@@ -2,8 +2,10 @@
 
 import json
 import os
+import threading
 import uuid
 import logging
+from functools import lru_cache
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException
@@ -19,12 +21,46 @@ _runs: Dict[str, Dict[str, Any]] = {}
 logger = logging.getLogger("llm_drift_monitor.api")
 
 
+@lru_cache(maxsize=1)
 def _get_monitor() -> LLMDriftMonitor:
+    """One monitor instance per process.
+
+    Building it costs config parsing, adapter construction, and (after the
+    first cycle) a warm embedding model, so every request reusing one instance
+    keeps read endpoints and run polling cheap and repeat cycles skip the
+    model load entirely.
+    """
     return LLMDriftMonitor(config_path=os.environ.get("DRIFT_MONITOR_CONFIG", "config/config.yaml"))
 
 
 def _get_storage() -> DriftMonitorStorage:
     return _get_monitor().storage
+
+
+# The embedding model is kept warm so back to back cycles skip its load time,
+# but it is dropped after a quiet period: the free hosting tier has a 512 MiB
+# budget, and a model parked in memory between rare visits wastes most of it.
+MODEL_IDLE_RELEASE_SECONDS = 300
+_release_lock = threading.Lock()
+_release_timer: Optional[threading.Timer] = None
+
+
+def _release_embedding_model() -> None:
+    try:
+        _get_monitor().embedder.release()
+    except Exception:
+        logger.exception("releasing the embedding model failed")
+
+
+def _schedule_model_release() -> None:
+    global _release_timer
+    with _release_lock:
+        if _release_timer is not None:
+            _release_timer.cancel()
+        timer = threading.Timer(MODEL_IDLE_RELEASE_SECONDS, _release_embedding_model)
+        timer.daemon = True
+        _release_timer = timer
+        timer.start()
 
 
 def _run_monitor_task(run_id: str) -> None:
@@ -42,6 +78,8 @@ def _run_monitor_task(run_id: str) -> None:
     except Exception as exc:
         _runs[run_id] = {"status": "failed", "error": str(exc)}
         logger.error(json.dumps({"event": "drift_run_failed", "run_id": run_id, "error": str(exc)}))
+    finally:
+        _schedule_model_release()
 
 
 class RunResponse(BaseModel):

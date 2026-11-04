@@ -1,3 +1,4 @@
+import os
 import numpy as np
 from typing import List, Tuple
 import logging
@@ -17,9 +18,22 @@ class EmbeddingExtractor:
     def model(self):
         """Lazy load the embedding model."""
         if self._model is None:
+            import torch
+            # Small model: wide thread pools add overhead rather than speed.
+            # Respect an explicit OMP_NUM_THREADS from the deployment; cap otherwise.
+            omp = os.environ.get("OMP_NUM_THREADS")
+            torch.set_num_threads(max(1, int(omp)) if omp else min(2, os.cpu_count() or 1))
             from sentence_transformers import SentenceTransformer
             self._model = SentenceTransformer(self.model_name, device=self.device)
         return self._model
+
+    def release(self) -> None:
+        """Drop the loaded model so the process returns to its idle footprint."""
+        if self._model is not None:
+            self._model = None
+            import gc
+            gc.collect()
+            logger.info("Embedding model released")
     
     def extract_embedding(self, text: str) -> List[float]:
         """Extract sentence embedding for a text."""

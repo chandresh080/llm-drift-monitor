@@ -234,31 +234,24 @@ async function fetchJson(path, options = {}) {
 }
 
 async function loadAll() {
-  try {
-    /* Health first: the cheapest call, and it tells us the service is up. */
-    const health = await fetchJson("/health");
-    state.health = health;
-    state.awake = true;
+  /* All endpoints are queried at once: on a remote host each round trip
+     costs latency, and no panel needs to wait for another. */
+  const [health, stats, latest, results, alerts] = await Promise.all([
+    fetchJson("/health"),
+    fetchJson("/stats").catch(() => null),
+    fetchJson("/drift/latest").catch(() => null),
+    fetchJson("/drift/results?limit=20").catch(() => []),
+    fetchJson("/alerts?limit=10").catch(() => []),
+  ]);
 
-    /* The rest loads independently; a failure in one piece leaves the others intact. */
-    const [stats, latest, results, alerts] = await Promise.all([
-      fetchJson("/stats").catch(() => null),
-      fetchJson("/drift/latest").catch(() => null),
-      fetchJson("/drift/results?limit=20").catch(() => []),
-      fetchJson("/alerts?limit=10").catch(() => []),
-    ]);
-    state.stats = stats;
-    state.latest = latest;
-    state.results = results || [];
-    state.alerts = alerts || [];
-    renderAll();
-    return true;
-  } catch (err) {
-    /* Almost certainly a sleeping instance. Keep placeholders, never fake numbers. */
-    state.awake = false;
-    renderAll();
-    return false;
-  }
+  state.health = health;
+  state.stats = stats;
+  state.latest = latest;
+  state.results = results || [];
+  state.alerts = alerts || [];
+  state.awake = true;
+  renderAll();
+  return true;
 }
 
 /* One wake loop for the whole page; every caller shares it. */
@@ -270,9 +263,13 @@ function ensureAwake() {
   wakePromise = (async () => {
     banner("The free hosting plan pauses this service between visits. Waking it up now; this takes up to a minute.");
     for (let i = 0; i < WAKE_MAX_TRIES; i++) {
-      if (await loadAll()) {
-        banner("Connected. Panels below show the stored results.");
-        return true;
+      try {
+        if (await loadAll()) {
+          banner("Connected. Panels below show the stored results.");
+          return true;
+        }
+      } catch (err) {
+        state.awake = false;   /* sleeping instance; keep placeholders, never fake numbers */
       }
       await new Promise((r) => setTimeout(r, WAKE_WAIT_MS));
     }

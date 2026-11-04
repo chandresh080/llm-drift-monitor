@@ -2,6 +2,7 @@ import json
 import yaml
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 import random
@@ -11,6 +12,20 @@ from urllib.request import Request, urlopen
 from storage import DriftMonitorStorage
 from embeddings import EmbeddingExtractor
 from drift_tests import ks_test, two_proportion_z_test, mmd_test, benjamini_hochberg_correction
+
+
+def _generate_batch_concurrent(generate, prompts: List[str],
+                               max_workers: int = 8) -> List[str]:
+    """Run prompt generation concurrently, preserving order.
+
+    HTTP adapters spend their time waiting on the target model, so overlapping
+    the calls shortens a cycle from the sum of response times to roughly the
+    longest one. Order is preserved, and each call keeps its own retry logic.
+    """
+    if len(prompts) <= 1:
+        return [generate(p) for p in prompts]
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(prompts))) as pool:
+        return list(pool.map(generate, prompts))
 
 
 def _post_json_with_retry(
@@ -132,8 +147,8 @@ class LocalLLMAdapter:
         return generated
 
     def generate_batch(self, prompts: List[str]) -> List[str]:
-        """Generate responses sequentially, preserving prompt order."""
-        return [self.generate(prompt) for prompt in prompts]
+        """Generate responses for prompts concurrently; each call is HTTP bound."""
+        return _generate_batch_concurrent(self.generate, prompts)
 
 class OpenAICompatibleAdapter:
     """Call an OpenAI-compatible chat-completions API (e.g. Grok via api.x.ai, Gemini via Google)."""
@@ -186,8 +201,8 @@ class OpenAICompatibleAdapter:
         return generated
 
     def generate_batch(self, prompts: List[str]) -> List[str]:
-        """Generate responses sequentially, preserving prompt order."""
-        return [self.generate(prompt) for prompt in prompts]
+        """Generate responses for prompts concurrently; each call is HTTP bound."""
+        return _generate_batch_concurrent(self.generate, prompts)
 
 class LLMDriftMonitor:
     """Main monitoring pipeline."""
