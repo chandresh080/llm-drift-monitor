@@ -313,3 +313,21 @@ class DriftMonitorStorage:
             conn.execute("DELETE FROM alerts")
             conn.execute("DELETE FROM probe_runs")
             conn.commit()
+
+    def count_all_runs(self) -> int:
+        """Count total probe runs."""
+        with self._db() as conn:
+            cursor = conn.execute("SELECT COUNT(*) FROM probe_runs")
+            return cursor.fetchone()[0]
+
+    def count_test_results(self) -> int:
+        """Count total test results."""
+        with self._db() as conn:
+            cursor = conn.execute("SELECT COUNT(*) FROM test_results")
+            return cursor.fetchone()[0]
+
+    def count_alerts(self) -> int:
+        """Count total alerts."""
+        with self._db() as conn:
+            cursor = conn.execute("SELECT COUNT(*) FROM alerts")
+            return cursor.fetchone()[0]

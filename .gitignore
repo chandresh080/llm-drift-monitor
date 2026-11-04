@@ -72,3 +72,8 @@ sentence_transformers_cache/
 # MLflow
 mlruns/
 mlflow.db
+
+# Analysis reports (documentation)
+FINAL_LOGIC_ANALYSIS.md
+LOGIC_REVIEW_SUMMARY.md
+THOROUGH_REVIEW_2.md
