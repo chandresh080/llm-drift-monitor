@@ -1,0 +1,23 @@
+# The free hosting tier pauses the service after 15 minutes without traffic,
+# and a paused service takes a minute or more to answer its first request.
+# This workflow pings the health endpoint every ten minutes so the demo
+# answers quickly for visitors. It consumes a few seconds of Actions time
+# per ping and nothing else.
+name: Ping the demo
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Request the health endpoint
+        run: |
+          code=$(curl -s -o /tmp/health.json -w "%{http_code}" -m 90 \
+            https://llm-drift-monitor-api.onrender.com/health)
+          cat /tmp/health.json
+          echo
+          test "$code" = "200"

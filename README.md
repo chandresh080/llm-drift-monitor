@@ -93,7 +93,10 @@ rather than borrowed from bigger deployments:
   hit rate, rejections, peak memory, embedding model residency) in Prometheus text format.
   Every request is logged as one structured JSON line with a correlation id (`X-Request-ID`
   on both request and response), and run cycles log duration and outcome the same way.
-- **MLflow without the memory cost.** Each cycle logs its params, metrics, and the full
+- **Keeping the demo awake.** The free tier pauses the service after 15 minutes without
+  traffic, and the first request to a paused instance waits out the spin up. A scheduled
+  GitHub Action pings the health endpoint every ten minutes, so the demo usually answers
+  immediately; without that workflow a fresh visit can take a minute or two.- **MLflow without the memory cost.** Each cycle logs its params, metrics, and the full
   drift report to MLflow from a short lived subprocess: the serving process never imports
   mlflow, so a memory capped deployment stays safe while every run still lands in the
   tracking store, pinned to the exact git hash and config.
