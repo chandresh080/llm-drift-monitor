@@ -386,7 +386,12 @@ $("run-btn").addEventListener("click", runCheck);
 ensureAwake();
 setInterval(() => {
   if (!runInFlight && document.visibilityState === "visible" && state.awake) {
-    loadAll().catch(() => { state.awake = false; });
+    loadAll().catch(() => {
+      /* The instance fell asleep between visits; go back to waking state and
+         let the shared wake loop bring the panels back. */
+      state.awake = false;
+      ensureAwake();
+    });
   }
 }, 60000);
 /* Keep the wait counter live while a wake is in progress. */

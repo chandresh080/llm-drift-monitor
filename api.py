@@ -272,18 +272,24 @@ async def create_run(request: Request) -> RunResponse:
             detail=f"A check was started less than {MIN_RUN_INTERVAL_SECONDS:.0f}s ago. Try again shortly.",
             headers={"Retry-After": str(retry_after)},
         )
+    run_id = str(uuid.uuid4())
+    # Register before enqueueing: the worker may finish a warm cycle in well
+    # under a second, and a late "running" write must never clobber a result.
+    _runs[run_id] = {"status": "running"}
     try:
-        run_id = str(uuid.uuid4())
         _run_queue.put_nowait(run_id)
     except queue.Full:
+        del _runs[run_id]
         _metrics["runs_rejected_total"] += 1
         raise HTTPException(status_code=429, detail="The run queue is full. Try again shortly.")
 
-    _runs[run_id] = {"status": "running"}
     _last_enqueue[0] = now
     if idem_key:
         with _idempotency_lock:
             _idempotency[idem_key] = run_id
+            # Bounded: drop the oldest keys so the map cannot grow forever.
+            while len(_idempotency) > 1000:
+                _idempotency.pop(next(iter(_idempotency)))
     return RunResponse(run_id=run_id, status="running")
 
 
