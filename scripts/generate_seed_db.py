@@ -5,7 +5,7 @@ deterministic FakeLLMAdapter (no network, no keys):
 
   Era 1 ("null"):    adapter seed 42  -> 50 probes / 5 cycles  (baseline,
                      tests can't fire yet: need ref_size + cur_size = 60 runs)
-  Era 2 ("shift"):   adapter seed 999 -> 50 probes / 5 cycles; from the 60th
+  Era 2 ("shift"):   adapter seed 185 -> 50 probes / 5 cycles; from the 60th
                      run onward every cycle runs the drift tests against the
                      seed-42 reference window, storing test_results + alerts.
 
@@ -20,7 +20,7 @@ import yaml
 from monitor import LLMDriftMonitor, FakeLLMAdapter
 
 NULL_SEED = 42
-SHIFT_SEED = 999
+SHIFT_SEED = 185
 PROBES_PER_CYCLE = 10
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -64,7 +64,7 @@ def main() -> None:
     print("Era 1: null baseline (seed 42)")
     run_era(monitor, NULL_SEED, num_cycles=5, label="null")
 
-    print("\nEra 2: injected behavioral shift (seed 999)")
+    print("\nEra 2: injected behavioral shift (seed 185)")
     run_era(monitor, SHIFT_SEED, num_cycles=5, label="shift")
 
     n_runs = monitor.storage.count_successful_runs()

@@ -37,7 +37,7 @@ flowchart LR
     OLL --> ANS["answers"]
     PROV --> ANS
 
-    ANS --> FEAT["features:<br/>length, validity"]
+    ANS --> FEAT["features:<br/>length, validity, refusal,<br/>repetition, format"]
     ANS --> EMB["embeddings.py<br/>MiniLM on CPU"]
 
     FEAT --> DB[("SQLite:<br/>probe_runs, features,<br/>embeddings, results, alerts")]
@@ -48,7 +48,8 @@ flowchart LR
     REF --> T["drift_tests.py:<br/>KS, z, MMD"]
     CUR --> T
     T --> BH["Benjamini-Hochberg<br/>alpha = 0.05"]
-    BH --> AL["alerts"]
+    BH --> SEQ["sequential policy:<br/>persist 2 cycles"]
+    SEQ --> AL["alerts with<br/>effect sizes +<br/>affected categories"]
     BH --> RES["test results"]
     AL --> DB
     RES --> DB
@@ -134,8 +135,10 @@ with no server and no credentials.
 ## How this project handles it
 
 The monitor runs the same 40 test prompts against the target model on a schedule and
-stores every answer in SQLite. Each check then compares a batch of recent answers with
-a saved baseline, using three small statistical tests:
+stores every answer in SQLite. Each cycle probes a fixed, category balanced subset of
+the suite (two prompts per category per batch), so every cycle covers the whole suite,
+not just its head. Each check then compares a batch of recent answers with a saved
+baseline, using three small statistical tests:
 
 1. **Answer length**: a KS test asks whether recent answers are noticeably longer or
    shorter than the baseline ones.
@@ -147,10 +150,25 @@ a saved baseline, using three small statistical tests:
    (kernel based, permutation p value) asks whether the overall meaning mix changed,
    which catches topic or tone drift that length and counts miss.
 
+Alongside the embeddings, every answer gets rule based behavioral features: refusal
+markers, repetition ratio, code block presence, and token count. These stay separate
+from the semantic tests on purpose: an answer can change in meaning without getting
+worse, and a refusal detector that is a handful of regexes should be described as
+exactly that.
+
 Three tests at once should not make three chances to cry wolf, so raw p values go
 through Benjamini-Hochberg correction at alpha = 0.05 before anything is flagged.
-When tests fire, the monitor writes an alert. Nothing is auto-panic: a flag means
-"look at the answers", and a person decides.
+And because the same test runs every cycle, a flag has to persist for two consecutive
+cycles before an alert fires: the correction handles comparisons across tests, the
+persistence rule handles the comparison across time. The persistence requirement and
+its planning horizon are configuration, not folklore.
+
+When an alert does fire, it carries its evidence: which tests fired, the MMD statistic,
+the centroid distance baseline, the percentage length shift, and which prompt categories
+are affected. Category-wise MMD runs on wider windows (five cycles worth, still matched
+to the same prompts and still disjoint from the baseline), with its own multiple testing
+correction, so "the model changed" comes with "where it changed". Nothing is
+auto-panic: a flag means "look at the answers", and a person decides.
 
 ## Does it actually work
 
@@ -175,8 +193,10 @@ takes a `--seed`, so the numbers above can be regenerated.
 
 - Live demo: open the URL above and press "Run a check now". Ten answers get stored
   and the panels refresh. At least 60 saved answers are needed for the tests to run,
-  and the demo history already contains a batch where the answers deliberately changed,
-  so the alert panel has real entries on a fresh visit.
+  and the demo history already contains a stretch where the answers deliberately
+  changed: the shift is caught by MMD (usually with KS), the alerts start on the
+  second flagged cycle because a flag must persist, and each alert names the affected
+  prompt categories, so the alert panel shows the full pipeline on a fresh visit.
 - Local, no keys needed: `python -m scripts.generate_seed_db`, then
   `uvicorn api:app --port 8000` and open `http://localhost:8000`.
 - With your own local model (Ollama): point `config/config.yaml` at `target.type: local`
@@ -201,14 +221,18 @@ dashboard is a thin page over it.
 
 ## Testing
 
-`pytest` (24 tests) and `ruff check .` run in CI on every push. The tests cover the BH
-correction against a hand-checked example, the reference window logic, alert storage,
-and the retry behaviour of the network adapters with a mocked transport.
+`pytest` (55 tests) and `ruff check .` run in CI on every push. The tests cover the BH
+correction against a hand-checked example, the reference window logic, the behavioral
+features, the sequential alert policy (streaks and the alpha spending schedule), the
+centroid baseline, alert storage, and the retry behaviour of the network adapters with
+a mocked transport.
 
 ## Honest limitations
 
 - A flag is a hint, not proof of bad quality: no labeled ground truth exists here, so
   a change can also be benign (an update made answers friendlier).
+- The refusal markers are a handful of explicit patterns, not a validated classifier:
+  they catch obvious refusals and would miss polite or indirect ones.
 - 40 prompts across 5 categories is a small lens: a shift in an untested behavior
   would not be seen.
 - The numbers in "Does it actually work" come from simulations; real traffic windows

@@ -18,11 +18,17 @@ reference:
 monitoring:
   batch_size: 10
   random_seed: 42
+  run_category_tests: true
+  category_window_cycles: 5
+  min_samples_per_category: 8
 
 alerts:
   significance_threshold: 0.05
   quality_degradation_threshold: 0.3
   min_sample_size: 10
+  min_consecutive_cycles: 2
+  use_alpha_spending: false
+  planning_horizon_cycles: 30
 
 data:
   # Seeded demo database (committed); run probes extend it live at runtime.

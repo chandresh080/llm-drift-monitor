@@ -22,14 +22,20 @@ reference:
 
 # Monitoring configuration
 monitoring:
-  batch_size: 10  # Number of prompts to run per cycle
+  batch_size: 10  # Number of prompts to run per cycle, drawn balanced across categories
   random_seed: 42  # For reproducibility
+  run_category_tests: true  # Per category MMD for drift localization
+  category_window_cycles: 5  # Category tests span several cycles per window
+  min_samples_per_category: 8  # Categories below this on either side are skipped
 
 # Alert configuration
 alerts:
   significance_threshold: 0.05  # p-value threshold before correction
   quality_degradation_threshold: 0.3  # Minimum proportion of invalid responses to flag as quality issue
   min_sample_size: 10  # Minimum sample size for statistical tests
+  min_consecutive_cycles: 2  # Drift must persist this many consecutive cycles before an alert fires
+  use_alpha_spending: false  # O'Brien Fleming type boundary on top of persistence
+  planning_horizon_cycles: 30  # Planning horizon when alpha spending is enabled
 
 # Persistence
 data:

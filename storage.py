@@ -48,6 +48,7 @@ class DriftMonitorStorage:
                     FOREIGN KEY (run_id) REFERENCES probe_runs (id)
                 )
             """)
+            self._migrate_feature_columns(conn)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS embeddings (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -138,13 +139,28 @@ class DriftMonitorStorage:
             conn.commit()
             return run_id
     
-    def insert_response_features(self, run_id: int, response_length: int, is_valid: bool):
+    def _migrate_feature_columns(self, conn: sqlite3.Connection) -> None:
+        """Add behavioral feature columns introduced after the first schema."""
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(response_features)")}
+        for column in ("is_refusal INTEGER", "repetition_ratio REAL", "token_count INTEGER",
+                       "has_code_block INTEGER"):
+            name = column.split()[0]
+            if name not in existing:
+                conn.execute(f"ALTER TABLE response_features ADD COLUMN {column}")
+
+    def insert_response_features(self, run_id: int, response_length: int, is_valid: bool,
+                                 is_refusal: Optional[int] = None,
+                                 repetition_ratio: Optional[float] = None,
+                                 token_count: Optional[int] = None,
+                                 has_code_block: Optional[int] = None):
         """Insert response features for a run."""
         with self._db() as conn:
             conn.execute("""
-                INSERT INTO response_features (run_id, response_length, is_valid)
-                VALUES (?, ?, ?)
-            """, (run_id, response_length, 1 if is_valid else 0))
+                INSERT INTO response_features (run_id, response_length, is_valid,
+                    is_refusal, repetition_ratio, token_count, has_code_block)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (run_id, response_length, 1 if is_valid else 0,
+                  is_refusal, repetition_ratio, token_count, has_code_block))
             conn.commit()
     
     def insert_embedding(self, run_id: int, embedding: List[float]):
@@ -205,17 +221,22 @@ class DriftMonitorStorage:
         """Get all probe runs."""
         with self._db() as conn:
             conn.row_factory = sqlite3.Row
-            query = "SELECT * FROM probe_runs ORDER BY timestamp DESC"
+            query = "SELECT * FROM probe_runs ORDER BY id DESC"
             if limit:
                 query += f" LIMIT {limit}"
             cursor = conn.execute(query)
             return [dict(row) for row in cursor.fetchall()]
     
     def get_all_runs_ordered(self) -> List[Dict[str, Any]]:
-        """Get all probe runs in chronological order (oldest first)."""
+        """Get all probe runs in chronological order (oldest first).
+
+        Ordered by insertion id rather than timestamp: wall clock steps (NTP
+        corrections) can move recorded timestamps backwards, and window
+        selection must follow true insert order.
+        """
         with self._db() as conn:
             conn.row_factory = sqlite3.Row
-            cur = conn.execute("SELECT * FROM probe_runs ORDER BY timestamp ASC, id ASC")
+            cur = conn.execute("SELECT * FROM probe_runs ORDER BY id ASC")
             return [dict(r) for r in cur.fetchall()]
     
     @contextmanager
@@ -286,17 +307,67 @@ class DriftMonitorStorage:
         """Get all test results."""
         with self._db() as conn:
             conn.row_factory = sqlite3.Row
-            query = "SELECT * FROM test_results ORDER BY timestamp DESC"
+            query = "SELECT * FROM test_results ORDER BY id DESC"
             if limit:
                 query += f" LIMIT {limit}"
             cursor = conn.execute(query)
             return [dict(row) for row in cursor.fetchall()]
+
+    def get_recent_drift_flags(self, limit: int) -> List[int]:
+        """Oldest-first drift flags for the most recent stored results.
+
+        Callers include the just-inserted current result in `limit`, so the
+        list ends with the current cycle and feeds the alert persistence rule.
+        """
+        with self._db() as conn:
+            rows = conn.execute(
+                "SELECT overall_drift_detected FROM test_results "
+                "ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [int(r[0]) for r in reversed(rows)]
+
+    def get_category_embeddings(self, run_ids: List[int]) -> Dict[str, List[List[float]]]:
+        """Embeddings grouped by prompt category, for per category MMD tests."""
+        if not run_ids:
+            return {}
+        with self._db() as conn:
+            placeholders = ','.join('?' for _ in run_ids)
+            rows = conn.execute(f"""
+                SELECT pr.category, e.embedding_blob
+                FROM embeddings e
+                JOIN probe_runs pr ON e.run_id = pr.id
+                WHERE pr.id IN ({placeholders}) AND pr.run_status = 'success'
+                  AND pr.category IS NOT NULL
+            """, run_ids).fetchall()
+        grouped: Dict[str, List[List[float]]] = {}
+        for category, blob in rows:
+            try:
+                grouped.setdefault(category, []).append(json.loads(blob))
+            except Exception:
+                continue
+        return grouped
+
+    def get_features_for_runs(self, run_ids: List[int]) -> List[Dict[str, Any]]:
+        """Behavioral feature rows for the given runs."""
+        if not run_ids:
+            return []
+        with self._db() as conn:
+            conn.row_factory = sqlite3.Row
+            placeholders = ','.join('?' for _ in run_ids)
+            cursor = conn.execute(f"""
+                SELECT is_refusal, repetition_ratio, token_count, has_code_block
+                FROM response_features
+                WHERE run_id IN ({placeholders})
+            """, run_ids)
+            return [dict(r) for r in cursor.fetchall()]
+
+
     
     def get_all_alerts(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """Get all alerts."""
         with self._db() as conn:
             conn.row_factory = sqlite3.Row
-            query = "SELECT * FROM alerts ORDER BY timestamp DESC"
+            query = "SELECT * FROM alerts ORDER BY id DESC"
             if limit:
                 query += f" LIMIT {limit}"
             cursor = conn.execute(query)

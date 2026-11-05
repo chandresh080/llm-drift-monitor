@@ -13,7 +13,11 @@ from urllib.request import Request, urlopen
 
 from storage import DriftMonitorStorage
 from embeddings import EmbeddingExtractor
-from drift_tests import ks_test, proportion_test, mmd_test, benjamini_hochberg_correction
+from drift_tests import (ks_test, proportion_test, mmd_test,
+                         benjamini_hochberg_correction, centroid_distance)
+from behavior_features import extract_behavior_features, refusal_rate
+from sequential_testing import (spent_alpha, consecutive_flagged_history,
+                                consecutive_streak)
 
 
 def _generate_batch_concurrent(generate, prompts: List[str],
@@ -302,6 +306,32 @@ class OpenAICompatibleAdapter:
         """Generate responses for prompts concurrently; each call is HTTP bound."""
         return _generate_batch_concurrent(self.generate, prompts)
 
+def balanced_category_subset(items: List[Dict[str, Any]],
+                             num: Optional[int]) -> List[Dict[str, Any]]:
+    """A fixed, category balanced subset of the canary suite.
+
+    Taking the first N prompts would exercise only the first category in every
+    cycle. Round robing across categories in a stable order keeps the
+    selection deterministic (same prompts each cycle, so windows stay matched)
+    while spreading coverage over the whole suite.
+    """
+    if num is None or num >= len(items):
+        return list(items)
+    by_category: Dict[str, List[Dict[str, Any]]] = {}
+    for item in items:
+        by_category.setdefault(item['category'], []).append(item)
+    categories = sorted(by_category)
+    selected: List[Dict[str, Any]] = []
+    index = 0
+    while len(selected) < num:
+        for category in categories:
+            bucket = by_category[category]
+            if index < len(bucket) and len(selected) < num:
+                selected.append(bucket[index])
+        index += 1
+    return selected
+
+
 class LLMDriftMonitor:
     """Main monitoring pipeline."""
     
@@ -406,8 +436,7 @@ class LLMDriftMonitor:
         Returns list of run IDs created.
         """
         items = self.canary_prompts['prompts']
-        if num_prompts is not None:
-            items = items[:num_prompts]
+        items = balanced_category_subset(items, num_prompts)
 
         prompt_version = self.canary_prompts['version']
         model_id = self.adapter.model_id
@@ -429,6 +458,7 @@ class LLMDriftMonitor:
         for i, (item, response) in enumerate(zip(items, responses)):
             # Extract features
             response_length, is_valid = self.embedder.extract_response_features(response)
+            behavior = extract_behavior_features(response)
 
             # Determine run status
             run_status = 'success' if is_valid else 'failed'
@@ -452,8 +482,14 @@ class LLMDriftMonitor:
             )
             run_ids.append(run_id)
 
-            # Insert response features
-            self.storage.insert_response_features(run_id, response_length, is_valid)
+            # Insert response features, including the behavioral signals
+            self.storage.insert_response_features(
+                run_id, response_length, is_valid,
+                is_refusal=behavior['is_refusal'],
+                repetition_ratio=behavior['repetition_ratio'],
+                token_count=behavior['token_count'],
+                has_code_block=behavior['has_code_block'],
+            )
 
             # Insert embedding
             self.storage.insert_embedding(run_id, embeddings[i])
@@ -540,15 +576,31 @@ class LLMDriftMonitor:
                     'bh_ks_pvalue': results.get('ks_adjusted_pvalue'),
                     'bh_z_pvalue': results.get('proportion_z_adjusted_pvalue'),
                     'bh_mmd_pvalue': results.get('mmd_adjusted_pvalue'),
+                    'centroid_distance': results.get('centroid_distance'),
+                    'length_shift_pct': results.get('length_shift_pct'),
+                    'ref_refusal_rate': results.get('ref_refusal_rate'),
+                    'cur_refusal_rate': results.get('cur_refusal_rate'),
                     'flagged_probes': flagged_count,
                     'mean_latency': getattr(self, 'last_cycle_latency_seconds', None),
                     'token_counts': total_tokens,
+                    **self._category_mlflow_metrics(results),
                 },
                 'artifacts': {'drift_report': results},
             })
         except Exception:
             # MLflow logging failure should never crash the monitoring pipeline
             pass
+
+    def _category_mlflow_metrics(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        """Flatten category test results into cat_<name>_ p-value metrics."""
+        metrics: Dict[str, Any] = {}
+        for name, test in (results.get('category_tests') or {}).items():
+            safe = ''.join(c if c.isalnum() else '_' for c in name)
+            if test.get('pvalue') is not None:
+                metrics[f'cat_{safe}_pvalue'] = test['pvalue']
+            if test.get('adjusted_pvalue') is not None:
+                metrics[f'cat_{safe}_adj_pvalue'] = test['adjusted_pvalue']
+        return metrics
 
     def run_monitoring_cycle(self, num_probes: Optional[int] = None) -> Dict[str, Any]:
         """
@@ -578,7 +630,8 @@ class LLMDriftMonitor:
 
         # Get all runs in order (including failed)
         all_runs = self.storage.get_all_runs_ordered()
-        cur_prompt_ids = [item['id'] for item in self.canary_prompts['prompts'][:num_probes]]
+        cycle_items = balanced_category_subset(self.canary_prompts['prompts'], num_probes)
+        cur_prompt_ids = [item['id'] for item in cycle_items]
         ref_runs, cur_runs = select_matched_windows(
             all_runs, self.canary_prompts['version'], cur_prompt_ids, ref_size, cur_size)
 
@@ -665,6 +718,46 @@ class LLMDriftMonitor:
         results['mmd_statistic'] = mmd_stat
         results['mmd_pvalue'] = mmd_pval
         results['mmd_raw_pvalue'] = mmd_pval
+
+        # Effect sizes, kept separate from significance: with enough samples a
+        # trivial change becomes significant, so alerts report magnitude too.
+        # Centroid distance is the mean-shift baseline MMD has to beat: a
+        # large MMD with a near-zero centroid distance marks a shape change
+        # (spread or mixture) that a mean based monitor would miss.
+        if ref_lengths and cur_lengths:
+            ref_mean_len = sum(ref_lengths) / len(ref_lengths)
+            cur_mean_len = sum(cur_lengths) / len(cur_lengths)
+            results['ref_mean_length'] = round(ref_mean_len, 1)
+            results['cur_mean_length'] = round(cur_mean_len, 1)
+            if ref_mean_len > 0:
+                results['length_shift_pct'] = round(
+                    100.0 * (cur_mean_len - ref_mean_len) / ref_mean_len, 1)
+        else:
+            results['ref_mean_length'] = None
+            results['cur_mean_length'] = None
+            results['length_shift_pct'] = None
+        results['centroid_distance'] = round(
+            centroid_distance(ref_embeddings, cur_embeddings), 6)
+
+        # Behavioral rates from the stored features of the current window
+        ref_features = self.storage.get_features_for_runs(ref_run_ids)
+        cur_features = self.storage.get_features_for_runs(cur_run_ids)
+        ref_refusals = [f.get('is_refusal') or 0 for f in ref_features]
+        cur_refusals = [f.get('is_refusal') or 0 for f in cur_features]
+        results['ref_refusal_rate'] = round(refusal_rate(ref_refusals), 4)
+        results['cur_refusal_rate'] = round(refusal_rate(cur_refusals), 4)
+        results['refusal_rate_change'] = round(
+            results['cur_refusal_rate'] - results['ref_refusal_rate'], 4)
+
+        # Category-wise MMD, so a detected change can be localized to the
+        # part of the prompt suite that moved. Category windows are wider than
+        # the headline windows (a 10-run window holds about two samples per
+        # category, far too thin to test), staying disjoint from the reference
+        # window and matched to the same prompt set. The family of category
+        # p-values gets its own Benjamini Hochberg correction, independent of
+        # the three test family.
+        results['category_tests'] = self._run_category_tests(
+            all_runs, cur_prompt_ids, cur_size)
         
         # Benjamini-Hochberg correction on the three p-values
         pvalues = [ks_pval, prop_pval, mmd_pval]
@@ -722,26 +815,123 @@ class LLMDriftMonitor:
             'alerts': alerts
         }
     
+    def _run_category_tests(self, all_runs: List[Dict[str, Any]],
+                            cur_prompt_ids: List[str], cur_size: int) -> Dict[str, Dict[str, Any]]:
+        """Per category MMD tests, or an empty dict when disabled.
+
+        Gated by monitoring.run_category_tests. The category current window
+        spans monitoring.category_window_cycles cycles so each category gets
+        a usable sample count; windows stay disjoint from the reference and
+        matched to the same prompt ids and suite version. Categories without
+        enough samples on both sides are reported as skipped rather than
+        tested, so a thin category cannot produce a junk p value; the tested
+        family gets its own Benjamini Hochberg correction, separate from the
+        three-test family computed over the pooled windows.
+        """
+        cfg = self.config.get('monitoring', {})
+        if not cfg.get('run_category_tests', False):
+            return {}
+        min_per_cat = cfg.get('min_samples_per_category', 8)
+        cycles = cfg.get('category_window_cycles', 5)
+
+        ref_size = self.config['reference']['window_size']
+        prompt_version = self.canary_prompts['version']
+        ref_runs_cat, cur_runs_cat = select_matched_windows(
+            all_runs, prompt_version, cur_prompt_ids, ref_size, cur_size * cycles)
+        if not ref_runs_cat or not cur_runs_cat:
+            return {}
+        ref_by_cat = self.storage.get_category_embeddings(
+            self.storage.run_ids_from_runs(ref_runs_cat))
+        cur_by_cat = self.storage.get_category_embeddings(
+            self.storage.run_ids_from_runs(cur_runs_cat))
+        categories = sorted(set(ref_by_cat) | set(cur_by_cat))
+        if not categories:
+            return {}
+
+        entry: Dict[str, Dict[str, Any]] = {}
+        tested_categories: List[str] = []
+        raw_pvalues: List[float] = []
+        for category in categories:
+            ref = ref_by_cat.get(category, [])
+            cur = cur_by_cat.get(category, [])
+            if len(ref) < min_per_cat or len(cur) < min_per_cat:
+                entry[category] = {
+                    'mmd_statistic': None, 'pvalue': None,
+                    'reason': f'insufficient samples ({len(ref)}/{len(cur)})'}
+                continue
+            stat, pval = mmd_test(ref, cur, n_permutations=500,
+                                  random_seed=self.random_seed)
+            entry[category] = {'mmd_statistic': round(stat, 6),
+                               'pvalue': round(pval, 6)}
+            tested_categories.append(category)
+            raw_pvalues.append(pval)
+
+        if raw_pvalues:
+            alpha = self.config.get('alerts', {}).get('significance_threshold', 0.05)
+            adjusted, flags = benjamini_hochberg_correction(raw_pvalues, alpha=alpha)
+            for category, adj_p, flag in zip(tested_categories, adjusted, flags):
+                entry[category]['adjusted_pvalue'] = adj_p
+                entry[category]['significant'] = int(flag)
+        return entry
+
     def _generate_alerts(self, results: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Generate alerts based on test results."""
+        """Generate alerts based on test results.
+
+        The drift alert is gated by the sequential policy: the per cycle BH
+        flag must persist for alerts.min_consecutive_cycles consecutive stored
+        results (the current one included) before anyone is paged. Isolated
+        borderline cycles are recorded in test_results but stay silent. With
+        alerts.use_alpha_spending enabled, the current cycle must also clear
+        the O'Brien Fleming type boundary for its position in the planning
+        horizon, which makes early alerts demand strong evidence.
+        """
         alerts = []
         timestamp = results['timestamp']
-        
+        alert_cfg = self.config.get('alerts', {})
+        min_consecutive = int(alert_cfg.get('min_consecutive_cycles', 1))
+
         # Alert for drift
         if results.get('overall_drift_detected', 0):
-            alert = {
-                'timestamp': timestamp,
-                'alert_type': 'drift',
-                'severity': 'medium',
-                'message': f"Behavioral drift detected. Significant tests: {results.get('bh_significant_tests', [])}",
-                'ks_pvalue': results.get('ks_adjusted_pvalue'),
-                'proportion_z_pvalue': results.get('proportion_z_adjusted_pvalue'),
-                'mmd_pvalue': results.get('mmd_adjusted_pvalue'),
-                'overall_drift_detected': 1,
-                'overall_quality_degradation': results.get('overall_quality_degradation', 0)
-            }
-            alerts.append(alert)
-            self.storage.insert_alert(alert)
+            history = self.storage.get_recent_drift_flags(min_consecutive)
+            persistence_ok = consecutive_flagged_history(history, min_consecutive)
+            if persistence_ok and alert_cfg.get('use_alpha_spending', False):
+                # Cycle index: number of stored results after inserting this one.
+                cycle_index = len(self.storage.get_recent_drift_flags(1_000_000))
+                horizon = int(alert_cfg.get('planning_horizon_cycles', 30))
+                alpha = alert_cfg.get('significance_threshold', 0.05)
+                strongest = min(
+                    p for p in (results.get('ks_adjusted_pvalue'),
+                                results.get('proportion_z_adjusted_pvalue'),
+                                results.get('mmd_adjusted_pvalue'))
+                    if p is not None)
+                persistence_ok = strongest <= spent_alpha(cycle_index, horizon, alpha)
+
+            if persistence_ok:
+                affected = sorted(
+                    name for name, t in (results.get('category_tests') or {}).items()
+                    if t.get('significant'))
+                parts = [
+                    f"Significant tests: {results.get('bh_significant_tests', [])}",
+                    f"streak: {consecutive_streak(history)} cycles",
+                    f"MMD stat: {results.get('mmd_statistic')}",
+                    f"centroid distance: {results.get('centroid_distance')}",
+                    f"length shift: {results.get('length_shift_pct')}%",
+                ]
+                if affected:
+                    parts.append(f"affected categories: {affected}")
+                alert = {
+                    'timestamp': timestamp,
+                    'alert_type': 'drift',
+                    'severity': 'medium',
+                    'message': 'Behavioral drift detected. ' + '; '.join(parts),
+                    'ks_pvalue': results.get('ks_adjusted_pvalue'),
+                    'proportion_z_pvalue': results.get('proportion_z_adjusted_pvalue'),
+                    'mmd_pvalue': results.get('mmd_adjusted_pvalue'),
+                    'overall_drift_detected': 1,
+                    'overall_quality_degradation': results.get('overall_quality_degradation', 0)
+                }
+                alerts.append(alert)
+                self.storage.insert_alert(alert)
         
         # Alert for quality degradation
         if results.get('overall_quality_degradation', 0):

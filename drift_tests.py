@@ -273,3 +273,26 @@ def benjamini_hochberg_correction(pvalues: List[float], alpha: float = 0.05) -> 
         is_significant[idx] = adjusted_sorted[i] <= alpha
     
     return list(adjusted_pvalues), list(is_significant)
+
+
+def centroid_distance(X: List[List[float]], Y: List[List[float]]) -> float:
+    """Cosine distance between the mean embeddings of two samples.
+
+    The simple baseline the MMD test has to beat: it responds to a mean
+    shift in embedding space but is blind to changes in distribution shape,
+    spread, or mixture proportions. A large MMD with a small centroid
+    distance is the signature of a higher moment change that a mean based
+    monitor would miss entirely.
+    """
+    if len(X) == 0 or len(Y) == 0:
+        return 0.0
+    A = np.asarray(X, dtype=float)
+    B = np.asarray(Y, dtype=float)
+    mu_r = A.mean(axis=0)
+    mu_c = B.mean(axis=0)
+    norm_r = np.linalg.norm(mu_r)
+    norm_c = np.linalg.norm(mu_c)
+    if norm_r == 0.0 or norm_c == 0.0:
+        return 1.0 if norm_r != norm_c else 0.0
+    cosine = float(np.dot(mu_r, mu_c) / (norm_r * norm_c))
+    return float(1.0 - max(-1.0, min(1.0, cosine)))

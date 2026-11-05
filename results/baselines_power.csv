@@ -1,0 +1,4 @@
+shift,ks_power_length_shift,mmd_power_mean_shift,centroid_power_mean_shift,centroid_power_variance_shift
+0.0,0.0,0.0,0.0,0.01
+0.2,0.0,0.0,0.0,0.01
+0.4,0.15,1.0,0.0,0.01
