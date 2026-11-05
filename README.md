@@ -63,9 +63,10 @@ flowchart LR
 
 Notes on the parts that are easy to get wrong:
 
-- Windows are disjoint by construction: the reference window is the oldest stored runs,
-  the current window is the newest run of the cycle. Tests never compare a run against
-  itself.
+- Windows compare like with like: only runs from the same prompt set version and the
+  same prompt ids as the current cycle are eligible, so reference and current always
+  contain responses to the same prompts, and the windows are disjoint by construction.
+  A changed prompt mix cannot masquerade as model drift.
 - The adapter is pluggable. The same pipeline runs against a local model over Ollama or
   against any hosted OpenAI-compatible endpoint, so the monitor follows whatever the
   product actually calls in production.
@@ -138,8 +139,10 @@ a saved baseline, using three small statistical tests:
 
 1. **Answer length**: a KS test asks whether recent answers are noticeably longer or
    shorter than the baseline ones.
-2. **Useful answers**: a two-proportion test on how often answers come back empty.
-   A jump here usually means the model started refusing or breaking.
+2. **Useful answers**: a two-sample test on how often answers come back empty.
+   A jump here usually means the model started refusing or breaking. Fisher's exact
+   test is used when the expected cell counts are too small for the normal
+   approximation, and the z-test otherwise.
 3. **What answers mean**: answers are turned into text embeddings, and an MMD test
    (kernel based, permutation p value) asks whether the overall meaning mix changed,
    which catches topic or tone drift that length and counts miss.

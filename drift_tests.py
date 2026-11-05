@@ -69,6 +69,34 @@ def two_proportion_z_test(reference_validity: List[int], current_validity: List[
     
     return float(z_stat), float(max(0.0, min(1.0, pvalue)))
 
+
+def proportion_test(reference_validity: List[int], current_validity: List[int]) -> Tuple[float, float, str]:
+    """Two-sample test on a binary proportion, choosing the right approximation.
+
+    The z-test is the standard choice, but its normal approximation is poor
+    when an expected cell of the 2x2 table falls below five observations.
+    With the small windows this monitor runs, that happens often, so the
+    test dispatches to Fisher's exact test instead and reports which was used.
+
+    Returns (statistic, pvalue, method) where statistic is the z score for
+    the z-test and the odds ratio for Fisher's exact test.
+    """
+    n1, n2 = len(reference_validity), len(current_validity)
+    if n1 == 0 or n2 == 0:
+        return float('nan'), 1.0, 'fisher'
+    successes = sum(reference_validity) + sum(current_validity)
+    pooled = successes / (n1 + n2)
+    expected_cells = [pooled * n1, (1 - pooled) * n1, pooled * n2, (1 - pooled) * n2]
+    if any(cell < 5 for cell in expected_cells):
+        table = [
+            [sum(reference_validity), n1 - sum(reference_validity)],
+            [sum(current_validity), n2 - sum(current_validity)],
+        ]
+        odds_ratio, pvalue = stats.fisher_exact(table, alternative='two-sided')
+        return float(odds_ratio), float(pvalue), 'fisher'
+    z_stat, pvalue = two_proportion_z_test(reference_validity, current_validity)
+    return z_stat, pvalue, 'z'
+
 def rbf_kernel(x: np.ndarray, y: np.ndarray, sigma: float = 1.0) -> float:
     """Compute RBF kernel k(x,y) = exp(-||x-y||^2 / (2*sigma^2))"""
     if sigma <= 0:

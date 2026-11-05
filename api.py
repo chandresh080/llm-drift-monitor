@@ -368,17 +368,23 @@ def get_stats() -> Dict[str, Any]:
 
 @app.get("/health")
 def health() -> Dict[str, Any]:
-    """Check DB and (optionally) provider health."""
+    """Check DB and target provider health."""
     db_ok = True
     try:
         storage = _get_storage()
         storage.count_successful_runs()
     except Exception:
         db_ok = False
+    try:
+        provider_ok = bool(_get_monitor().adapter.ping())
+    except Exception:
+        provider_ok = False
+    status = "ok" if (db_ok and provider_ok) else "degraded"
     return {
-        "status": "ok" if db_ok else "degraded",
+        "status": status,
         "db": "ok" if db_ok else "unreachable",
         "provider": _get_monitor().adapter.model_id,
+        "provider_status": "ok" if provider_ok else "unreachable",
     }
 
 

@@ -44,6 +44,26 @@ class EmbeddingExtractor:
             return list(np.zeros(emb.shape[1]))
         embedding = self.model.encode([text], convert_to_numpy=True)
         return list(embedding[0])
+
+    def extract_embeddings(self, texts: List[str]) -> List[List[float]]:
+        """Extract embeddings for several texts in one batched encode call.
+
+        A cycle embeds its whole response batch at once: one pass through the
+        model instead of one forward pass per text.
+        """
+        if not texts:
+            return []
+        # Empty responses encode as "dummy" then map to a zero vector, so a
+        # failed generation cannot masquerade as a real embedding.
+        non_empty_texts = [t if (t and t.strip()) else "dummy" for t in texts]
+        enc = self.model.encode(non_empty_texts, convert_to_numpy=True)
+        results: List[List[float]] = []
+        for row, text in zip(enc, texts):
+            if not text or not text.strip():
+                results.append(list(np.zeros(row.shape[0])))
+            else:
+                results.append(list(row))
+        return results
     
     def extract_response_features(self, response_text: str) -> Tuple[int, bool]:
         """

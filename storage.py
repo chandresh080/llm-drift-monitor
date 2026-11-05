@@ -13,6 +13,14 @@ class DriftMonitorStorage:
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         self._init_db()
     
+    def _migrate_columns(self, conn: sqlite3.Connection) -> None:
+        """Add columns introduced after the first schema, if missing."""
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(probe_runs)")}
+        for column in ("prompt_id TEXT", "category TEXT", "cycle_id TEXT"):
+            name = column.split()[0]
+            if name not in existing:
+                conn.execute(f"ALTER TABLE probe_runs ADD COLUMN {column}")
+
     def _init_db(self):
         """Initialize database schema."""
         with self._db() as conn:
@@ -30,6 +38,7 @@ class DriftMonitorStorage:
                     adapter_type TEXT NOT NULL
                 )
             """)
+            self._migrate_columns(conn)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS response_features (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -108,17 +117,22 @@ class DriftMonitorStorage:
                         response_length: int,
                         is_valid: bool,
                         run_status: str,
-                        adapter_type: str) -> int:
+                        adapter_type: str,
+                        prompt_id: Optional[str] = None,
+                        category: Optional[str] = None,
+                        cycle_id: Optional[str] = None) -> int:
         """Insert a probe run and return its ID."""
         with self._db() as conn:
             cursor = conn.execute("""
                 INSERT INTO probe_runs (
                     timestamp, prompt_version, prompt_text, model_id,
-                    response_text, response_length, is_valid, run_status, adapter_type
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    response_text, response_length, is_valid, run_status, adapter_type,
+                    prompt_id, category, cycle_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 timestamp, prompt_version, prompt_text, model_id,
-                response_text, response_length, 1 if is_valid else 0, run_status, adapter_type
+                response_text, response_length, 1 if is_valid else 0, run_status, adapter_type,
+                prompt_id, category, cycle_id
             ))
             run_id = cursor.lastrowid
             conn.commit()

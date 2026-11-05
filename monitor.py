@@ -1,18 +1,19 @@
 import json
+import uuid
 import yaml
 import os
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import random
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from storage import DriftMonitorStorage
 from embeddings import EmbeddingExtractor
-from drift_tests import ks_test, two_proportion_z_test, mmd_test, benjamini_hochberg_correction
+from drift_tests import ks_test, proportion_test, mmd_test, benjamini_hochberg_correction
 
 
 def _generate_batch_concurrent(generate, prompts: List[str],
@@ -27,6 +28,26 @@ def _generate_batch_concurrent(generate, prompts: List[str],
         return [generate(p) for p in prompts]
     with ThreadPoolExecutor(max_workers=min(max_workers, len(prompts))) as pool:
         return list(pool.map(generate, prompts))
+
+
+def select_matched_windows(all_runs: List[Dict[str, Any]], prompt_version: str,
+                           prompt_ids: List[str], ref_size: int,
+                           cur_size: int) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Pick reference and current windows that compare like with like.
+
+    Only runs from the same prompt set version and the same prompt ids as the
+    current cycle are eligible: comparing responses to different prompts would
+    measure the prompt mix, not the model. Reference is the oldest eligible
+    runs, current the newest, and the windows are disjoint by construction.
+    """
+    eligible = [
+        run for run in all_runs
+        if run.get('prompt_version') == prompt_version and run.get('prompt_id') in set(prompt_ids)
+    ]
+    ref_runs = eligible[:ref_size]
+    rest = eligible[ref_size:]
+    cur_runs = rest[-cur_size:] if len(rest) >= cur_size else []
+    return ref_runs, cur_runs
 
 
 class CircuitBreaker:
@@ -54,7 +75,6 @@ class CircuitBreaker:
             if time.monotonic() < self._open_until:
                 raise RuntimeError(
                     "Target model is unavailable (circuit open); retry after the cooldown")
-            self._consecutive_failures = 0
 
     def record_success(self) -> None:
         with self._lock:
@@ -146,6 +166,10 @@ class FakeLLMAdapter:
         """Generate responses for multiple prompts."""
         return [self.generate(p) for p in prompts]
 
+    def ping(self) -> bool:
+        """Availability probe for the health endpoint; always true offline."""
+        return True
+
 class LocalLLMAdapter:
     """Call a local Ollama model over HTTP without a hosted API key."""
 
@@ -196,6 +220,16 @@ class LocalLLMAdapter:
     def generate_batch(self, prompts: List[str]) -> List[str]:
         """Generate responses for prompts concurrently; each call is HTTP bound."""
         return _generate_batch_concurrent(self.generate, prompts)
+
+    def ping(self) -> bool:
+        """Cheap availability probe for the health endpoint."""
+        try:
+            with urlopen(Request(f"{self.base_url}/api/tags",
+                                 headers={"Content-Type": "application/json"}),
+                         timeout=3.0) as response:
+                return response.status == 200
+        except Exception:
+            return False
 
 class OpenAICompatibleAdapter:
     """Call an OpenAI-compatible chat-completions API (e.g. Grok via api.x.ai, Gemini via Google)."""
@@ -254,6 +288,16 @@ class OpenAICompatibleAdapter:
             raise RuntimeError("OpenAI-compatible response is missing the generated text")
         return generated
 
+    def ping(self) -> bool:
+        """Cheap availability probe for the health endpoint."""
+        try:
+            with urlopen(Request(f"{self.base_url}/models",
+                                 headers={"Authorization": f"Bearer {self.api_key}"}),
+                         timeout=3.0) as response:
+                return response.status == 200
+        except Exception:
+            return False
+
     def generate_batch(self, prompts: List[str]) -> List[str]:
         """Generate responses for prompts concurrently; each call is HTTP bound."""
         return _generate_batch_concurrent(self.generate, prompts)
@@ -293,9 +337,26 @@ class LLMDriftMonitor:
             return yaml.safe_load(f)
     
     def _load_canary_prompts(self) -> Dict[str, Any]:
-        """Load canary prompts."""
+        """Load canary prompts, normalized to structured entries.
+
+        Each entry is {'id', 'category', 'text'}: the stable id is what makes
+        window comparisons matched (same prompts in reference and current),
+        and the category enables per category analysis. Plain string prompts
+        from older suite files are accepted and given sequential ids.
+        """
         with open('config/canary_prompts.json', 'r') as f:
-            return json.load(f)
+            raw = json.load(f)
+        items = []
+        for i, entry in enumerate(raw['prompts'], start=1):
+            if isinstance(entry, str):
+                items.append({'id': f'p{i:03d}', 'category': 'general', 'text': entry})
+            else:
+                items.append({
+                    'id': entry['id'],
+                    'category': entry.get('category', 'general'),
+                    'text': entry['text'] if 'text' in entry else entry['prompt'],
+                })
+        return {'version': raw['version'], 'prompts': items}
     
     def _create_adapter(self):
         """Create target LLM adapter based on config."""
@@ -344,50 +405,59 @@ class LLMDriftMonitor:
         Run canary probes through target adapter.
         Returns list of run IDs created.
         """
-        prompts = self.canary_prompts['prompts']
+        items = self.canary_prompts['prompts']
         if num_prompts is not None:
-            prompts = prompts[:num_prompts]
-        
+            items = items[:num_prompts]
+
         prompt_version = self.canary_prompts['version']
         model_id = self.adapter.model_id
         timestamp = datetime.now().isoformat()
-        
-        run_ids = []
+        cycle_id = str(uuid.uuid4())[:8]
         adapter_type = self.config['target']['type']
-        
-        # Generate responses
-        responses = self.adapter.generate_batch(prompts)
-        
-        for i, (prompt, response) in enumerate(zip(prompts, responses)):
+
+        # Generate responses, measuring per response latency honestly
+        # (the concurrent batch means wall time per response, not per call).
+        batch_started = time.perf_counter()
+        responses = self.adapter.generate_batch([item['text'] for item in items])
+        mean_latency = (time.perf_counter() - batch_started) / max(1, len(items))
+        self.last_cycle_latency_seconds = round(mean_latency, 3)
+
+        run_ids: List[int] = []
+        responses_by_text = list(responses)
+        embeddings = self.embedder.extract_embeddings(responses_by_text)
+
+        for i, (item, response) in enumerate(zip(items, responses)):
             # Extract features
             response_length, is_valid = self.embedder.extract_response_features(response)
-            
+
             # Determine run status
             run_status = 'success' if is_valid else 'failed'
-            
+
             # Insert probe run
             # Use proper timestamp with microseconds for uniqueness
             probe_ts = timestamp if i == 0 else (datetime.fromisoformat(timestamp) + timedelta(milliseconds=i)).isoformat()
             run_id = self.storage.insert_probe_run(
                 timestamp=probe_ts,
                 prompt_version=prompt_version,
-                prompt_text=prompt,
+                prompt_text=item['text'],
                 model_id=model_id,
                 response_text=response,
                 response_length=response_length,
                 is_valid=is_valid,
                 run_status=run_status,
-                adapter_type=adapter_type
+                adapter_type=adapter_type,
+                prompt_id=item['id'],
+                category=item['category'],
+                cycle_id=cycle_id
             )
             run_ids.append(run_id)
-            
+
             # Insert response features
             self.storage.insert_response_features(run_id, response_length, is_valid)
-            
+
             # Insert embedding
-            embedding = self.embedder.extract_embedding(response)
-            self.storage.insert_embedding(run_id, embedding)
-        
+            self.storage.insert_embedding(run_id, embeddings[i])
+
         return run_ids
     
     def create_reference_window(self, min_runs: Optional[int] = None) -> bool:
@@ -471,7 +541,7 @@ class LLMDriftMonitor:
                     'bh_z_pvalue': results.get('proportion_z_adjusted_pvalue'),
                     'bh_mmd_pvalue': results.get('mmd_adjusted_pvalue'),
                     'flagged_probes': flagged_count,
-                    'mean_latency': 0.0,
+                    'mean_latency': getattr(self, 'last_cycle_latency_seconds', None),
                     'token_counts': total_tokens,
                 },
                 'artifacts': {'drift_report': results},
@@ -484,7 +554,9 @@ class LLMDriftMonitor:
         """
         Run a complete monitoring cycle: probes + tests + alerts.
         """
-        # Run probes
+        # Run probes; the configured batch size keeps CLI and API runs identical
+        if num_probes is None:
+            num_probes = self.config.get('monitoring', {}).get('batch_size')
         run_ids = self.run_canary_probes(num_probes)
         
         # Check if we have reference
@@ -497,27 +569,30 @@ class LLMDriftMonitor:
                 'reason': 'Insufficient reference data'
             }
         
-        # Get reference and current windows
-        # Windows are disjoint by construction: ref = oldest ref_size runs, cur = newest cur_size runs
+        # Get reference and current windows, matched to this cycle's prompts:
+        # only runs from the same prompt set version and the same prompt ids
+        # are eligible, so a changed prompt mix cannot masquerade as drift.
         ref_size = self.config['reference']['window_size']
         cur_size = self.config['monitoring']['batch_size']
         min_ref = self.config['reference'].get('min_runs', 10)
 
         # Get all runs in order (including failed)
         all_runs = self.storage.get_all_runs_ordered()
+        cur_prompt_ids = [item['id'] for item in self.canary_prompts['prompts'][:num_probes]]
+        ref_runs, cur_runs = select_matched_windows(
+            all_runs, self.canary_prompts['version'], cur_prompt_ids, ref_size, cur_size)
 
-        # Require complete windows (ref = oldest ref_size runs, cur = newest cur_size runs)
-        if len(all_runs) < ref_size + cur_size:
+        ref_run_ids = self.storage.run_ids_from_runs(ref_runs)
+        cur_run_ids = self.storage.run_ids_from_runs(cur_runs)
+
+        # Both windows must be complete before anything is compared: a partial
+        # window would store a junk result and dilute the alert history.
+        if len(ref_runs) < ref_size or len(cur_runs) < cur_size:
             return {
                 'run_ids': run_ids,
                 'tests_run': False,
-                'reason': 'Insufficient disjoint reference data'
+                'reason': 'Insufficient matched window data'
             }
-
-        ref_runs = all_runs[:ref_size]
-        cur_runs = all_runs[-cur_size:]  # Most recent window
-        ref_run_ids = self.storage.run_ids_from_runs(ref_runs)
-        cur_run_ids = self.storage.run_ids_from_runs(cur_runs)
         
         # If still insufficient reference, don't proceed with tests
         if len(ref_runs) < min_ref:
@@ -566,14 +641,16 @@ class LLMDriftMonitor:
         results['ks_pvalue'] = ks_pval
         results['ks_raw_pvalue'] = ks_pval
         
-        # Two-proportion z-test on validity
+        # Two-sample test on response validity, using Fisher's exact test when
+        # the expected cell counts are too small for the normal approximation
         if len(ref_validity) < 5 or len(cur_validity) < 5:
-            prop_z_stat, prop_z_pval = float('nan'), 1.0
+            prop_stat, prop_pval, prop_method = float('nan'), 1.0, 'fisher'
         else:
-            prop_z_stat, prop_z_pval = two_proportion_z_test(ref_validity, cur_validity)
-        results['proportion_z_stat'] = prop_z_stat
-        results['proportion_z_pvalue'] = prop_z_pval
-        results['proportion_z_raw_pvalue'] = prop_z_pval
+            prop_stat, prop_pval, prop_method = proportion_test(ref_validity, cur_validity)
+        results['proportion_z_stat'] = prop_stat
+        results['proportion_z_pvalue'] = prop_pval
+        results['proportion_z_raw_pvalue'] = prop_pval
+        results['proportion_test_method'] = prop_method
         
         # MMD test on embeddings
         if len(ref_embeddings) < 2 or len(cur_embeddings) < 2:
@@ -590,7 +667,7 @@ class LLMDriftMonitor:
         results['mmd_raw_pvalue'] = mmd_pval
         
         # Benjamini-Hochberg correction on the three p-values
-        pvalues = [ks_pval, prop_z_pval, mmd_pval]
+        pvalues = [ks_pval, prop_pval, mmd_pval]
         alpha = self.config.get('alerts', {}).get('significance_threshold', 0.05)
         adjusted_pvals, significant_flags = benjamini_hochberg_correction(pvalues, alpha=alpha)
         

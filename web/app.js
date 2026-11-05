@@ -385,7 +385,9 @@ async function runCheck() {
 $("run-btn").addEventListener("click", runCheck);
 ensureAwake();
 setInterval(() => {
-  if (!runInFlight && document.visibilityState === "visible" && state.awake) loadAll();
+  if (!runInFlight && document.visibilityState === "visible" && state.awake) {
+    loadAll().catch(() => { state.awake = false; });
+  }
 }, 60000);
 /* Keep the wait counter live while a wake is in progress. */
 setInterval(() => {
