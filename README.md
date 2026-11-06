@@ -190,24 +190,27 @@ MMD permutations, matching `config/config.yaml`), and every script takes a `--se
 so they can be regenerated. These are simulation and benchmark measurements, not
 long-run production guarantees.
 
-Five headline metrics, each answering one operational question:
+Four headline metrics, each answering one operational question:
 
 | Metric | Value | Answers | Source |
 | --- | --- | --- | --- |
 | Detection delay | 0.97 days mean, 1.0 median | How fast does the monitor catch drift? | `delay_detection_delay.csv` |
 | False alarm rate | 0.18 per 100 quiet days | How noisy is the monitor? | `delay_false_alarms.csv` |
 | Detection rate | 100% | How often is drift caught? | `delay_detection_delay.csv` |
-| Alert precision | 0.998 | How reliable is an alert in the experiment? | `delay_alert_precision.csv` |
 | p95 monitoring overhead | 0.388 s per cycle | What does monitoring cost besides inference? | `overhead_latency.csv` |
 
-Delay, false alarms, detection rate and precision are for the deployed persistence
-rule (a flag must hold two consecutive cycles) in a 90 day simulation with the drift
-injected on day 45, against an unfiltered single-cycle flag at 3.09 false alarms per
-100 days: persistence trades about one day of delay for a seventeen-fold quieter
-baseline. Overhead is the per-cycle cost of embedding extraction, features, all
-statistical tests and storage with the in-process demo adapter, measured over 12
-cycles; against a real provider, per-call latency is measured separately each cycle
-and is provider-dominated.
+Delay, false alarms and detection rate are for the deployed persistence rule (a flag
+must hold two consecutive cycles) in a 90 day simulation with the drift injected on
+day 45 at 1.2 standard deviations, against an unfiltered single-cycle flag at 3.09
+false alarms per 100 quiet days: persistence trades about one day of delay for a
+seventeen-fold quieter baseline. The 100% detection rate applies to that particular
+simulated shift, not to every possible drift; smaller shifts have the lower powers
+reported in `METRICS.md`. Overhead is the per-cycle cost of embedding extraction,
+features, all statistical tests and storage with the in-process demo adapter,
+measured over 12 cycles; against a real provider, per-call latency is measured
+separately each cycle and is provider-dominated. Alert precision (0.998 in the same
+simulation, counted over alert-days) is a supporting simulation result documented in
+`METRICS.md`, not a headline claim.
 
 The supporting diagnostics behind those numbers, per-test calibration (raw
 false-positive rates at or below the nominal 5%, 1.9% any-test after
