@@ -35,6 +35,30 @@ def _generate_batch_concurrent(generate, prompts: List[str],
         return list(pool.map(generate, prompts))
 
 
+def complete_cycles_only(all_runs: List[Dict[str, Any]],
+                         prompt_ids: List[str]) -> List[Dict[str, Any]]:
+    """Keep only runs that belong to a complete monitoring cycle.
+
+    A cycle is complete when it contains exactly one stored run per panel
+    prompt id. Partial cycles (failed or interrupted batches) and legacy rows
+    without a cycle id are excluded, so a window can never mix categories or
+    prompt coverage unevenly: every window is a whole number of whole cycles.
+    """
+    required = set(prompt_ids)
+    by_cycle: Dict[str, List[Dict[str, Any]]] = {}
+    for run in all_runs:
+        cycle_id = run.get('cycle_id')
+        if not cycle_id:
+            continue
+        by_cycle.setdefault(cycle_id, []).append(run)
+    complete = {
+        cycle_id for cycle_id, runs in by_cycle.items()
+        if len(runs) == len(required)
+        and {r.get('prompt_id') for r in runs} == required
+    }
+    return [run for run in all_runs if run.get('cycle_id') in complete]
+
+
 def select_matched_windows(all_runs: List[Dict[str, Any]], prompt_version: str,
                            prompt_ids: List[str], ref_size: int,
                            cur_size: int) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -646,10 +670,13 @@ class LLMDriftMonitor:
         cur_size = self.config['monitoring']['batch_size']
         min_ref = self.config['reference'].get('min_runs', 10)
 
-        # Get all runs in order (including failed)
-        all_runs = self.storage.get_all_runs_ordered()
+        # Get all runs in order (including failed), keeping only runs that
+        # belong to a complete monitoring cycle, so a window is always a
+        # whole number of whole cycles with even prompt coverage.
         cycle_items = balanced_category_subset(self.canary_prompts['prompts'], num_probes)
         cur_prompt_ids = [item['id'] for item in cycle_items]
+        all_runs = complete_cycles_only(
+            self.storage.get_all_runs_ordered(), cur_prompt_ids)
         ref_runs, cur_runs = select_matched_windows(
             all_runs, self.canary_prompts['version'], cur_prompt_ids, ref_size, cur_size)
 

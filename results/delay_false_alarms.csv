@@ -1,5 +1,5 @@
 rule,alpha,horizon_days,shift_day,baseline_days,mean_false_alarms_in_baseline,false_alarms_per_100_days
-single,0.05,90,45,45,1.48,3.29
-kofn,0.05,90,45,45,1.13,2.51
-persist2,0.05,90,45,45,0.24,0.53
+single,0.05,90,45,45,1.54,3.42
+kofn,0.05,90,45,45,0.79,1.76
+persist2,0.05,90,45,45,0.09,0.2
 cusum,0.05,90,45,45,1.69,3.76

@@ -172,8 +172,10 @@ When an alert does fire, it carries its evidence: which tests fired, the MMD sta
 the centroid distance baseline, the percentage length shift, and which prompt categories
 are affected. Category-wise MMD runs on wider windows (five cycles worth, still matched
 to the same prompts and still disjoint from the baseline), with its own multiple testing
-correction, so "the model changed" comes with "where it changed". Nothing is
-auto-panic: a flag means "look at the answers", and a person decides.
+correction, so an alert comes with a best-effort pointer at where things changed. At
+production sample sizes that pointer is often inconclusive (see the evaluation below);
+it is evidence for a person, not a verdict. Nothing is auto-panic: a flag means "look
+at the answers", and a person decides.
 
 ## Does it actually work
 
@@ -187,17 +189,24 @@ measured under synthetic nulls and injected shifts, not long-run production guar
   of the three firing in a cycle: 12.1% raw, 1.9% after Benjamini-Hochberg.
 - **Detection delay and alert policies** (`delay_detection_delay.csv`,
   `delay_false_alarms.csv`, 100 trials over a 90 day horizon, shift injected on day
-  45): the deployed policy (a flag must persist two consecutive cycles) detected the
-  shift with mean delay 0.97 days and 0.53 false alarms per 100 quiet days, against
-  3.29 per 100 days for an unfiltered single-cycle flag. Persistence trades a day of
-  delay for a six-fold quieter baseline, which is the intended trade.
-- **Localization** (`localization_results.csv`, 100 trials, one of five categories
-  shifted): the same category-wise MMD procedure the monitor runs flags the shifted
-  category with precision 0.945 and recall 0.99, and flags something in 10% of null
-  trials.
+  45): the per-day decision reproduces the deployed pipeline (three detectors,
+  Benjamini-Hochberg across them, then the alert rule). The deployed persistence rule
+  (flag must hold two consecutive cycles) detected the shift with mean delay 0.97 days
+  and 0.2 false alarms per 100 quiet days, against 3.4 per 100 days for an unfiltered
+  single-cycle flag. Persistence trades about a day of delay for a seventeen-fold
+  quieter baseline, which is the intended trade.
+- **Localization at production sample size** (`localization_results.csv`, 100 trials
+  per shift, 10 samples per category as in production): category-wise MMD is honest
+  about its limits here. With only ten samples per category, recall on the shifted
+  category is 1% at 0.5 sigma, 3% at 1.5 sigma, 7% at 2 sigma and 20% even at 3 sigma,
+  with a 3% null flag rate. At production sample sizes the pooled tests carry the
+  detection load; localization needs a wider category window (the cycle count is a
+  configuration knob), and the earlier, more flattering localization numbers came from
+  simulating three times as many samples as production uses.
 - **Detector baselines** (`baselines_power.csv`, 200 simulations): at a 0.4 standard
-  deviation mean shift, MMD detected 100% of injected shifts, the KS test 15%, and
-  the centroid distance baseline 0%. Under the null, all three sat at 0%.
+  deviation mean shift with 50 reference and 10 current samples, MMD detected 100% of
+  injected shifts, the KS test 15%, and the centroid distance baseline 0%. Under the
+  null, all three sat at 0%.
 - Power and sensitivity sweeps across shift sizes and window sizes (`power_curves.csv`,
   `sensitivity.csv`) say how many probes a day you need for a given change, so the
   prompt count is not a guess.
@@ -249,6 +258,16 @@ a mocked transport.
 - Each cycle probes a fixed 10-prompt panel (two per category) out of the 40 prompt
   suite; the other 30 are not exercised. A wider panel costs inference time on the
   free hosting tier, so it is a deliberate trade.
+- Category-wise localization is weak at production sample sizes: with ten samples per
+  category, recall on a shifted category stays low even for large shifts (measured in
+  `localization_results.csv`). The category window length is a configuration knob;
+  widening it needs more stored cycles.
+- The permutation MMD's minimum attainable p value is about 1/501 with 500
+  permutations, which bounds how small a threshold any test can resolve. The pooled
+  tests and the category tests each get their own Benjamini-Hochberg correction;
+  separate corrections within separate families do not add up to a single global
+  false-alarm guarantee across families. The persistence rule is an operational
+  filter, not a formal sequential procedure; no global sequential claim is made.
 - 40 prompts across 5 categories is a small lens: a shift in an untested behavior
   would not be seen.
 - The numbers in "Does it actually work" come from simulations; real traffic windows

@@ -1,12 +1,24 @@
-"""Detection delay and false-alarm simulation over a 90-day window horizon."""
+"""Detection delay and false-alarm simulation over a 90-day window horizon.
+
+The per-day decision reproduces the deployed monitoring pipeline: three
+detectors (KS on lengths, the proportion test on validity, MMD on
+embeddings), Benjamini Hochberg correction across the three, then the alert
+rules applied to the pooled flagged stream. The deployed policy is the
+persistence rule: an alert fires only after two consecutive flagged cycles.
+The category-wise tests and the optional alpha-spending gate are not part of
+this simulation and are called out in the README.
+"""
 import argparse
 import csv
 import os
 import matplotlib.pyplot as plt
 import numpy as np
 
-from drift_tests import ks_test
-from experiments.sim import make_lengths, shift_lengths, DEFAULT_LENGTH_STD
+from drift_tests import (ks_test, proportion_test, mmd_test,
+                         benjamini_hochberg_correction)
+from experiments.sim import (make_lengths, make_validity, make_embeddings,
+                             shift_lengths, shift_validity, shift_embeddings,
+                             DEFAULT_LENGTH_STD)
 
 DAYS = 90
 SHIFT_DAY = 45
@@ -17,6 +29,8 @@ PERSIST_K = 2  # deployed policy: consecutive flagged cycles before alerting
 CUSUM_K = 0.5  # CUSUM reference allowance (half shift size)
 CUSUM_H = 3.5  # CUSUM decision boundary threshold
 SHIFT_MAGNITUDE = 1.2  # shift in std units
+SHIFT_P_VALID = 0.70  # post-shift valid fraction (baseline 0.95)
+MMD_PERMUTATIONS = 300  # permutation resolution for the daily MMD test
 
 
 def run(
@@ -39,8 +53,10 @@ def run(
         trial_seed = seed * 10000 + trial * 97
         rng = np.random.default_rng(trial_seed)
 
-        # Baseline reference window fixed per monitoring deployment
+        # Baseline reference windows fixed per monitoring deployment
         ref_samples = make_lengths(N_PER_WINDOW * 2, rng=rng)
+        ref_validity = make_validity(N_PER_WINDOW * 2, rng=rng)
+        ref_embeddings = make_embeddings(N_PER_WINDOW * 2, rng=rng)
 
         single_rejects = []
         cusum_stat = 0.0
@@ -52,14 +68,26 @@ def run(
             day_rng = np.random.default_rng(trial_seed + day)
             cur_samples = make_lengths(N_PER_WINDOW, rng=day_rng)
 
-            # Inject shift on or after SHIFT_DAY
+            # Inject shift on or after SHIFT_DAY: the same behavioral
+            # change hits all three detectors, as a real model regression would.
             is_shifted = (day >= SHIFT_DAY)
             if is_shifted:
                 cur_samples = shift_lengths(cur_samples, delta_mean=SHIFT_MAGNITUDE * DEFAULT_LENGTH_STD)
+            cur_validity = make_validity(N_PER_WINDOW, rng=day_rng)
+            cur_embeddings = make_embeddings(N_PER_WINDOW, rng=day_rng)
+            if is_shifted:
+                cur_validity = shift_validity(cur_validity, SHIFT_P_VALID, rng=day_rng)
+                cur_embeddings = shift_embeddings(cur_embeddings, SHIFT_MAGNITUDE, rng=day_rng)
 
-            # 1. Single window KS test
-            stat, p = ks_test(ref_samples, cur_samples)
-            single_alert = bool(p < 0.05)
+            # The deployed pooled decision: three detectors, BH across them.
+            _, ks_p = ks_test(ref_samples, cur_samples)
+            _, prop_p, _ = proportion_test(list(ref_validity), list(cur_validity))
+            _, mmd_p = mmd_test(ref_embeddings.tolist(), cur_embeddings.tolist(),
+                                n_permutations=MMD_PERMUTATIONS,
+                                random_seed=trial_seed + day)
+            _, bh_flags = benjamini_hochberg_correction([ks_p, prop_p, mmd_p], alpha=0.05)
+            pooled_flag = any(bh_flags)
+            single_alert = bool(pooled_flag)
             single_rejects.append(single_alert)
 
             # 2. k-of-n persistence
@@ -102,7 +130,10 @@ def run(
                 sample_daily_trajectory.append({
                     'day': day,
                     'is_shifted': int(is_shifted),
-                    'ks_p': float(p),
+                    'ks_p': float(ks_p),
+                    'prop_p': float(prop_p),
+                    'mmd_p': float(mmd_p),
+                    'pooled_flag': int(pooled_flag),
                     'single_alert': int(single_alert),
                     'kofn_alert': int(kofn_alert),
                     'persist2_alert': int(persist2_alert),

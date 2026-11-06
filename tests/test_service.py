@@ -58,6 +58,31 @@ class TestCircuitBreaker:
         breaker.before_call()   # must not raise
 
 
+class TestCompleteCycles:
+    def test_partial_cycles_are_excluded(self):
+        from monitor import complete_cycles_only
+        ids = ["p001", "p002", "p003"]
+        complete = [{'id': i, 'cycle_id': 'c1', 'prompt_id': ids[i % 3]} for i in range(3)]
+        partial = [{'id': 10, 'cycle_id': 'c2', 'prompt_id': 'p001'}]
+        runs = complete + partial
+        kept = complete_cycles_only(runs, ids)
+        assert {r['cycle_id'] for r in kept} == {'c1'}
+
+    def test_legacy_rows_without_cycle_id_are_excluded(self):
+        from monitor import complete_cycles_only
+        runs = [{'id': 1, 'cycle_id': None, 'prompt_id': 'p001'}]
+        assert complete_cycles_only(runs, ['p001']) == []
+
+    def test_duplicated_prompt_within_cycle_is_incomplete(self):
+        from monitor import complete_cycles_only
+        runs = [
+            {'id': 1, 'cycle_id': 'c1', 'prompt_id': 'p001'},
+            {'id': 2, 'cycle_id': 'c1', 'prompt_id': 'p001'},
+            {'id': 3, 'cycle_id': 'c1', 'prompt_id': 'p002'},
+        ]
+        assert complete_cycles_only(runs, ['p001', 'p002', 'p003']) == []
+
+
 class TestProportionTest:
     def test_dispatches_to_fisher_for_small_counts(self):
         stat, pvalue, method = proportion_test([1, 0, 1, 1], [0, 0, 0, 1, 0])
