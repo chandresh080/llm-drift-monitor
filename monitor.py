@@ -902,8 +902,10 @@ class LLMDriftMonitor:
         results (the current one included) before anyone is paged. Isolated
         borderline cycles are recorded in test_results but stay silent. With
         alerts.use_alpha_spending enabled, the current cycle must also clear
-        the O'Brien Fleming type boundary for its position in the planning
-        horizon, which makes early alerts demand strong evidence.
+        the quadratic spending boundary (with Holm correction within the
+        cycle) for its position in the planning horizon, which makes early
+        alerts demand strong evidence. The default persistence rule itself is
+        an operational filter, not a formal error control procedure.
         """
         alerts = []
         timestamp = results['timestamp']

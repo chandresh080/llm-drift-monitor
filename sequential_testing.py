@@ -19,21 +19,21 @@ to be precise about what each one is.
        alpha_t = alpha * (2t - 1) / T^2
 
    which sums over t = 1..T to exactly alpha and spends very little early.
-   It is O'Brien Fleming in spirit (tiny early increments, a large final
-   one), not the classical boundary itself. Used with the Holm correction
-   within each cycle, the combined procedure holds the family-wise error
-   spent across cycles to alpha over the declared horizon, assuming valid
-   p values. One honest limitation: the permutation MMD's minimum attainable
-   p value is about 1/501, so at very early cycles the boundary is below
-   what any stored p value could ever clear, and no claim extends beyond
-   the declared planning horizon.
+   This is a custom quadratic spending schedule, not the classical
+   O'Brien-Fleming boundary. Used with the Holm correction within each cycle,
+   the combined procedure holds the family-wise error spent across cycles to
+   alpha over the declared horizon, assuming valid p values. One honest
+   limitation: the permutation MMD's minimum attainable p value is about
+   1/501, so at very early cycles the boundary is below what any stored p
+   value could ever clear, and no claim extends beyond the declared planning
+   horizon.
 """
 
 from typing import List
 
 
 def spent_alpha(cycle_index: int, horizon: int, alpha: float) -> float:
-    """Per cycle significance level under the O'Brien Fleming type schedule.
+    """Per cycle significance level under the quadratic spending schedule.
 
     `cycle_index` is 1-based (the first monitoring cycle is 1) and `horizon`
     is the planning horizon T. Increments sum to exactly alpha over T cycles

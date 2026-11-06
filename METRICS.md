@@ -38,21 +38,30 @@ simulation p values and BH adjusted values for all three detectors are in
 Nominal alpha is 0.05. Every raw rate sits at or below it, and the BH corrected
 any-detector rate is 0.019 per cycle.
 
-## 2. Detection delay and alert policies, full deployed pipeline
+## 2. Detection delay, false alarms and alert precision, simulated pooled pipeline
 
-Source: `results/delay_detection_delay.csv` and `results/delay_false_alarms.csv`,
-100 Monte Carlo trials over a 90 day horizon with the shift injected on day 45. The
-per-day decision reproduces the deployed pipeline: three detectors, BH across them,
-then the alert rule. Shift magnitude 1.2 standard deviations on lengths, valid
-fraction dropped from 0.95 to 0.70, and the same magnitude on embeddings.
+Source: `results/delay_detection_delay.csv`, `results/delay_false_alarms.csv`,
+`results/delay_alert_precision.csv`, 100 trials over a 90 day horizon with the shift
+injected on day 45. Production parity: 50 reference runs, 10 current runs per cycle,
+500 MMD permutations, matching `config/config.yaml`. The per-day decision reproduces
+the deployed pooled pipeline: three detectors, Benjamini-Hochberg across them, then
+the alert rule. Data handling matches the runtime: validity is measured across all 10
+responses, lengths and embeddings only for the successful ones, so the
+distributional detectors see a Binomial(10, p_valid) sized window. Shift magnitude
+1.2 standard deviations on lengths, valid fraction dropped from 0.95 to 0.70, and the
+same magnitude on embeddings. The category-wise tests and the optional alpha-spending
+gate are not simulated.
 
-| Rule | Mean delay (days) | Median delay (days) | Detection rate | False alarms per 100 quiet days | Mean false alarms in 45 quiet days |
+| Rule | Mean delay (days) | Median delay (days) | Detection rate | False alarms per 100 quiet days | Alert precision |
 | --- | --- | --- | --- | --- | --- |
-| Single pooled cycle (unfiltered) | 0.00 | 0.0 | 100.0% | 3.42 | 1.54 |
-| k-of-n (2 of last 5) | 0.88 | 1.0 | 100.0% | 1.76 | 0.79 |
-| Deployed persistence (2 consecutive) | 0.97 | 1.0 | 100.0% | 0.20 | 0.09 |
-| CUSUM (h = 3.5) | 0.05 | 0.0 | 100.0% | 3.76 | 1.69 |
+| Single pooled cycle (unfiltered) | 0.00 | 0.0 | 100.0% | 3.09 | 0.970 |
+| k-of-n (2 of last 5) | 0.90 | 1.0 | 100.0% | 1.11 | 0.9888 |
+| Deployed persistence (2 consecutive) | 0.97 | 1.0 | 100.0% | 0.18 | 0.9982 |
+| CUSUM (h = 3.5) | 0.79 | 1.0 | 100.0% | 1.58 | 0.9702 |
 
+Alert precision is the share of alert-days that fall after the injected shift across
+all 100 trials; it depends on the simulation's alert-day structure and the 45 day
+post-shift window, so it is an experiment-relative figure, not a production estimate.
 The deployed rule trades about one day of delay for a seventeen-fold quieter baseline
 against the unfiltered flag. Per-day trajectories of the first trial (p values, pooled
 flag, all rule alerts) are in `results/delay_alerts.csv`.
@@ -166,57 +175,69 @@ changes the effect size the test sees, not whether it detects.
 Doubling the bandwidth shrinks the measured MMD statistic by about 40%, which is why
 the bandwidth is computed with the median heuristic on every window instead of fixed.
 
-## 7. Drift as a proxy for quality regression
+## 7. Drift as a proxy for invalid-response regression
 
-Source: `results/reliability_results.csv`, 100 trials per cell, production sample
-sizes (50 reference, 10 current), equal mixture over four conditions: null, benign
-distribution shift only, silent quality regression only, and both. Degradation means
-the valid fraction drops from 0.95 to 0.70; distribution shift means embeddings move
-1.5 sigma while valid-answer embeddings stay fixed, matching what the monitor's MMD
-windows actually contain. Laplace smoothing (add one success, add two total) applies
-to every conditional probability.
+Source: `results/reliability_results.csv`, exactly 100 stratified trials per
+condition, production parity (50 reference, 10 current, 500 permutations). Equal
+mixture over four conditions: null, benign distribution shift only, silent
+invalid-response regression only, and both. Regression means the valid fraction drops
+from 0.95 to 0.70; distribution shift means embeddings move 1.5 sigma while
+valid-answer embeddings stay fixed, matching what the monitor's MMD windows actually
+contain. Data handling matches the runtime: validity spans all 10 responses, lengths
+and embeddings only the successful ones. Laplace smoothing (add one success, add two
+total) applies to every conditional probability.
+
+**Scope and caveat, stated up front:** this study measures invalid-response
+regressions, not general answer correctness, which the project does not measure. All
+conditional probabilities are properties of the simulated condition mixture; the
+0.98 validity-flag precision is not a universal production precision estimate. The
+base-rate sensitivity curve below exists precisely because these numbers move with
+the environment.
 
 Detection rate per condition per signal:
 
 | Condition | KS | MMD | Validity | Distributional (BH) | Pooled (BH) |
 | --- | --- | --- | --- | --- | --- |
-| Null | 0.07 | 0.01 | 0.00 | 0.02 | 0.01 |
-| Drift only (benign) | 0.18 | 1.00 | 0.03 | 1.00 | 1.00 |
-| Quality only (silent) | 0.08 | 0.06 | 0.61 | 0.03 | 0.64 |
-| Both | 0.26 | 1.00 | 0.69 | 1.00 | 1.00 |
+| Null | 0.01 | 0.03 | 0.00 | 0.01 | 0.01 |
+| Drift only (benign) | 0.30 | 1.00 | 0.00 | 1.00 | 1.00 |
+| Regression only (silent) | 0.06 | 0.02 | 0.27 | 0.03 | 0.30 |
+| Both | 0.34 | 1.00 | 0.23 | 1.00 | 1.00 |
 
 Proxy quality of each flag on the equal mixture:
 
-| Signal | P(degradation \| flag) | P(flag \| degradation) | Benign flag rate |
+| Signal | P(regression \| flag) | P(flag \| regression) | Benign flag rate |
 | --- | --- | --- | --- |
-| KS | 0.55 | 0.16 | 0.13 |
-| MMD | 0.47 | 0.49 | 0.55 |
-| Validity (behavioral) | 0.97 | 0.64 | 0.02 |
-| Distributional family (BH) | 0.46 | 0.47 | 0.55 |
-| Pooled pipeline (BH) | 0.59 | 0.80 | 0.55 |
+| KS | 0.56 | 0.20 | 0.16 |
+| MMD | 0.50 | 0.51 | 0.51 |
+| Validity (behavioral) | 0.98 | 0.25 | 0.01 |
+| Distributional family (BH) | 0.50 | 0.51 | 0.51 |
+| Pooled pipeline (BH) | 0.56 | 0.65 | 0.51 |
 
-Reliability curve: P(degradation | flag) as the base rate of benign shifts
-(`pi_benign`) rises from 0 to 0.4, with quality_only and both fixed at 0.2 each:
+Base-rate sensitivity curve: P(regression | flag) as the prevalence of benign shifts
+(`pi_benign`) rises from 0 to 0.4, with regression-only and both fixed at 0.2 each:
 
 | Benign base rate | Distributional family | Pooled pipeline | Behavioral only |
 | --- | --- | --- | --- |
-| 0.0 | 0.89 | 0.94 | 0.92 |
-| 0.1 | 0.64 | 0.75 | 0.96 |
-| 0.2 | 0.62 | 0.70 | 0.97 |
-| 0.3 | 0.52 | 0.62 | 0.97 |
-| 0.4 | 0.35 | 0.49 | 0.97 |
+| 0.0 | 0.81 | 0.88 | 0.90 |
+| 0.1 | 0.58 | 0.69 | 0.93 |
+| 0.2 | 0.58 | 0.66 | 0.94 |
+| 0.3 | 0.50 | 0.56 | 0.94 |
+| 0.4 | 0.34 | 0.43 | 0.95 |
 
 The three findings, stated plainly:
 
-1. The signal families are nearly disjoint. A silent quality regression (the kind the
-   MMD windows cannot see, because they only contain valid answers) is caught by the
-   behavioral test 61% of the time and by the distributional family 3%. A benign
-   distribution shift is caught 100% versus 3%.
-2. On an equal mixture, a drift flag is a weak quality proxy on its own: the
-   distributional family's flag predicts degradation at 0.46, barely above a coin
-   flip, while the behavioral flag sits at 0.97.
+1. The signal families are nearly disjoint. A silent invalid-response regression
+   (the kind the MMD windows cannot see, because they only contain valid answers) is
+   caught by the behavioral validity test 27% of the time at production panel size
+   and by the distributional family 3%. A benign distribution shift is caught 100%
+   versus 0%. The 27% is itself the honest headline: with 10 probes per cycle, a
+   valid fraction dropping from 0.95 to 0.70 is genuinely hard to catch in a single
+   cycle, and the behavioral signal is power-limited, not just blind.
+2. On an equal mixture, a drift flag is a weak regression proxy on its own: the
+   distributional family's flag predicts a regression at 0.50, a coin flip, while the
+   behavioral flag sits at 0.98.
 3. The value of combining both is recall, not precision: the pooled pipeline detects
-   80% of degradations against 64% behavioral alone and 47% distributional alone,
+   65% of regressions against 25% behavioral alone and 51% distributional alone,
    while proxy precision stays dominated by the behavioral signal. And flag precision
    degrades as benign shifts become common, which is the operational condition to
    watch: in an environment that changes topics often, a drift flag means "look",
@@ -238,7 +259,7 @@ Detector statistics and p values:
 | `ks_significant`, `proportion_z_significant`, `mmd_significant` | 0/1 flags after correction |
 | `bh_significant_tests` | Count of corrected rejections in the cycle |
 | `overall_drift_detected` | Pooled flag for the cycle |
-| `overall_quality_degradation` | Directional judgment that the change is a degradation |
+| `overall_quality_degradation` | Legacy column name; the actual definition is an invalid-response threshold: it is 1 when the current window has at least 10 responses (`alerts.min_sample_size`) and the invalid proportion is 0.30 or higher (`alerts.quality_degradation_threshold`). It is a high-invalid-response-rate flag, not a general answer quality judgment |
 | `centroid_distance` | Euclidean distance between reference and current embedding centroids, the baseline detector |
 | `length_shift_pct` | Percent change in mean response length |
 | `refusal_rate_change` | Change in refusal rate between windows |
@@ -281,6 +302,28 @@ Behavioral features stored per response (in `response_features`):
 | `has_code_block` | Markdown code fence present |
 | `response_length`, `is_valid` | Character length and validity flag |
 
+## 9. Monitoring overhead
+
+Source: `results/overhead_latency.csv`, 12 measured cycles after 3 warm-up cycles,
+run by `experiments/overhead.py` against a copy of the committed seed database with
+the in-process demo adapter, so cycle wall time is essentially all monitoring
+machinery: embedding extraction, behavioral features, the pooled and category
+statistical tests (including 500 permutation MMDs), storage writes and alert
+generation.
+
+| Metric | Value |
+| --- | --- |
+| Mean cycle overhead | 0.343 s |
+| p50 cycle overhead | 0.324 s |
+| p95 cycle overhead | 0.388 s |
+| Mean per-probe (amortized, 10 probes) | 0.034 s |
+| p95 per-probe (amortized) | 0.039 s |
+
+The pipeline batches embedding extraction, so the cycle is the honest unit and the
+per-probe figures are labeled amortized. Per-call model latency is measured and
+logged separately each cycle (`latency_p50`, `latency_p95`); against a real provider
+that number is provider-dominated and this overhead adds to it.
+
 ## 10. The committed demo database
 
 Source: `data/seed_drift.db`. Era 1 is 50 runs under adapter seed 42 (null), era 2 is
@@ -311,12 +354,19 @@ complementarity of the three detectors.
 - Separate BH corrections in the pooled family and the category family do not add up
   to one global false-alarm guarantee across families.
 - The persistence rule is an operational alert filter, not a formal sequential
-  procedure. The optional alpha-spending gate (off by default) is O'Brien Fleming in
-  spirit, holds family-wise error over its declared 30 cycle horizon with Holm within
-  the cycle, and cannot go below the permutation floor of about 1/501.
+  procedure. The optional alpha-spending gate (off by default) is a quadratic
+  spending schedule with Holm correction within the cycle, holding family-wise
+  error over its declared 30 cycle horizon assuming valid p values, and it
+  cannot go below the permutation floor of about 1/501.
 - Localization at production sample size is weak (section 3) and is presented as
   diagnostic evidence, not a verified localization capability.
-- In the reliability study, quality regression is modeled as a validity drop with
-  valid-answer embeddings held fixed. Real regressions can also shift valid-answer
-  content, which the distributional family would see; the disjointness measured here
-  is the clean case, not the worst case for drift flags.
+- In the reliability study, regression is modeled as an invalid-response increase
+  with valid-answer embeddings held fixed. Real regressions can also shift
+  valid-answer content, which the distributional family would see; the disjointness
+  measured here is the clean case, not the worst case for drift flags. Every
+  conditional probability in that study is conditional on its simulated mixture and
+  base-rate sweep, not a production estimate.
+- The five headline metrics (detection delay, false alarm rate, detection rate,
+  alert precision, p95 overhead) are simulation and benchmark measurements. Alert
+  precision in particular is relative to the simulation's alert-day structure. None
+  is a production guarantee.

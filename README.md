@@ -2,9 +2,10 @@
 
 A monitoring tool that watches whether an LLM's answers quietly change over time, and
 tells you when they do. The research question behind it: **when is unsupervised
-behavioral drift a reliable proxy for quality regression, when is it not, and how much
-does combining distributional and behavioral signals buy?** The experiments section
-answers this with numbers rather than intuition.
+behavioral drift a reliable proxy for quality regression (measured here as the
+invalid-response rate), when is it not, and how much does combining distributional
+and behavioral signals buy?** The experiments section answers this with numbers
+rather than intuition.
 
 Live demo: [llm-drift-monitor-api.onrender.com](https://llm-drift-monitor-api.onrender.com)
 (dashboard at `/`). The hosted demo is self-contained and needs no API keys.
@@ -183,53 +184,61 @@ at the answers", and a person decides.
 ## Does it actually work
 
 Evaluated on synthetic data where the truth is known, using `experiments/`. Every
-number below is the value in the corresponding committed CSV in `results/`, and every
-script takes a `--seed`, so they can be regenerated. These are per-cycle frequencies
-measured under synthetic nulls and injected shifts, not long-run production guarantees.
+number below is the value in the corresponding committed CSV in `results/`, every
+experiment runs at production parity (50 reference runs, 10 current per cycle, 500
+MMD permutations, matching `config/config.yaml`), and every script takes a `--seed`,
+so they can be regenerated. These are simulation and benchmark measurements, not
+long-run production guarantees.
 
-- **False alarms under the null** (`calibration_fpr.csv`, 1,000 simulations): raw
-  per-test rates KS 3.7%, proportion test 4.0%, MMD 5.0%, against a nominal 5%. Any
-  of the three firing in a cycle: 12.1% raw, 1.9% after Benjamini-Hochberg.
-- **Detection delay and alert policies** (`delay_detection_delay.csv`,
-  `delay_false_alarms.csv`, 100 trials over a 90 day horizon, shift injected on day
-  45): the per-day decision reproduces the deployed pipeline (three detectors,
-  Benjamini-Hochberg across them, then the alert rule). The deployed persistence rule
-  (flag must hold two consecutive cycles) detected the shift with mean delay 0.97 days
-  and 0.2 false alarms per 100 quiet days, against 3.4 per 100 days for an unfiltered
-  single-cycle flag. Persistence trades about a day of delay for a seventeen-fold
-  quieter baseline, which is the intended trade.
-- **Localization at production sample size** (`localization_results.csv`, 100 trials
-  per shift, 10 samples per category as in production): category-wise MMD is honest
-  about its limits here. With only ten samples per category, recall on the shifted
-  category is 1% at 0.5 sigma, 3% at 1.5 sigma, 7% at 2 sigma and 20% even at 3 sigma,
-  with a 3% null flag rate. At production sample sizes the pooled tests carry the
-  detection load; localization needs a wider category window (the cycle count is a
-  configuration knob), and the earlier, more flattering localization numbers came from
-  simulating three times as many samples as production uses.
-- **Detector baselines** (`baselines_power.csv`, 200 simulations): at a 0.4 standard
-  deviation mean shift with 50 reference and 10 current samples, MMD detected 100% of
-  injected shifts, the KS test 15%, and the centroid distance baseline 0%. Under the
-  null, all three sat at 0%.
-- **Drift as a proxy for quality regression** (`reliability_results.csv`, 100 trials
-  per cell, production sample sizes). This is the central question, studied with a 2x2
-  of distribution shift and quality regression. Three findings. First, the signal
-  families are complementary and nearly disjoint: under a pure quality regression
-  (valid answers get worse, valid-answer embeddings unchanged, which is what the
-  monitor's MMD windows see) the distributional family catches 3% while the behavioral
-  validity test catches 61%; under a pure benign distribution shift those numbers are
-  100% and 3%. Second, on an equal mixture of the four conditions, a drift flag is a
-  weak quality proxy on its own: P(degradation | distributional flag) is 0.46, barely
-  better than a coin flip, while the behavioral flag sits at 0.97. Third, proxy
-  precision depends on the base rate of benign shifts: as the benign share rises from
-  0 to 0.4, the distributional family's precision falls from 0.89 to 0.35 while the
-  behavioral signal stays near 0.97. What the combination buys is recall: the deployed
-  pooled pipeline detects 80% of degradations against 64% for the behavioral signal
-  alone and 47% for the distributional one. In short: distributional drift finds the
-  changes, behavioral features tell you whether they hurt, and neither substitutes
-  for the other.
-- Power and sensitivity sweeps across shift sizes and window sizes (`power_curves.csv`,
-  `sensitivity.csv`) say how many probes a day you need for a given change, so the
-  prompt count is not a guess.
+Five headline metrics, each answering one operational question:
+
+| Metric | Value | Answers | Source |
+| --- | --- | --- | --- |
+| Detection delay | 0.97 days mean, 1.0 median | How fast does the monitor catch drift? | `delay_detection_delay.csv` |
+| False alarm rate | 0.18 per 100 quiet days | How noisy is the monitor? | `delay_false_alarms.csv` |
+| Detection rate | 100% | How often is drift caught? | `delay_detection_delay.csv` |
+| Alert precision | 0.998 | How reliable is an alert in the experiment? | `delay_alert_precision.csv` |
+| p95 monitoring overhead | 0.388 s per cycle | What does monitoring cost besides inference? | `overhead_latency.csv` |
+
+Delay, false alarms, detection rate and precision are for the deployed persistence
+rule (a flag must hold two consecutive cycles) in a 90 day simulation with the drift
+injected on day 45, against an unfiltered single-cycle flag at 3.09 false alarms per
+100 days: persistence trades about one day of delay for a seventeen-fold quieter
+baseline. Overhead is the per-cycle cost of embedding extraction, features, all
+statistical tests and storage with the in-process demo adapter, measured over 12
+cycles; against a real provider, per-call latency is measured separately each cycle
+and is provider-dominated.
+
+The supporting diagnostics behind those numbers, per-test calibration (raw
+false-positive rates at or below the nominal 5%, 1.9% any-test after
+Benjamini-Hochberg across 1,000 null simulations), power curves, bandwidth
+ablation, detector baselines and the honest limits of category localization at
+production sample size, are all in `METRICS.md`.
+
+## The research question: is drift a reliable proxy for quality regression?
+
+This is the central study (`reliability_results.csv`, exactly 100 stratified trials
+per condition, full methodology and tables in `METRICS.md`). The monitor produces two
+independent signal families: distributional (KS on lengths, MMD on embeddings) and
+behavioral (the validity test, backed by refusal and repetition features). A 2x2 of
+distribution shift and invalid-response regression measures how they relate. The
+scope is deliberate: regression here means the invalid-response rate rising from 5%
+to 30%, not general answer correctness, which this project does not measure.
+
+Three findings. First, the families are nearly disjoint: a silent invalid-response
+regression, the kind the MMD windows structurally cannot see, is caught 27% of the
+time by the behavioral test at production panel size and 3% by the distributional
+family; a benign distribution shift is caught 100% versus 0%. The 27% is itself
+informative: with 10 probes per cycle, a validity drop of that size is genuinely hard
+to catch in one cycle. Second, on an equal mixture, a drift flag alone is a weak
+regression proxy: P(regression | distributional flag) is 0.50, a coin flip, while the
+behavioral flag sits at 0.98. Third, the combination buys recall, not precision: the
+deployed pooled pipeline detects 65% of regressions against 25% behavioral alone and
+51% distributional alone, and proxy precision degrades as benign shifts become common
+(the distributional family falls from 0.81 to 0.34 as the benign base rate rises from
+0 to 0.4, while the behavioral signal stays near 0.95). In short: distributional
+drift finds the changes, behavioral features tell you whether they hurt, and neither
+substitutes for the other.
 
 ## Try it
 

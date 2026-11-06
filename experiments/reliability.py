@@ -1,40 +1,47 @@
-"""When is behavioral drift a reliable proxy for quality regression?
+"""When is behavioral drift a reliable proxy for invalid-response regression?
 
 This is the central research question of the project, studied directly. The
 monitor produces two independent signal families per cycle: distributional
 signals (KS on response lengths, MMD on embeddings) that ask "did the answer
-distribution change", and a behavioral quality signal (the validity or refusal
+distribution change", and a behavioral signal (the validity or refusal
 proportion test, backed by refusal and repetition features) that asks "did the
-answers get worse". This experiment measures how the two families relate.
+invalid-response rate go up". This experiment measures how the two families
+relate, and the scope is deliberate: degradation here means an invalid-response
+regression, not general answer correctness, which this project does not measure.
 
-Four conditions are simulated, the full 2x2 of distribution shift and quality
-regression:
+Four conditions are simulated, the full 2x2 of distribution shift and
+invalid-response regression:
 
 - null: nothing changes.
-- drift_only: embeddings shift (a benign topic or style change), quality fixed.
-- quality_only: the valid fraction drops, embeddings of the remaining valid
+- drift_only: embeddings shift (a benign topic or style change), validity fixed.
+- invalid_only: the valid fraction drops, embeddings of the remaining valid
   answers unchanged. This is a silent regression: the monitor's MMD windows
   only contain valid runs, so by construction the distributional tests are
   blind to it.
-- both: embedding shift and quality drop together, as a real model regression
+- both: embedding shift and validity drop together, as a real model regression
   would often arrive.
 
-Per trial the condition is drawn from an equal mixture (25% each, stated so
-the conditional probabilities below are identifiable), the full detector set
-runs, and flags are recorded. Three kinds of numbers come out:
+Trials are stratified: exactly n_trials per condition, so every cell of every
+table has the same sample size. Data handling matches the runtime: validity
+covers all 10 responses, lengths and embeddings only the successful ones, and
+the distributional detectors see a Binomial(10, p_valid) sized window.
+
+Three kinds of numbers come out:
 
 1. Detection rate per condition per signal, the ablation of the deployed
    pipeline into its parts.
-2. Proxy quality of a drift flag: P(degradation | flag), P(flag | degradation)
-   and the benign flag rate P(flag | no degradation), per signal family.
-3. A reliability curve: how the proxy precision of the distributional family
-   degrades as the benign shift magnitude grows, and how much pairing it with
-   the behavioral signal recovers.
+2. Proxy quality of a drift flag: P(regression | flag), P(flag | regression)
+   and the benign flag rate P(flag | no regression), per signal family. These
+   are conditional on the simulated mixture; they are not universal precision
+   estimates, which is why the base-rate sweep below matters.
+3. A base-rate sensitivity curve: how the proxy precision of each family
+   changes as the prevalence of benign distribution shifts rises. The value of
+   a drift flag is a property of the environment, not just the detector.
 
-The honest expected finding, confirmed in results: distributional flags are
-not a reliable quality proxy on their own, behavioral flags miss pure
-distribution change, and the deployed combination dominates both on the
-mixture. Sample sizes are production parity: 50 reference, 10 current.
+The honest findings, confirmed in results: distributional flags are not a
+reliable regression proxy on their own, the behavioral signal is precise for
+invalid-response regressions but blind to pure distribution change, and the
+deployed combination buys recall at some cost in proxy precision.
 """
 import argparse
 import csv
@@ -53,54 +60,40 @@ CUR_N = 10
 DEGRADED_P_VALID = 0.70
 DEFAULT_DELTA = 1.5
 LENGTH_DELTA = 0.5  # accompanying length change in the drift conditions
-MMD_PERMUTATIONS = 300
-CONDITIONS = ['null', 'drift_only', 'quality_only', 'both']
+MMD_PERMUTATIONS = 500  # matches runtime
+CONDITIONS = ['null', 'drift_only', 'invalid_only', 'both']
 SIGNALS = ['ks', 'mmd', 'validity', 'dist_bh', 'pooled_bh']
 DISTRIBUTIONAL = ['ks', 'mmd']
 
 
-def draw_condition(rng) -> str:
-    return CONDITIONS[int(rng.integers(0, len(CONDITIONS)))]
-
-
-def draw_condition_with_prior(rng, pi_benign: float) -> str:
-    """Mixture with a controllable base rate of benign distribution shifts.
-
-    P(drift_only) = pi_benign, quality_only and both fixed at 0.2 each, null
-    takes the rest. Sweeping pi_benign is the sensitivity analysis that
-    matters for the proxy question: the value of a drift flag depends on how
-    often the world produces harmless distribution change.
-    """
-    u = rng.random()
-    if u < pi_benign:
-        return 'drift_only'
-    if u < pi_benign + 0.2:
-        return 'both'
-    if u < pi_benign + 0.4:
-        return 'quality_only'
-    return 'null'
-
-
 def run_trial(condition: str, trial_seed: int, delta: float,
               ref_lengths, ref_validity, ref_embeddings) -> dict:
-    """Simulate one current window under the condition and run every signal."""
-    rng = np.random.default_rng(trial_seed)
-    cur_lengths = make_lengths(CUR_N, rng=rng)
-    cur_validity = make_validity(CUR_N, rng=rng)
-    cur_embeddings = make_embeddings(CUR_N, rng=rng)
+    """Simulate one current window under the condition and run every signal.
 
+    Data handling matches the runtime: validity is drawn for all CUR_N
+    responses, lengths and embeddings only for the successful ones.
+    """
+    rng = np.random.default_rng(trial_seed)
+    cur_validity = make_validity(CUR_N, rng=rng)
     shifted = condition in ('drift_only', 'both')
-    degraded = condition in ('quality_only', 'both')
-    if shifted:
-        cur_lengths = shift_lengths(
-            cur_lengths, delta_mean=LENGTH_DELTA * DEFAULT_LENGTH_STD)
-        cur_embeddings = shift_embeddings(cur_embeddings, delta, rng=rng)
+    degraded = condition in ('invalid_only', 'both')
     if degraded:
         cur_validity = shift_validity(cur_validity, DEGRADED_P_VALID, rng=rng)
+    n_success = int(cur_validity.sum())
 
-    _, ks_p = ks_test(ref_lengths, cur_lengths)
-    _, mmd_p = mmd_test(ref_embeddings.tolist(), cur_embeddings.tolist(),
-                        n_permutations=MMD_PERMUTATIONS, random_seed=trial_seed)
+    if n_success >= 2:
+        cur_lengths = make_lengths(n_success, rng=rng)
+        cur_embeddings = make_embeddings(n_success, rng=rng)
+        if shifted:
+            cur_lengths = shift_lengths(
+                cur_lengths, delta_mean=LENGTH_DELTA * DEFAULT_LENGTH_STD)
+            cur_embeddings = shift_embeddings(cur_embeddings, delta, rng=rng)
+        _, ks_p = ks_test(ref_lengths, cur_lengths)
+        _, mmd_p = mmd_test(ref_embeddings.tolist(), cur_embeddings.tolist(),
+                            n_permutations=MMD_PERMUTATIONS, random_seed=trial_seed)
+    else:
+        ks_p, mmd_p = 1.0, 1.0
+
     _, val_p, _ = proportion_test(list(ref_validity), list(cur_validity))
 
     _, dist_flags = benjamini_hochberg_correction([ks_p, mmd_p], alpha=0.05)
@@ -110,6 +103,7 @@ def run_trial(condition: str, trial_seed: int, delta: float,
         'condition': condition,
         'degraded': int(degraded),
         'shifted': int(shifted),
+        'n_success': n_success,
         'ks': int(ks_p < 0.05),
         'mmd': int(mmd_p < 0.05),
         'validity': int(val_p < 0.05),
@@ -119,8 +113,10 @@ def run_trial(condition: str, trial_seed: int, delta: float,
 
 
 def proxy_metrics(rows, signal: str) -> dict:
-    """Conditional probabilities of a flag as a quality proxy, with Laplace
-    smoothing so empty cells read as 0 rather than dividing by zero."""
+    """Conditional probabilities of a flag as a regression proxy, with Laplace
+    smoothing so empty cells read as 0 rather than dividing by zero. These are
+    conditional on the simulated condition mixture and are not universal
+    production precision estimates."""
     n = len(rows)
     flagged = [r for r in rows if r[signal] == 1]
     degraded = [r for r in rows if r['degraded'] == 1]
@@ -131,10 +127,28 @@ def proxy_metrics(rows, signal: str) -> dict:
     return {
         'signal': signal,
         'n_trials': n,
-        'p_degradation_given_flag': round(p_deg_given_flag, 4),
-        'p_flag_given_degradation': round(p_flag_given_deg, 4),
+        'p_regression_given_flag': round(p_deg_given_flag, 4),
+        'p_flag_given_regression': round(p_flag_given_deg, 4),
         'benign_flag_rate': round(benign_flag_rate, 4),
     }
+
+
+def draw_condition_with_prior(rng, pi_benign: float) -> str:
+    """Mixture with a controllable base rate of benign distribution shifts.
+
+    P(drift_only) = pi_benign, invalid_only and both fixed at 0.2 each, null
+    takes the rest. Sweeping pi_benign is the sensitivity analysis that
+    matters for the proxy question: the value of a drift flag depends on how
+    often the world produces harmless distribution change.
+    """
+    u = rng.random()
+    if u < pi_benign:
+        return 'drift_only'
+    if u < pi_benign + 0.2:
+        return 'both'
+    if u < pi_benign + 0.4:
+        return 'invalid_only'
+    return 'null'
 
 
 def run(
@@ -148,21 +162,25 @@ def run(
         out_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'results')
     os.makedirs(out_dir, exist_ok=True)
 
-    print(f"[reliability] 2x2 drift x quality study, {n_trials} trials per "
-          f"condition draw, delta={delta}, production sample sizes "
-          f"({REF_N} ref, {CUR_N} cur)...")
+    print(f"[reliability] 2x2 drift x invalid-response regression study, "
+          f"exactly {n_trials} trials per condition, delta={delta}, "
+          f"production parity ({REF_N} ref, {CUR_N} cur, "
+          f"{MMD_PERMUTATIONS} permutations)...")
 
     rng = np.random.default_rng(seed)
-    ref_lengths = make_lengths(REF_N, rng=rng)
     ref_validity = make_validity(REF_N, rng=rng)
-    ref_embeddings = make_embeddings(REF_N, rng=rng)
+    n_ref_success = int(ref_validity.sum())
+    ref_lengths = make_lengths(n_ref_success, rng=rng)
+    ref_embeddings = make_embeddings(n_ref_success, rng=rng)
 
+    # Stratified: exactly n_trials per condition, so every reported cell has
+    # the same sample size and the tables need no per-condition caveat.
     rows = []
-    for i in range(n_trials * len(CONDITIONS)):
-        trial_seed = seed * 10000 + i * 37
-        condition = draw_condition(np.random.default_rng(trial_seed))
-        rows.append(run_trial(condition, trial_seed, delta,
-                              ref_lengths, ref_validity, ref_embeddings))
+    for c_idx, condition in enumerate(CONDITIONS):
+        for i in range(n_trials):
+            trial_seed = seed * 10000 + c_idx * 1000 + i * 37
+            rows.append(run_trial(condition, trial_seed, delta,
+                                  ref_lengths, ref_validity, ref_embeddings))
 
     # Detection rate per condition per signal.
     condition_rows = []
@@ -176,24 +194,24 @@ def run(
             })
             print(f"[reliability] {condition:>12} | {signal:>9} | {rate:.2f}")
 
-    # Proxy quality of each flag on the mixture.
+    # Proxy quality of each flag on the equal mixture.
     proxy_rows = []
-    print("[reliability] proxy metrics on the equal mixture (Laplace smoothed):")
+    print("[reliability] proxy metrics on the equal mixture (Laplace smoothed, "
+          "conditional on this simulated mixture):")
     for signal in SIGNALS:
         m = proxy_metrics(rows, signal)
         proxy_rows.append(m)
-        print(f"[reliability] {signal:>9} | P(deg|flag)={m['p_degradation_given_flag']:.2f} "
-              f"| P(flag|deg)={m['p_flag_given_degradation']:.2f} "
+        print(f"[reliability] {signal:>9} | P(reg|flag)={m['p_regression_given_flag']:.2f} "
+              f"| P(flag|reg)={m['p_flag_given_regression']:.2f} "
               f"| benign flag rate={m['benign_flag_rate']:.2f}")
 
-    # Reliability curve: proxy precision as the base rate of benign shifts
-    # grows. This is the "when" of the research question: a drift flag's
-    # value depends on how often the world produces harmless distribution
-    # change, and on whether a quality signal is available to pair with it.
+    # Base-rate sensitivity curve: proxy precision as the prevalence of
+    # benign distribution shifts grows. This is the "when" of the research
+    # question.
     curve_rows = []
     if curve:
         pi_grid = [0.0, 0.1, 0.2, 0.3, 0.4]
-        print("[reliability] reliability curve over the benign shift base rate:")
+        print("[reliability] base-rate sensitivity curve:")
         for pi in pi_grid:
             curve_rows_seed = []
             for i in range(n_trials):
@@ -208,20 +226,20 @@ def run(
             valid_m = proxy_metrics(curve_rows_seed, 'validity')
             curve_rows.append({
                 'pi_benign': pi,
-                'dist_precision': dist_m['p_degradation_given_flag'],
-                'pooled_precision': pooled_m['p_degradation_given_flag'],
-                'validity_precision': valid_m['p_degradation_given_flag'],
+                'dist_precision': dist_m['p_regression_given_flag'],
+                'pooled_precision': pooled_m['p_regression_given_flag'],
+                'validity_precision': valid_m['p_regression_given_flag'],
             })
-            print(f"[reliability] pi_benign={pi:.1f} | dist P(deg|flag)="
-                  f"{dist_m['p_degradation_given_flag']:.2f} | pooled P(deg|flag)="
-                  f"{pooled_m['p_degradation_given_flag']:.2f} | validity "
-                  f"P(deg|flag)={valid_m['p_degradation_given_flag']:.2f}")
+            print(f"[reliability] pi_benign={pi:.1f} | dist P(reg|flag)="
+                  f"{dist_m['p_regression_given_flag']:.2f} | pooled P(reg|flag)="
+                  f"{pooled_m['p_regression_given_flag']:.2f} | validity "
+                  f"P(reg|flag)={valid_m['p_regression_given_flag']:.2f}")
 
     # Persist everything.
     csv_path = os.path.join(out_dir, 'reliability_results.csv')
     fieldnames = ['row_type', 'condition', 'signal', 'n_trials',
-                  'detection_rate', 'p_degradation_given_flag',
-                  'p_flag_given_degradation', 'benign_flag_rate', 'pi_benign',
+                  'detection_rate', 'p_regression_given_flag',
+                  'p_flag_given_regression', 'benign_flag_rate', 'pi_benign',
                   'dist_precision', 'pooled_precision', 'validity_precision']
     with open(csv_path, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=fieldnames, restval='')
@@ -233,7 +251,7 @@ def run(
         for c in curve_rows:
             w.writerow({'row_type': 'curve', **c})
 
-    # Plot: detection rates and the reliability curve.
+    # Plot: detection rates and the base-rate sensitivity curve.
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5))
     width = 0.16
     xs = np.arange(len(CONDITIONS))
@@ -260,11 +278,11 @@ def run(
         ax2.plot(xs2, [c['pooled_precision'] for c in curve_rows], 's-',
                  color='#ef4444', label='Deployed pooled pipeline')
         ax2.plot(xs2, [c['validity_precision'] for c in curve_rows], '^:',
-                 color='#f59e0b', label='Behavioral quality signal only')
+                 color='#f59e0b', label='Behavioral validity signal only')
         ax2.set_xlabel('Base rate of benign distribution shifts')
-        ax2.set_ylabel('P(quality degraded | flag)')
+        ax2.set_ylabel('P(invalid-response regression | flag)')
         ax2.set_ylim(0, 1.05)
-        ax2.set_title('Drift flag as a quality proxy, by benign shift base rate',
+        ax2.set_title('Drift flag as a regression proxy, by benign shift base rate',
                       fontsize=11, fontweight='bold')
         ax2.grid(True, alpha=0.3)
         ax2.legend(fontsize=9)
@@ -285,13 +303,14 @@ def run(
                 'experiment': 'reliability', 'seed': seed,
                 'n_trials': n_trials, 'delta': delta,
                 'ref_n': REF_N, 'cur_n': CUR_N,
+                'mmd_permutations': MMD_PERMUTATIONS,
                 'degraded_p_valid': DEGRADED_P_VALID,
                 'git_hash': get_git_hash(),
             },
             metrics={
                 **{f"detection_{c['condition']}_{c['signal']}": c['detection_rate']
                    for c in condition_rows},
-                **{f"proxy_{m['signal']}": m['p_degradation_given_flag']
+                **{f"proxy_{m['signal']}": m['p_regression_given_flag']
                    for m in proxy_rows},
                 **{f"curve_dist_precision_{c['pi_benign']}": c['dist_precision']
                    for c in curve_rows},
@@ -307,7 +326,7 @@ def run(
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Drift as a proxy for quality regression: the 2x2 study')
+        description='Drift as a proxy for invalid-response regression: the 2x2 study')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--n-trials', type=int, default=100)
     parser.add_argument('--delta', type=float, default=DEFAULT_DELTA)

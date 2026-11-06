@@ -95,10 +95,10 @@ class TestProxyMetrics:
             {'degraded': 0, 'ks': 0, 'mmd': 0},
         ]
         m = proxy_metrics(rows, 'ks')
-        # Laplace smoothing: (2 flagged degradations + 1) / (3 flags + 2)
-        # for precision, and (2 + 1) / (2 degradations + 2) for recall.
-        assert m['p_degradation_given_flag'] == pytest.approx(0.6)
-        assert m['p_flag_given_degradation'] == pytest.approx(0.75)
+        # Laplace smoothing: (2 flagged regressions + 1) / (3 flags + 2)
+        # for precision, and (2 + 1) / (2 regressions + 2) for recall.
+        assert m['p_regression_given_flag'] == pytest.approx(0.6)
+        assert m['p_flag_given_regression'] == pytest.approx(0.75)
         assert m['benign_flag_rate'] == pytest.approx(0.5, abs=0.01)
 
     def test_proxy_metrics_never_divides_by_zero(self):
@@ -106,8 +106,8 @@ class TestProxyMetrics:
         rows = [{'degraded': 0, 'ks': 0, 'mmd': 0}]
         for signal in ('ks', 'mmd'):
             m = proxy_metrics(rows, signal)
-            assert 0.0 <= m['p_degradation_given_flag'] <= 1.0
-            assert 0.0 <= m['p_flag_given_degradation'] <= 1.0
+            assert 0.0 <= m['p_regression_given_flag'] <= 1.0
+            assert 0.0 <= m['p_flag_given_regression'] <= 1.0
 
     def test_draw_prior_bounds(self):
         from experiments.reliability import (CONDITIONS,

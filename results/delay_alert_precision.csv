@@ -1,0 +1,5 @@
+rule,quiet_alert_days,post_shift_alert_days,alert_precision
+single,139,4500,0.97
+kofn,50,4410,0.9888
+persist2,8,4403,0.9982
+cusum,71,2312,0.9702
