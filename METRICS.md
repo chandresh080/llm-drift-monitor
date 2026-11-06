@@ -166,7 +166,63 @@ changes the effect size the test sees, not whether it detects.
 Doubling the bandwidth shrinks the measured MMD statistic by about 40%, which is why
 the bandwidth is computed with the median heuristic on every window instead of fixed.
 
-## 7. Metrics computed per monitoring cycle (runtime)
+## 7. Drift as a proxy for quality regression
+
+Source: `results/reliability_results.csv`, 100 trials per cell, production sample
+sizes (50 reference, 10 current), equal mixture over four conditions: null, benign
+distribution shift only, silent quality regression only, and both. Degradation means
+the valid fraction drops from 0.95 to 0.70; distribution shift means embeddings move
+1.5 sigma while valid-answer embeddings stay fixed, matching what the monitor's MMD
+windows actually contain. Laplace smoothing (add one success, add two total) applies
+to every conditional probability.
+
+Detection rate per condition per signal:
+
+| Condition | KS | MMD | Validity | Distributional (BH) | Pooled (BH) |
+| --- | --- | --- | --- | --- | --- |
+| Null | 0.07 | 0.01 | 0.00 | 0.02 | 0.01 |
+| Drift only (benign) | 0.18 | 1.00 | 0.03 | 1.00 | 1.00 |
+| Quality only (silent) | 0.08 | 0.06 | 0.61 | 0.03 | 0.64 |
+| Both | 0.26 | 1.00 | 0.69 | 1.00 | 1.00 |
+
+Proxy quality of each flag on the equal mixture:
+
+| Signal | P(degradation \| flag) | P(flag \| degradation) | Benign flag rate |
+| --- | --- | --- | --- |
+| KS | 0.55 | 0.16 | 0.13 |
+| MMD | 0.47 | 0.49 | 0.55 |
+| Validity (behavioral) | 0.97 | 0.64 | 0.02 |
+| Distributional family (BH) | 0.46 | 0.47 | 0.55 |
+| Pooled pipeline (BH) | 0.59 | 0.80 | 0.55 |
+
+Reliability curve: P(degradation | flag) as the base rate of benign shifts
+(`pi_benign`) rises from 0 to 0.4, with quality_only and both fixed at 0.2 each:
+
+| Benign base rate | Distributional family | Pooled pipeline | Behavioral only |
+| --- | --- | --- | --- |
+| 0.0 | 0.89 | 0.94 | 0.92 |
+| 0.1 | 0.64 | 0.75 | 0.96 |
+| 0.2 | 0.62 | 0.70 | 0.97 |
+| 0.3 | 0.52 | 0.62 | 0.97 |
+| 0.4 | 0.35 | 0.49 | 0.97 |
+
+The three findings, stated plainly:
+
+1. The signal families are nearly disjoint. A silent quality regression (the kind the
+   MMD windows cannot see, because they only contain valid answers) is caught by the
+   behavioral test 61% of the time and by the distributional family 3%. A benign
+   distribution shift is caught 100% versus 3%.
+2. On an equal mixture, a drift flag is a weak quality proxy on its own: the
+   distributional family's flag predicts degradation at 0.46, barely above a coin
+   flip, while the behavioral flag sits at 0.97.
+3. The value of combining both is recall, not precision: the pooled pipeline detects
+   80% of degradations against 64% behavioral alone and 47% distributional alone,
+   while proxy precision stays dominated by the behavioral signal. And flag precision
+   degrades as benign shifts become common, which is the operational condition to
+   watch: in an environment that changes topics often, a drift flag means "look",
+   not "broken".
+
+## 8. Metrics computed per monitoring cycle (runtime)
 
 Every cycle stores and logs these. Names below are the exact keys in the stored
 result, the cycle report, and MLflow.
@@ -225,7 +281,7 @@ Behavioral features stored per response (in `response_features`):
 | `has_code_block` | Markdown code fence present |
 | `response_length`, `is_valid` | Character length and validity flag |
 
-## 8. The committed demo database
+## 10. The committed demo database
 
 Source: `data/seed_drift.db`. Era 1 is 50 runs under adapter seed 42 (null), era 2 is
 50 runs under seed 185 (shifted), 100 runs and 5 cycles total, matched panels
@@ -260,3 +316,7 @@ complementarity of the three detectors.
   the cycle, and cannot go below the permutation floor of about 1/501.
 - Localization at production sample size is weak (section 3) and is presented as
   diagnostic evidence, not a verified localization capability.
+- In the reliability study, quality regression is modeled as a validity drop with
+  valid-answer embeddings held fixed. Real regressions can also shift valid-answer
+  content, which the distributional family would see; the disjointness measured here
+  is the clean case, not the worst case for drift flags.

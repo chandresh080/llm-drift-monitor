@@ -1,7 +1,10 @@
 # LLM Drift Monitor
 
 A monitoring tool that watches whether an LLM's answers quietly change over time, and
-tells you when they do.
+tells you when they do. The research question behind it: **when is unsupervised
+behavioral drift a reliable proxy for quality regression, when is it not, and how much
+does combining distributional and behavioral signals buy?** The experiments section
+answers this with numbers rather than intuition.
 
 Live demo: [llm-drift-monitor-api.onrender.com](https://llm-drift-monitor-api.onrender.com)
 (dashboard at `/`). The hosted demo is self-contained and needs no API keys.
@@ -207,6 +210,23 @@ measured under synthetic nulls and injected shifts, not long-run production guar
   deviation mean shift with 50 reference and 10 current samples, MMD detected 100% of
   injected shifts, the KS test 15%, and the centroid distance baseline 0%. Under the
   null, all three sat at 0%.
+- **Drift as a proxy for quality regression** (`reliability_results.csv`, 100 trials
+  per cell, production sample sizes). This is the central question, studied with a 2x2
+  of distribution shift and quality regression. Three findings. First, the signal
+  families are complementary and nearly disjoint: under a pure quality regression
+  (valid answers get worse, valid-answer embeddings unchanged, which is what the
+  monitor's MMD windows see) the distributional family catches 3% while the behavioral
+  validity test catches 61%; under a pure benign distribution shift those numbers are
+  100% and 3%. Second, on an equal mixture of the four conditions, a drift flag is a
+  weak quality proxy on its own: P(degradation | distributional flag) is 0.46, barely
+  better than a coin flip, while the behavioral flag sits at 0.97. Third, proxy
+  precision depends on the base rate of benign shifts: as the benign share rises from
+  0 to 0.4, the distributional family's precision falls from 0.89 to 0.35 while the
+  behavioral signal stays near 0.97. What the combination buys is recall: the deployed
+  pooled pipeline detects 80% of degradations against 64% for the behavioral signal
+  alone and 47% for the distributional one. In short: distributional drift finds the
+  changes, behavioral features tell you whether they hurt, and neither substitutes
+  for the other.
 - Power and sensitivity sweeps across shift sizes and window sizes (`power_curves.csv`,
   `sensitivity.csv`) say how many probes a day you need for a given change, so the
   prompt count is not a guess.
