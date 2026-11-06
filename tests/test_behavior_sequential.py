@@ -1,6 +1,8 @@
 """Tests for behavioral features, sequential alert policy, and new detectors."""
 
 from behavior_features import extract_behavior_features, is_valid_json, refusal_rate
+import pytest
+
 from drift_tests import centroid_distance
 from sequential_testing import (cumulative_spent, consecutive_flagged_history,
                                 consecutive_streak, spent_alpha)
@@ -74,6 +76,23 @@ class TestSequentialPolicy:
     def test_spending_capped_outside_range(self):
         assert spent_alpha(0, 30, 0.05) == 0.05
         assert spent_alpha(5, 0, 0.05) == 0.05
+
+    def test_holm_is_familywise_and_monotone(self):
+        from drift_tests import holm_correction
+        adjusted, flags = holm_correction([0.01, 0.04, 0.5], alpha=0.05)
+        # Holm: smallest times n, then increasing multipliers, monotone enforced.
+        assert adjusted[0] == pytest.approx(0.03)
+        assert adjusted[1] == pytest.approx(0.08)
+        assert flags == [True, False, False]
+
+    def test_holm_rejects_less_often_than_bh(self):
+        from drift_tests import benjamini_hochberg_correction, holm_correction
+        pvalues = [0.03, 0.03, 0.04]
+        _, bh_flags = benjamini_hochberg_correction(pvalues, alpha=0.05)
+        _, holm_flags = holm_correction(pvalues, alpha=0.05)
+        assert any(bh_flags)
+        assert not all(holm_flags)
+
 
     def test_cumulative_never_exceeds_alpha(self):
         assert cumulative_spent(100, 30, 0.05) == 0.05

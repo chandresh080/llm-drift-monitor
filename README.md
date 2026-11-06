@@ -134,11 +134,12 @@ with no server and no credentials.
 
 ## How this project handles it
 
-The monitor runs the same 40 test prompts against the target model on a schedule and
-stores every answer in SQLite. Each cycle probes a fixed, category balanced subset of
-the suite (two prompts per category per batch), so every cycle covers the whole suite,
-not just its head. Each check then compares a batch of recent answers with a saved
-baseline, using three small statistical tests:
+The monitor runs a fixed, category-balanced panel of 10 prompts (two per category,
+round robin from the 40 prompt suite) against the target model on a schedule and
+stores every answer in SQLite. The panel stays fixed across cycles so windows stay
+matched; the other 30 prompts are currently not exercised, which is the coverage
+trade documented in the limitations below. Each check then compares a batch of recent
+answers with a saved baseline, using three small statistical tests:
 
 1. **Answer length**: a KS test asks whether recent answers are noticeably longer or
    shorter than the baseline ones.
@@ -159,9 +160,13 @@ exactly that.
 Three tests at once should not make three chances to cry wolf, so raw p values go
 through Benjamini-Hochberg correction at alpha = 0.05 before anything is flagged.
 And because the same test runs every cycle, a flag has to persist for two consecutive
-cycles before an alert fires: the correction handles comparisons across tests, the
-persistence rule handles the comparison across time. The persistence requirement and
-its planning horizon are configuration, not folklore.
+cycles before an alert fires. To be precise about what that is: the correction handles
+comparisons across tests within a cycle, and the persistence rule is an operational
+alert filter that suppresses isolated borderline flags. It is not a formal sequential
+error control procedure; there is also an optional, off-by-default alpha-spending
+schedule (Holm within the cycle, a conservative across-cycle budget) for deployments
+that want that stricter gate. Both are configuration, not folklore, and the delay
+experiment reports the deployed rule's measured false-alarm and delay trade-off.
 
 When an alert does fire, it carries its evidence: which tests fired, the MMD statistic,
 the centroid distance baseline, the percentage length shift, and which prompt categories
@@ -172,22 +177,30 @@ auto-panic: a flag means "look at the answers", and a person decides.
 
 ## Does it actually work
 
-Evaluated on synthetic data where the truth is known, using `experiments/`:
+Evaluated on synthetic data where the truth is known, using `experiments/`. Every
+number below is the value in the corresponding committed CSV in `results/`, and every
+script takes a `--seed`, so they can be regenerated. These are per-cycle frequencies
+measured under synthetic nulls and injected shifts, not long-run production guarantees.
 
-- False alarm rate under the null (200 simulations): KS 0.02, z 0.005 of raw p values,
-  MMD and BH-corrected versions 0.015 or lower. In words: when nothing changed, the
-  tests almost never cried wolf.
-- A mismatch of 20 per cent on a MMD bandwidth was caught, then fixed with the median
-  heuristic, so calibration held after the fix.
-- On a 90 day simulation with a change injected at day 45: no alerts during the 100
-  quiet days, and the drift was caught about 18 days after the change started.
-- Power measurements across shift sizes and window sizes say how many probes a day
-  you need for a given change, so the prompt count isn't a guess.
-- Only a one category shifted test pointed at the right category (precision and recall
-  of 1.0 in that experiment), so localization is feasible, not perfect.
-
-Conclusions and CSV/PNG outputs for all of this are in `results/`, and every script
-takes a `--seed`, so the numbers above can be regenerated.
+- **False alarms under the null** (`calibration_fpr.csv`, 1,000 simulations): raw
+  per-test rates KS 3.7%, proportion test 4.0%, MMD 5.0%, against a nominal 5%. Any
+  of the three firing in a cycle: 12.1% raw, 1.9% after Benjamini-Hochberg.
+- **Detection delay and alert policies** (`delay_detection_delay.csv`,
+  `delay_false_alarms.csv`, 100 trials over a 90 day horizon, shift injected on day
+  45): the deployed policy (a flag must persist two consecutive cycles) detected the
+  shift with mean delay 0.97 days and 0.53 false alarms per 100 quiet days, against
+  3.29 per 100 days for an unfiltered single-cycle flag. Persistence trades a day of
+  delay for a six-fold quieter baseline, which is the intended trade.
+- **Localization** (`localization_results.csv`, 100 trials, one of five categories
+  shifted): the same category-wise MMD procedure the monitor runs flags the shifted
+  category with precision 0.945 and recall 0.99, and flags something in 10% of null
+  trials.
+- **Detector baselines** (`baselines_power.csv`, 200 simulations): at a 0.4 standard
+  deviation mean shift, MMD detected 100% of injected shifts, the KS test 15%, and
+  the centroid distance baseline 0%. Under the null, all three sat at 0%.
+- Power and sensitivity sweeps across shift sizes and window sizes (`power_curves.csv`,
+  `sensitivity.csv`) say how many probes a day you need for a given change, so the
+  prompt count is not a guess.
 
 ## Try it
 
@@ -233,6 +246,9 @@ a mocked transport.
   a change can also be benign (an update made answers friendlier).
 - The refusal markers are a handful of explicit patterns, not a validated classifier:
   they catch obvious refusals and would miss polite or indirect ones.
+- Each cycle probes a fixed 10-prompt panel (two per category) out of the 40 prompt
+  suite; the other 30 are not exercised. A wider panel costs inference time on the
+  free hosting tier, so it is a deliberate trade.
 - 40 prompts across 5 categories is a small lens: a shift in an untested behavior
   would not be seen.
 - The numbers in "Does it actually work" come from simulations; real traffic windows

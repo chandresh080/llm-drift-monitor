@@ -13,6 +13,7 @@ SHIFT_DAY = 45
 N_PER_WINDOW = 25
 K_OF_N_M = 5  # sliding window size
 K_OF_N_K = 2  # threshold rejections in window
+PERSIST_K = 2  # deployed policy: consecutive flagged cycles before alerting
 CUSUM_K = 0.5  # CUSUM reference allowance (half shift size)
 CUSUM_H = 3.5  # CUSUM decision boundary threshold
 SHIFT_MAGNITUDE = 1.2  # shift in std units
@@ -29,8 +30,8 @@ def run(
 
     print(f"[delay] Running 90-day sequential horizon across {n_trials} Monte Carlo trials (shift at day {SHIFT_DAY})...")
 
-    trial_delays = {'single': [], 'kofn': [], 'cusum': []}
-    trial_false_alarms = {'single': [], 'kofn': [], 'cusum': []}
+    trial_delays = {'single': [], 'kofn': [], 'persist2': [], 'cusum': []}
+    trial_false_alarms = {'single': [], 'kofn': [], 'persist2': [], 'cusum': []}
 
     sample_daily_trajectory = []
 
@@ -44,8 +45,8 @@ def run(
         single_rejects = []
         cusum_stat = 0.0
 
-        fa_counts = {'single': 0, 'kofn': 0, 'cusum': 0}
-        first_alert = {'single': None, 'kofn': None, 'cusum': None}
+        fa_counts = {'single': 0, 'kofn': 0, 'persist2': 0, 'cusum': 0}
+        first_alert = {'single': None, 'kofn': None, 'persist2': None, 'cusum': None}
 
         for day in range(DAYS):
             day_rng = np.random.default_rng(trial_seed + day)
@@ -65,6 +66,13 @@ def run(
             window = single_rejects[max(0, day - K_OF_N_M + 1):day + 1]
             kofn_alert = bool(sum(window) >= K_OF_N_K)
 
+            # 2b. Deployed alert policy: the per cycle rejection must persist
+            # for PERSIST_K consecutive cycles. This is the rule the monitor
+            # actually gates alerts on (alerts.min_consecutive_cycles).
+            streak_window = single_rejects[max(0, day - PERSIST_K + 1):day + 1]
+            persist2_alert = bool(len(streak_window) == PERSIST_K
+                                  and all(streak_window))
+
             # 3. CUSUM on standardized drift score
             # Drift score = normalized sample mean difference
             drift_score = (float(np.mean(cur_samples)) - float(np.mean(ref_samples))) / (DEFAULT_LENGTH_STD / np.sqrt(N_PER_WINDOW))
@@ -77,6 +85,7 @@ def run(
             alerts_today = {
                 'single': single_alert,
                 'kofn': kofn_alert,
+                'persist2': persist2_alert,
                 'cusum': cusum_alert
             }
 
@@ -96,12 +105,13 @@ def run(
                     'ks_p': float(p),
                     'single_alert': int(single_alert),
                     'kofn_alert': int(kofn_alert),
+                    'persist2_alert': int(persist2_alert),
                     'drift_score': float(drift_score),
                     'cusum_stat': float(cusum_stat),
                     'cusum_alert': int(cusum_alert),
                 })
 
-        for rule in ['single', 'kofn', 'cusum']:
+        for rule in ['single', 'kofn', 'persist2', 'cusum']:
             trial_false_alarms[rule].append(fa_counts[rule])
             # If never alerted after day 45, censor at maximum horizon delay
             delay = (first_alert[rule] - SHIFT_DAY) if first_alert[rule] is not None else (DAYS - SHIFT_DAY)
@@ -112,7 +122,7 @@ def run(
     fa_rows = []
     delay_rows = []
 
-    for rule in ['single', 'kofn', 'cusum']:
+    for rule in ['single', 'kofn', 'persist2', 'cusum']:
         mean_fa = float(np.mean(trial_false_alarms[rule]))
         fa_per_100_days = float((mean_fa / baseline_days) * 100.0)
         mean_delay = float(np.mean(trial_delays[rule]))
@@ -162,9 +172,9 @@ def run(
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5.5))
 
     # Scatter plot: Delay vs False Alarm Rate
-    rule_labels = {'single': 'Single Window (p < 0.05)', 'kofn': f'k-of-n ({K_OF_N_K}-of-{K_OF_N_M})', 'cusum': f'CUSUM (h={CUSUM_H})'}
-    colors = {'single': '#ef4444', 'kofn': '#3b82f6', 'cusum': '#10b981'}
-    markers = {'single': 'o', 'kofn': 's', 'cusum': '^'}
+    rule_labels = {'single': 'Single Window (p < 0.05)', 'kofn': f'k-of-n ({K_OF_N_K}-of-{K_OF_N_M})', 'persist2': f'Deployed policy ({PERSIST_K} consecutive)', 'cusum': f'CUSUM (h={CUSUM_H})'}
+    colors = {'single': '#ef4444', 'kofn': '#3b82f6', 'persist2': '#f59e0b', 'cusum': '#10b981'}
+    markers = {'single': 'o', 'kofn': 's', 'persist2': 'D', 'cusum': '^'}
 
     for r_item, d_item in zip(fa_rows, delay_rows):
         rule = r_item['rule']

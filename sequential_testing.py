@@ -1,27 +1,32 @@
-"""Sequential false alarm control for repeated monitoring cycles.
+"""Sequential alert policy for repeated monitoring cycles.
 
 The Benjamini Hochberg correction inside a cycle handles comparisons across
 the three tests. It does nothing about the temporal multiple testing problem:
 run the monitor daily for a year and even a calibrated per cycle test will
-eventually cry wolf. Two complementary mechanisms live here.
+eventually cry wolf. Two complementary mechanisms live here, and it matters
+to be precise about what each one is.
 
 1. Alert persistence: an alert only fires once drift has been flagged in
    `min_consecutive_cycles` consecutive stored results, including the current
-   one. Isolated borderline cycles no longer page anyone, and the rule is
-   simple enough to reason about and to test.
+   one. This is an operational alert filter that removes isolated borderline
+   flags; it is simple to reason about and to test, but it is not a formal
+   sequential error control procedure and this module makes no such claim
+   for it.
 
-2. Alpha spending: a discrete O'Brien Fleming type schedule, off by default.
+2. Alpha spending: a conservative discrete spending schedule, off by default.
    Cycle t of a planning horizon T may test at
 
        alpha_t = alpha * (2t - 1) / T^2
 
    which sums over t = 1..T to exactly alpha and spends very little early.
-   One honest limitation: the permutation MMD's minimum attainable p value
-   is about 1/501, so at very early cycles the boundary is below what any
-   stored p value could ever clear. The spending layer is therefore an
-   additional gate on top of persistence, not a replacement for it, and
-   neither method claims long horizon guarantees beyond the declared
-   planning horizon.
+   It is O'Brien Fleming in spirit (tiny early increments, a large final
+   one), not the classical boundary itself. Used with the Holm correction
+   within each cycle, the combined procedure holds the family-wise error
+   spent across cycles to alpha over the declared horizon, assuming valid
+   p values. One honest limitation: the permutation MMD's minimum attainable
+   p value is about 1/501, so at very early cycles the boundary is below
+   what any stored p value could ever clear, and no claim extends beyond
+   the declared planning horizon.
 """
 
 from typing import List

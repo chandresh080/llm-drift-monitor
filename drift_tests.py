@@ -1,7 +1,7 @@
 import numpy as np
 from scipy import stats
 from scipy.stats import ks_2samp
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Any
 
 def ks_test(reference_data: List[float], current_data: List[float]) -> Tuple[float, float]:
     """
@@ -296,3 +296,72 @@ def centroid_distance(X: List[List[float]], Y: List[List[float]]) -> float:
         return 1.0 if norm_r != norm_c else 0.0
     cosine = float(np.dot(mu_r, mu_c) / (norm_r * norm_c))
     return float(1.0 - max(-1.0, min(1.0, cosine)))
+
+
+def holm_correction(pvalues: List[float], alpha: float = 0.05) -> Tuple[List[float], List[bool]]:
+    """Holm step-down correction: family-wise error control within a family.
+
+    Where Benjamini Hochberg controls the false discovery rate, Holm controls
+    the probability of even one false rejection, which is what a sequential
+    spending gate needs if it is to hold family-wise guarantees across cycles.
+    """
+    if len(pvalues) == 0:
+        return [], []
+    clean = [1.0 if (np.isnan(p) or np.isinf(p)) else max(0.0, min(1.0, p))
+             for p in pvalues]
+    n = len(clean)
+    order = np.argsort(clean)
+    adjusted_sorted = np.zeros(n)
+    running_max = 0.0
+    for i, idx in enumerate(order):
+        rank = i + 1
+        candidate = clean[idx] * (n - rank + 1)
+        running_max = max(running_max, candidate)
+        adjusted_sorted[i] = min(1.0, running_max)
+    adjusted = np.zeros(n)
+    for i, idx in enumerate(order):
+        adjusted[idx] = adjusted_sorted[i]
+    return list(adjusted), [a <= alpha for a in adjusted]
+
+
+def category_mmd_tests(ref_by_category: Dict[str, List[List[float]]],
+                       cur_by_category: Dict[str, List[List[float]]],
+                       min_samples_per_category: int = 8,
+                       alpha: float = 0.05,
+                       n_permutations: int = 500,
+                       random_seed: int = 42) -> Dict[str, Dict[str, Any]]:
+    """Category-wise MMD with Benjamini Hochberg correction across categories.
+
+    The one shared procedure behind runtime localization and the localization
+    experiment: per category permutation MMD between matched reference and
+    current embeddings, categories without enough samples on both sides
+    reported as skipped rather than tested, and the tested family corrected
+    as one family. Keeping it in one place is what makes an experiment about
+    localization actually validate the localization the monitor performs.
+    """
+    categories = sorted(set(ref_by_category) | set(cur_by_category))
+    if not categories:
+        return {}
+    entry: Dict[str, Dict[str, Any]] = {}
+    tested: List[str] = []
+    raw_pvalues: List[float] = []
+    for category in categories:
+        ref = ref_by_category.get(category, [])
+        cur = cur_by_category.get(category, [])
+        if len(ref) < min_samples_per_category or len(cur) < min_samples_per_category:
+            entry[category] = {
+                'mmd_statistic': None, 'pvalue': None,
+                'reason': f'insufficient samples ({len(ref)}/{len(cur)})'}
+            continue
+        stat, pval = mmd_test(ref, cur, n_permutations=n_permutations,
+                              random_seed=random_seed)
+        entry[category] = {'mmd_statistic': round(float(stat), 6),
+                           'pvalue': round(float(pval), 6)}
+        tested.append(category)
+        raw_pvalues.append(float(pval))
+    if raw_pvalues:
+        adjusted, flags = benjamini_hochberg_correction(raw_pvalues, alpha=alpha)
+        for category, adj_p, flag in zip(tested, adjusted, flags):
+            entry[category]['adjusted_pvalue'] = float(adj_p)
+            entry[category]['significant'] = int(flag)
+    return entry

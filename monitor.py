@@ -14,7 +14,8 @@ from urllib.request import Request, urlopen
 from storage import DriftMonitorStorage
 from embeddings import EmbeddingExtractor
 from drift_tests import (ks_test, proportion_test, mmd_test,
-                         benjamini_hochberg_correction, centroid_distance)
+                         benjamini_hochberg_correction, centroid_distance,
+                         holm_correction, category_mmd_tests)
 from behavior_features import extract_behavior_features, refusal_rate
 from sequential_testing import (spent_alpha, consecutive_flagged_history,
                                 consecutive_streak)
@@ -444,12 +445,27 @@ class LLMDriftMonitor:
         cycle_id = str(uuid.uuid4())[:8]
         adapter_type = self.config['target']['type']
 
-        # Generate responses, measuring per response latency honestly
-        # (the concurrent batch means wall time per response, not per call).
-        batch_started = time.perf_counter()
-        responses = self.adapter.generate_batch([item['text'] for item in items])
-        mean_latency = (time.perf_counter() - batch_started) / max(1, len(items))
-        self.last_cycle_latency_seconds = round(mean_latency, 3)
+        # Generate responses, timing each individual model call. The batch runs
+        # concurrently, so wall clock divided by probe count would understate
+        # latency by the concurrency factor; only per call timings are honest.
+        latencies: List[float] = []
+
+        def timed_generate(prompt: str) -> str:
+            call_started = time.perf_counter()
+            try:
+                return self.adapter.generate(prompt)
+            finally:
+                latencies.append(time.perf_counter() - call_started)
+
+        responses = _generate_batch_concurrent(
+            timed_generate, [item['text'] for item in items])
+        ordered = sorted(latencies)
+        count = max(1, len(ordered))
+        self.last_cycle_latency_seconds = round(sum(ordered) / count, 3)
+        self.last_latency_p50_seconds = round(
+            ordered[(count - 1) // 2] if ordered else 0.0, 3)
+        self.last_latency_p95_seconds = round(
+            ordered[min(count - 1, int(round(0.95 * (count - 1))))] if ordered else 0.0, 3)
 
         run_ids: List[int] = []
         responses_by_text = list(responses)
@@ -582,6 +598,8 @@ class LLMDriftMonitor:
                     'cur_refusal_rate': results.get('cur_refusal_rate'),
                     'flagged_probes': flagged_count,
                     'mean_latency': getattr(self, 'last_cycle_latency_seconds', None),
+                    'latency_p50': getattr(self, 'last_latency_p50_seconds', None),
+                    'latency_p95': getattr(self, 'last_latency_p95_seconds', None),
                     'token_counts': total_tokens,
                     **self._category_mlflow_metrics(results),
                 },
@@ -844,35 +862,10 @@ class LLMDriftMonitor:
             self.storage.run_ids_from_runs(ref_runs_cat))
         cur_by_cat = self.storage.get_category_embeddings(
             self.storage.run_ids_from_runs(cur_runs_cat))
-        categories = sorted(set(ref_by_cat) | set(cur_by_cat))
-        if not categories:
-            return {}
-
-        entry: Dict[str, Dict[str, Any]] = {}
-        tested_categories: List[str] = []
-        raw_pvalues: List[float] = []
-        for category in categories:
-            ref = ref_by_cat.get(category, [])
-            cur = cur_by_cat.get(category, [])
-            if len(ref) < min_per_cat or len(cur) < min_per_cat:
-                entry[category] = {
-                    'mmd_statistic': None, 'pvalue': None,
-                    'reason': f'insufficient samples ({len(ref)}/{len(cur)})'}
-                continue
-            stat, pval = mmd_test(ref, cur, n_permutations=500,
-                                  random_seed=self.random_seed)
-            entry[category] = {'mmd_statistic': round(stat, 6),
-                               'pvalue': round(pval, 6)}
-            tested_categories.append(category)
-            raw_pvalues.append(pval)
-
-        if raw_pvalues:
-            alpha = self.config.get('alerts', {}).get('significance_threshold', 0.05)
-            adjusted, flags = benjamini_hochberg_correction(raw_pvalues, alpha=alpha)
-            for category, adj_p, flag in zip(tested_categories, adjusted, flags):
-                entry[category]['adjusted_pvalue'] = adj_p
-                entry[category]['significant'] = int(flag)
-        return entry
+        alpha = self.config.get('alerts', {}).get('significance_threshold', 0.05)
+        return category_mmd_tests(
+            ref_by_cat, cur_by_cat, min_samples_per_category=min_per_cat,
+            alpha=alpha, n_permutations=500, random_seed=self.random_seed)
 
     def _generate_alerts(self, results: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Generate alerts based on test results.
@@ -899,11 +892,13 @@ class LLMDriftMonitor:
                 cycle_index = len(self.storage.get_recent_drift_flags(1_000_000))
                 horizon = int(alert_cfg.get('planning_horizon_cycles', 30))
                 alpha = alert_cfg.get('significance_threshold', 0.05)
-                strongest = min(
-                    p for p in (results.get('ks_adjusted_pvalue'),
-                                results.get('proportion_z_adjusted_pvalue'),
-                                results.get('mmd_adjusted_pvalue'))
-                    if p is not None)
+                # Holm, not BH: a spending boundary spends family-wise error,
+                # so the within-cycle correction must control family-wise
+                # error too. BH would only control the false discovery rate.
+                holm_adj, _ = holm_correction(
+                    [results.get('ks_pvalue'), results.get('proportion_z_pvalue'),
+                     results.get('mmd_pvalue')], alpha=alpha)
+                strongest = min(holm_adj)
                 persistence_ok = strongest <= spent_alpha(cycle_index, horizon, alpha)
 
             if persistence_ok:
