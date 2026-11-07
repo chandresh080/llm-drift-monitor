@@ -348,6 +348,44 @@ ratio 0.0393, mean token count 11.33. The proportion test shows nothing because 
 seeded shift changes meaning and length, not validity, which is the intended
 complementarity of the three detectors.
 
+## 11. Real hosted-provider comparison, Groq reference versus Gemini current
+
+Source: `REAL_PROVIDER_EXPERIMENT.md`, produced by `experiments/real_providers.py` on
+2026-11-07 with the production monitoring pipeline unchanged. This is a **real
+hosted-provider comparison**, explicitly not a synthetic benchmark: the numbers in
+sections 1 through 10 come from simulated data, and these come from live API calls to
+two different providers. The two kinds of results are not comparable and are kept in
+separate sections for that reason.
+
+Setup: 5 Groq cycles (`openai/gpt-oss-20b`, 50 calls, all successful) fill the 50-run
+reference window, then 1 Gemini cycle (`gemini-3.1-flash-lite` via the native
+generateContent endpoint, 10 calls, all successful) serves as current. Identical 10
+prompt panel (suite 2.1.0), temperature 0.0, max_tokens 512, same embedding model and
+normalization both phases. Groq additionally uses reasoning_effort low because
+gpt-oss-20b is a reasoning model (documented in the experiment report).
+
+Detector results (reference 50 versus current 10, pooled family):
+
+| Detector | Statistic | Raw p | BH adjusted p | Significant |
+| --- | --- | --- | --- | --- |
+| KS (response lengths) | 0.30 | 0.395 | 1.0 | No |
+| Proportion / Fisher (validity) | n/a | 1.000 | 1.0 | No |
+| MMD (embeddings, 500 perms) | 0.000 | 0.978 | 1.0 | No |
+
+Verdict: no drift detected, no alerts. Effect sizes: centroid distance 0.152, length
+shift +19.2%, refusal rate 0.0 both sides.
+
+Timing, kept separate (see the report for details): provider per-call latency Groq p95
+0.98 to 1.15 s across cycles, Gemini p95 2.59 s; end-to-end current-cycle wall time
+4.13 s; monitoring overhead p95 0.388 s per cycle from the section 9 benchmark.
+
+Limitations, restated from the report: a single current cycle cannot exercise the
+two-cycle persistence rule or the category-wise family (the category family starved
+and reported nothing rather than junk p values); one trial supports no detection-rate
+or false-alarm claims; and, most importantly, this is a cross-provider, cross-model
+comparison, so it measures a difference between two models, not provider behavior in
+isolation and not temporal drift within a single model.
+
 ## What these numbers do not claim
 
 - All rates are per-cycle frequencies under synthetic nulls and injected shifts.
@@ -370,3 +408,8 @@ complementarity of the three detectors.
   alert precision, p95 overhead) are simulation and benchmark measurements. Alert
   precision in particular is relative to the simulation's alert-day structure. None
   is a production guarantee.
+- The real hosted-provider comparison (section 11) is a single cross-provider,
+  cross-model trial. It validates that the pipeline runs end to end against live
+  APIs and measures a difference between two different models served by two
+  different providers. It supports no claim about within-model temporal drift,
+  provider behavior in isolation, detection rate, or false alarm rate.

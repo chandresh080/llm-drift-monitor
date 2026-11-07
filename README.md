@@ -72,9 +72,12 @@ Notes on the parts that are easy to get wrong:
   same prompt ids as the current cycle are eligible, so reference and current always
   contain responses to the same prompts, and the windows are disjoint by construction.
   A changed prompt mix cannot masquerade as model drift.
-- The adapter is pluggable. The same pipeline runs against a local model over Ollama or
-  against any hosted OpenAI-compatible endpoint, so the monitor follows whatever the
-  product actually calls in production.
+- The adapter is pluggable. The same pipeline runs against a local model over Ollama,
+  against any hosted OpenAI-compatible endpoint (verified against Groq,
+  `openai/gpt-oss-20b`), or against Gemini through its native `generateContent`
+  endpoint (verified against `gemini-3.1-flash-lite`), so the monitor follows whatever
+  the product actually calls in production. Keys come from the environment only and a
+  provider failure is reported, never silently replaced by the fake adapter.
 
 ## Operational design
 
@@ -255,6 +258,11 @@ substitutes for the other.
   `uvicorn api:app --port 8000` and open `http://localhost:8000`.
 - With your own local model (Ollama): point `config/config.yaml` at `target.type: local`
   and run `python -m main --run` as a daily cron job.
+- Against real hosted providers: set `GROQ_API_KEY` and `GEMINI_API_KEY` and run
+  `DRIFT_MONITOR_TRACKING=0 python -m experiments.real_providers`. It fills the
+  reference window from Groq, switches the target to Gemini for one current cycle with
+  identical prompts and settings, and runs the standard detectors over the live data.
+  Full results and the cross-provider caveats are in `REAL_PROVIDER_EXPERIMENT.md`.
 
 The service is also a plain JSON API: `GET /health`, `GET /drift/latest`,
 `GET /drift/results`, `GET /alerts`, `GET /runs`, `GET /stats`, `POST /runs`. The
@@ -275,11 +283,14 @@ dashboard is a thin page over it.
 
 ## Testing
 
-`pytest` (55 tests) and `ruff check .` run in CI on every push. The tests cover the BH
+`pytest` (82 tests) and `ruff check .` run in CI on every push. The tests cover the BH
 correction against a hand-checked example, the reference window logic, the behavioral
 features, the sequential alert policy (streaks and the alpha spending schedule), the
 centroid baseline, alert storage, and the retry behaviour of the network adapters with
-a mocked transport.
+a mocked transport. Hosted provider support (`tests/test_providers.py`) is covered
+with fully mocked network calls: response normalization for Groq and Gemini, missing
+keys, API errors, timeouts, malformed and empty responses, and the config dispatch;
+no test ever calls a real API or consumes quota.
 
 ## Honest limitations
 
@@ -304,5 +315,9 @@ a mocked transport.
   would not be seen.
 - The numbers in "Does it actually work" come from simulations; real traffic windows
   are noisier than the synthetic ones.
+- The real hosted-provider experiment (`REAL_PROVIDER_EXPERIMENT.md`) compares two
+  different models from two different providers in a single trial. No drift fired, and
+  the result says nothing about within-model temporal drift, provider behavior in
+  isolation, or detection rates. Those claims rest on the simulations.
 - The free hosting tier has a small memory budget and a database that resets on
   redeploys; locally, persistence and MLflow logging are unrestricted.

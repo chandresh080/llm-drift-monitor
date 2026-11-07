@@ -135,6 +135,9 @@ def _post_json_with_retry(
     last_error: Optional[Exception] = None
     for attempt in range(max_retries + 1):
         try:
+            # A real User-Agent: some hosted endpoints (Groq behind Cloudflare)
+            # reject the default Python-urllib agent with HTTP 403.
+            headers = {"User-Agent": "llm-drift-monitor/1.0", **(headers or {})}
             request = Request(
                 url,
                 data=data,
@@ -254,7 +257,8 @@ class LocalLLMAdapter:
         """Cheap availability probe for the health endpoint."""
         try:
             with urlopen(Request(f"{self.base_url}/api/tags",
-                                 headers={"Content-Type": "application/json"}),
+                                 headers={"Content-Type": "application/json",
+                                          "User-Agent": "llm-drift-monitor/1.0"}),
                          timeout=3.0) as response:
                 return response.status == 200
         except Exception:
@@ -269,7 +273,8 @@ class OpenAICompatibleAdapter:
                  timeout: float = 120.0,
                  temperature: float = 0.0,
                  max_tokens: int = 128,
-                 max_retries: int = 3):
+                 max_retries: int = 3,
+                 reasoning_effort: Optional[str] = None):
         self.model_id = model_id
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY") or ""
         self.base_url = base_url.rstrip("/")
@@ -277,6 +282,11 @@ class OpenAICompatibleAdapter:
         self.temperature = float(temperature)
         self.max_tokens = int(max_tokens)
         self.max_retries = int(max_retries)
+        # Optional provider knob for reasoning models (e.g. Groq's
+        # openai/gpt-oss-20b supports 'low'|'medium'|'high'). Without cap
+        # management these models can spend the whole token budget on hidden
+        # reasoning and return no answer text at all.
+        self.reasoning_effort = reasoning_effort
         self.breaker = CircuitBreaker()
         if not self.api_key:
             raise RuntimeError(
@@ -296,6 +306,8 @@ class OpenAICompatibleAdapter:
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
         }
+        if self.reasoning_effort:
+            payload["reasoning_effort"] = self.reasoning_effort
         try:
             result = _post_json_with_retry(
                 url=f"{self.base_url}/chat/completions",
@@ -312,16 +324,25 @@ class OpenAICompatibleAdapter:
             self.breaker.record_failure()
             raise
         self.breaker.record_success()
-        generated = result.get("choices", [{}])[0].get("message", {}).get("content")
-        if not isinstance(generated, str):
-            raise RuntimeError("OpenAI-compatible response is missing the generated text")
+        # Token usage, when the provider returns it, is kept for experiment
+        # reporting; the monitoring pipeline itself only needs the text.
+        self.last_usage = result.get('usage')
+        choice = result.get("choices", [{}])[0]
+        generated = choice.get("message", {}).get("content")
+        if not isinstance(generated, str) or not generated:
+            # Reasoning models can spend the whole token budget before any
+            # content appears; an empty answer is a failed call, not data.
+            raise RuntimeError(
+                "OpenAI-compatible response is missing the generated text "
+                f"(finish reason: {choice.get('finish_reason', 'unknown')})")
         return generated
 
     def ping(self) -> bool:
         """Cheap availability probe for the health endpoint."""
         try:
             with urlopen(Request(f"{self.base_url}/models",
-                                 headers={"Authorization": f"Bearer {self.api_key}"}),
+                                 headers={"Authorization": f"Bearer {self.api_key}",
+                                          "User-Agent": "llm-drift-monitor/1.0"}),
                          timeout=3.0) as response:
                 return response.status == 200
         except Exception:
@@ -330,6 +351,95 @@ class OpenAICompatibleAdapter:
     def generate_batch(self, prompts: List[str]) -> List[str]:
         """Generate responses for prompts concurrently; each call is HTTP bound."""
         return _generate_batch_concurrent(self.generate, prompts)
+
+
+class GeminiAdapter:
+    """Call Google Gemini through the native generateContent endpoint.
+
+    The OpenAI-compatible path above also nominally covers Gemini, but the
+    hosted compatibility layer has been observed to 404 for some models, so
+    this adapter speaks the native generativelanguage API instead and keeps
+    the difference encapsulated here. Responses are normalized to plain text
+    so the monitoring pipeline needs no provider-specific handling.
+    """
+
+    def __init__(self, model_id: str = "gemini-3.1-flash-lite",
+                 api_key: Optional[str] = None,
+                 base_url: str = "https://generativelanguage.googleapis.com/v1beta",
+                 timeout: float = 60.0,
+                 temperature: float = 0.0,
+                 max_tokens: int = 128,
+                 max_retries: int = 3):
+        self.model_id = model_id
+        self.api_key = api_key or os.environ.get("GEMINI_API_KEY") or ""
+        self.base_url = base_url.rstrip("/")
+        self.timeout = float(timeout)
+        self.temperature = float(temperature)
+        self.max_tokens = int(max_tokens)
+        self.max_retries = int(max_retries)
+        self.breaker = CircuitBreaker()
+        self.last_usage = None
+        if not self.api_key:
+            raise RuntimeError(
+                "Gemini API key is required. Set GEMINI_API_KEY (e.g. in .env) "
+                "or pass api_key explicitly.")
+
+    def generate(self, prompt: str) -> str:
+        """Generate one response using the native generateContent endpoint."""
+        self.breaker.before_call()
+        url = f"{self.base_url}/models/{self.model_id}:generateContent"
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": self.temperature,
+                "maxOutputTokens": self.max_tokens,
+            },
+        }
+        try:
+            result = _post_json_with_retry(
+                url=url,
+                payload=payload,
+                timeout=self.timeout,
+                max_retries=self.max_retries,
+                label="Gemini native endpoint",
+                headers={
+                    "Content-Type": "application/json",
+                    "x-goog-api-key": self.api_key,
+                },
+            )
+        except Exception:
+            self.breaker.record_failure()
+            raise
+        self.breaker.record_success()
+        # Token usage, when the provider returns it, is kept for experiment
+        # reporting; the monitoring pipeline itself only needs the text.
+        self.last_usage = result.get('usageMetadata')
+        candidates = result.get("candidates") or []
+        parts = (candidates[0].get("content", {}).get("parts", [])
+                 if candidates else [])
+        texts = [p.get("text", "") for p in parts if isinstance(p, dict)]
+        generated = "".join(texts)
+        if not generated:
+            finish = candidates[0].get("finishReason", "UNKNOWN") if candidates else "NONE"
+            raise RuntimeError(
+                f"Gemini response contained no text (finishReason: {finish})")
+        return generated
+
+    def generate_batch(self, prompts: List[str]) -> List[str]:
+        """Generate responses for prompts concurrently; each call is HTTP bound."""
+        return _generate_batch_concurrent(self.generate, prompts)
+
+    def ping(self) -> bool:
+        """Cheap availability probe for the health endpoint."""
+        try:
+            with urlopen(Request(f"{self.base_url}/models",
+                                 headers={"x-goog-api-key": self.api_key,
+                                          "User-Agent": "llm-drift-monitor/1.0"}),
+                         timeout=3.0) as response:
+                return response.status == 200
+        except Exception:
+            return False
+
 
 def balanced_category_subset(items: List[Dict[str, Any]],
                              num: Optional[int]) -> List[Dict[str, Any]]:
@@ -431,6 +541,19 @@ class LLMDriftMonitor:
                 temperature=target_cfg.get('temperature', 0.0),
                 max_tokens=target_cfg.get('max_tokens', 128),
             )
+        elif adapter_type == 'gemini':
+            # Gemini via the native generateContent endpoint, which is the
+            # verified path (the hosted OpenAI-compatible layer has been
+            # observed to 404 for some models).
+            return GeminiAdapter(
+                model_id=os.environ.get('GEMINI_MODEL') or 'gemini-3.1-flash-lite',
+                api_key=os.environ.get('GEMINI_API_KEY') or '',
+                base_url=target_cfg.get(
+                    'base_url', 'https://generativelanguage.googleapis.com/v1beta'),
+                timeout=target_cfg.get('timeout_seconds', 60),
+                temperature=target_cfg.get('temperature', 0.0),
+                max_tokens=target_cfg.get('max_tokens', 128),
+            )
         elif adapter_type == 'openai-compatible':
             if os.environ.get('GEMINI_API_KEY'):
                 # Gemini (Google AI) via the OpenAI-compatible endpoint
@@ -445,6 +568,7 @@ class LLMDriftMonitor:
                     model_id=os.environ.get('GROQ_MODEL') or 'llama-3.3-70b-versatile',
                     api_key=os.environ.get('GROQ_API_KEY') or os.environ.get('OPENAI_API_KEY') or '',
                     base_url=os.environ.get('GROQ_BASE_URL') or 'https://api.groq.com/openai/v1',
+                    reasoning_effort=target_cfg.get('reasoning_effort'),
                 )
             # Grok (xAI) via the OpenAI-compatible endpoint
             return OpenAICompatibleAdapter(

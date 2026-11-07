@@ -3,6 +3,13 @@
 # Target LLM adapter configuration
 target:
   type: "local"  # Local Ollama inference; no hosted API calls
+  # Hosted providers:
+  #   type: "openai-compatible" with GROQ_API_KEY in the environment (or .env)
+  #         uses Groq, model from GROQ_MODEL (verified: openai/gpt-oss-20b).
+  #   type: "gemini" uses the native Gemini generateContent endpoint with
+  #         GEMINI_API_KEY, model from GEMINI_MODEL (verified:
+  #         gemini-3.1-flash-lite).
+  # Never commit real keys; see config/.env.example.
   model_id: "llama3.2:1b"
   base_url: "http://localhost:11434"
   timeout_seconds: 180

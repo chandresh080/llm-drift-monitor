@@ -1,0 +1,215 @@
+{
+  "started_at": "2026-11-07T20:57:05.465316",
+  "setup": {
+    "reference_provider": "Groq",
+    "reference_model": "openai/gpt-oss-20b",
+    "reference_base_url": "https://api.groq.com/openai/v1",
+    "current_provider": "Google Gemini",
+    "current_model": "gemini-3.1-flash-lite",
+    "current_base_url": "https://generativelanguage.googleapis.com/v1beta",
+    "generation_settings": {
+      "temperature": 0.0,
+      "max_tokens": 512,
+      "timeout_s": 60
+    },
+    "groq_reasoning_effort": "low",
+    "uncontrolled_differences": [
+      "different underlying models (this is a cross-provider comparison, not a within-model temporal drift study)",
+      "Groq openai/gpt-oss-20b consumes part of the token budget on hidden reasoning even at low effort; Gemini does not expose this knob in this pipeline"
+    ],
+    "prompt_panel_version": "2.1.0",
+    "prompts_per_cycle": 10,
+    "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+    "embedding_device": "cpu",
+    "reference_window_size": 50,
+    "min_consecutive_cycles_override": 1,
+    "note": "min_consecutive_cycles lowered from 2 to 1 because a single current cycle cannot satisfy two-cycle persistence; this is an experiment-only override"
+  },
+  "reference_cycles": [
+    {
+      "phase": "groq_reference",
+      "cycle": 1,
+      "wall_seconds": 8.912,
+      "gen_latency_mean_s": 0.8,
+      "gen_latency_p50_s": 0.686,
+      "gen_latency_p95_s": 1.154,
+      "usage": {
+        "queue_time": 0.315934976,
+        "prompt_tokens": 87,
+        "prompt_time": 0.004119015,
+        "completion_tokens": 290,
+        "completion_time": 0.297709085,
+        "total_tokens": 377,
+        "total_time": 0.3018281,
+        "completion_tokens_details": {
+          "reasoning_tokens": 5
+        }
+      },
+      "error": null,
+      "tests_run": false,
+      "ok_runs": 10,
+      "failed_runs": 0
+    },
+    {
+      "phase": "groq_reference",
+      "cycle": 2,
+      "wall_seconds": 1.634,
+      "gen_latency_mean_s": 0.606,
+      "gen_latency_p50_s": 0.493,
+      "gen_latency_p95_s": 1.009,
+      "usage": {
+        "queue_time": 0.28524161,
+        "prompt_tokens": 87,
+        "prompt_time": 0.005717321,
+        "completion_tokens": 301,
+        "completion_time": 0.354262582,
+        "total_tokens": 388,
+        "total_time": 0.359979903,
+        "completion_tokens_details": {
+          "reasoning_tokens": 5
+        }
+      },
+      "error": null,
+      "tests_run": false,
+      "ok_runs": 10,
+      "failed_runs": 0
+    },
+    {
+      "phase": "groq_reference",
+      "cycle": 3,
+      "wall_seconds": 1.776,
+      "gen_latency_mean_s": 0.679,
+      "gen_latency_p50_s": 0.56,
+      "gen_latency_p95_s": 0.985,
+      "usage": {
+        "queue_time": 0.365692931,
+        "prompt_tokens": 87,
+        "prompt_time": 0.004472458,
+        "completion_tokens": 290,
+        "completion_time": 0.330505089,
+        "total_tokens": 377,
+        "total_time": 0.334977547,
+        "completion_tokens_details": {
+          "reasoning_tokens": 5
+        }
+      },
+      "error": null,
+      "tests_run": false,
+      "ok_runs": 10,
+      "failed_runs": 0
+    },
+    {
+      "phase": "groq_reference",
+      "cycle": 4,
+      "wall_seconds": 1.769,
+      "gen_latency_mean_s": 0.758,
+      "gen_latency_p50_s": 0.729,
+      "gen_latency_p95_s": 0.981,
+      "usage": {
+        "queue_time": 0.316012315,
+        "prompt_tokens": 87,
+        "prompt_time": 0.004140106,
+        "completion_tokens": 302,
+        "completion_time": 0.340753541,
+        "total_tokens": 389,
+        "total_time": 0.344893647,
+        "completion_tokens_details": {
+          "reasoning_tokens": 5
+        }
+      },
+      "error": null,
+      "tests_run": false,
+      "ok_runs": 10,
+      "failed_runs": 0
+    },
+    {
+      "phase": "groq_reference",
+      "cycle": 5,
+      "wall_seconds": 1.72,
+      "gen_latency_mean_s": 0.601,
+      "gen_latency_p50_s": 0.494,
+      "gen_latency_p95_s": 0.999,
+      "usage": {
+        "queue_time": 0.36713737,
+        "prompt_tokens": 87,
+        "prompt_time": 0.005585252,
+        "completion_tokens": 301,
+        "completion_time": 0.341794905,
+        "total_tokens": 388,
+        "total_time": 0.347380157,
+        "completion_tokens_details": {
+          "reasoning_tokens": 5
+        }
+      },
+      "error": null,
+      "tests_run": false,
+      "ok_runs": 10,
+      "failed_runs": 0
+    }
+  ],
+  "current_cycles": [
+    {
+      "phase": "gemini_current",
+      "cycle": 1,
+      "wall_seconds": 4.134,
+      "gen_latency_mean_s": 1.612,
+      "gen_latency_p50_s": 1.31,
+      "gen_latency_p95_s": 2.586,
+      "usage": {
+        "promptTokenCount": 16,
+        "candidatesTokenCount": 508,
+        "totalTokenCount": 524,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 16
+          }
+        ],
+        "serviceTier": "standard"
+      },
+      "error": null,
+      "tests_run": true,
+      "ok_runs": 10,
+      "failed_runs": 0,
+      "results": {
+        "timestamp": "2026-11-07T20:59:05.375119",
+        "reference_size": 50,
+        "current_size": 10,
+        "ref_length_count": 50,
+        "cur_length_count": 10,
+        "ref_emb_count": 50,
+        "cur_emb_count": 10,
+        "ref_valid_count": 50,
+        "cur_valid_count": 10,
+        "ks_statistic": 0.3,
+        "ks_pvalue": 0.39459210638345227,
+        "ks_raw_pvalue": 0.39459210638345227,
+        "proportion_z_stat": NaN,
+        "proportion_z_pvalue": 1.0,
+        "proportion_z_raw_pvalue": 1.0,
+        "proportion_test_method": "fisher",
+        "mmd_statistic": 0.0,
+        "mmd_pvalue": 0.9780439121756487,
+        "mmd_raw_pvalue": 0.9780439121756487,
+        "ref_mean_length": 829.8,
+        "cur_mean_length": 989.3,
+        "length_shift_pct": 19.2,
+        "centroid_distance": 0.152187,
+        "ref_refusal_rate": 0.0,
+        "cur_refusal_rate": 0.0,
+        "refusal_rate_change": 0.0,
+        "category_tests": {},
+        "ks_adjusted_pvalue": 1.0,
+        "ks_significant": 0,
+        "proportion_z_adjusted_pvalue": 1.0,
+        "proportion_z_significant": 0,
+        "mmd_adjusted_pvalue": 1.0,
+        "mmd_significant": 0,
+        "bh_significant_tests": [],
+        "overall_drift_detected": 0,
+        "overall_quality_degradation": 0
+      },
+      "alerts": []
+    }
+  ]
+}
