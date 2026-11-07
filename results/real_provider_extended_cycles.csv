@@ -1,0 +1,6 @@
+phase,cycle,wall_seconds,ok_runs,failed_runs,gen_latency_mean_s,gen_latency_p50_s,gen_latency_p95_s,prompt_tokens,completion_tokens,total_tokens,error,tests_run
+gemini_current,1,13.324,10,0,2.283,2.123,4.013,16,508,524,,True
+gemini_current,2,4.179,10,0,1.722,1.216,3.239,16,508,524,,True
+gemini_current,3,16.997,10,0,4.431,1.66,15.137,16,508,524,,True
+gemini_current,4,49.149,10,0,7.618,1.756,48.507,13,508,521,,True
+gemini_current,5,5.668,10,0,2.017,1.507,3.912,16,508,524,,True

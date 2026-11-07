@@ -7,10 +7,12 @@ adapter to Gemini (gemini-3.1-flash-lite, native generateContent endpoint) and
 runs the same prompts through the standard monitoring cycle, so the existing
 detectors, storage, windows, embeddings and alert policy are used unchanged.
 
-Generation settings are pinned for both providers: temperature 0.0, 128 max
-output tokens, identical prompt text and order, identical response
-normalization and the same embedding model. What cannot be controlled is the
-model behind the endpoint: the two providers run different underlying models.
+Generation settings are kept as close as the providers allow: temperature 0.0
+and 512 max output tokens are pinned for both providers, the prompt text and
+order and the embedding model are the same. They are not perfectly identical
+because only Groq exposes reasoning_effort (low here); the difference is
+recorded as an uncontrolled one. What cannot be controlled at all is the model
+behind the endpoint: the two providers run different underlying models.
 
 Critical caveat, stated up front: a detected shift here is a cross-provider,
 cross-model difference. It cannot be attributed exclusively to provider
@@ -52,18 +54,24 @@ GENERATION_SETTINGS = {"temperature": 0.0, "max_tokens": 512, "timeout_s": 60}
 # Groq's on-demand tier allows 30 requests per minute; ten concurrent calls
 # per cycle plus retries can exceed it, so cycles are paced apart.
 PACE_SECONDS = 25
+# Gemini's free tier allows only 15 requests per minute per model. Two cycles
+# of ten calls inside one rolling minute put up to forty requests (including
+# retries) in the window, so Gemini cycles are spaced at 70 seconds, which
+# keeps any rolling minute at or under the limit.
+GEMINI_PACE_SECONDS = 70
 
 
-def build_monitor(db_path: str) -> LLMDriftMonitor:
+def build_monitor(db_path: str, persistence_override: bool) -> LLMDriftMonitor:
     """Cloud config pointed at the experiment database."""
     config_path = os.path.join(REPO_ROOT, "config", "config.cloud.yaml")
     with open(config_path) as f:
         config = yaml.safe_load(f)
     config["data"]["db_path"] = db_path
-    # A single current cycle can never satisfy two-cycle persistence, so the
-    # policy gate is lowered for this experiment to obtain an alert decision.
-    # Detector-level flags are reported regardless of this setting.
-    config.setdefault("alerts", {})["min_consecutive_cycles"] = 1
+    if persistence_override:
+        # A single current cycle can never satisfy two-cycle persistence, so
+        # the policy gate is lowered for the single-cycle run to obtain an
+        # alert decision. Detector-level flags are reported regardless.
+        config.setdefault("alerts", {})["min_consecutive_cycles"] = 1
     config_path = os.path.join(tempfile.gettempdir(), "real-providers-config.yaml")
     with open(config_path, "w") as f:
         yaml.safe_dump(config, f)
@@ -130,51 +138,75 @@ def main():
     parser.add_argument('--reference-cycles', type=int, default=5,
                         help='Groq reference cycles; 5 x 10 probes fills the '
                              '50-run reference window')
+    parser.add_argument('--current-cycles', type=int, default=1,
+                        help='Gemini current cycles; 5 or more exercises the '
+                             'two-cycle persistence rule and the category '
+                             'family with default alert settings')
+    parser.add_argument('--resume', action='store_true',
+                        help='keep an existing data/real_providers.db and skip '
+                             'the Groq reference collection; used to extend a '
+                             'completed run with more Gemini cycles')
+    parser.add_argument('--out-prefix', type=str, default='real_provider',
+                        help='prefix for the output file names in results/')
     parser.add_argument('--out-dir', type=str, default=None)
     args = parser.parse_args()
     out_dir = args.out_dir or os.path.join(REPO_ROOT, 'results')
     os.makedirs(out_dir, exist_ok=True)
 
-    for var in ('GROQ_API_KEY', 'GEMINI_API_KEY'):
-        if not os.environ.get(var):
+    if not args.resume:
+        if not os.environ.get('GROQ_API_KEY'):
             raise SystemExit(
-                f"{var} is not set. Export it or put it in .env. "
+                "GROQ_API_KEY is not set. Export it or put it in .env. "
                 "The experiment does not fall back to the fake provider.")
+    if not os.environ.get('GEMINI_API_KEY'):
+        raise SystemExit(
+            "GEMINI_API_KEY is not set. Export it or put it in .env. "
+            "The experiment does not fall back to the fake provider.")
 
     db_path = os.path.join(REPO_ROOT, 'data', 'real_providers.db')
-    if os.path.exists(db_path):
+    if args.resume:
+        if not os.path.exists(db_path):
+            raise SystemExit(
+                "No existing data/real_providers.db to resume; run the full "
+                "experiment first.")
+    elif os.path.exists(db_path):
         os.remove(db_path)  # reproducibility: every run starts from nothing
 
-    monitor = build_monitor(db_path)
+    monitor = build_monitor(db_path,
+                            persistence_override=args.current_cycles <= 1)
     started_at = datetime.now().isoformat()
     print(f"[real-providers] start {started_at}, panel version "
           f"{monitor.canary_prompts['version']}, embedding model "
           f"{monitor.config['embeddings']['model_name']}")
 
-    # Reference collection on Groq.
-    monitor.adapter = OpenAICompatibleAdapter(
-        model_id=GROQ_MODEL, base_url=GROQ_BASE_URL,
-        api_key=os.environ.get('GROQ_API_KEY') or '',
-        timeout=GENERATION_SETTINGS['timeout_s'],
-        temperature=GENERATION_SETTINGS['temperature'],
-        max_tokens=GENERATION_SETTINGS['max_tokens'],
-        reasoning_effort='low')  # gpt-oss-20b is a reasoning model; without
-    # cap management it spends the whole token budget on hidden reasoning
-    # and returns no answer text (documented provider-specific setting)
-    reference = run_phase(monitor, 'groq_reference', args.reference_cycles,
-                          pace_seconds=PACE_SECONDS)
+    reference = []
+    if not args.resume:
+        # Reference collection on Groq.
+        monitor.adapter = OpenAICompatibleAdapter(
+            model_id=GROQ_MODEL, base_url=GROQ_BASE_URL,
+            api_key=os.environ.get('GROQ_API_KEY') or '',
+            timeout=GENERATION_SETTINGS['timeout_s'],
+            temperature=GENERATION_SETTINGS['temperature'],
+            max_tokens=GENERATION_SETTINGS['max_tokens'],
+            reasoning_effort='low')  # gpt-oss-20b is a reasoning model; without
+        # cap management it spends the whole token budget on hidden reasoning
+        # and returns no answer text (documented provider-specific setting)
+        reference = run_phase(monitor, 'groq_reference',
+                              args.reference_cycles, pace_seconds=PACE_SECONDS)
 
-    # Switch to Gemini for the comparison cycle.
+    # Switch to Gemini for the comparison cycles. Like the Groq side, cycles
+    # are paced apart so the run stays politely inside rate limits.
     monitor.adapter = GeminiAdapter(
         model_id=GEMINI_MODEL, base_url=GEMINI_BASE_URL,
         api_key=os.environ.get('GEMINI_API_KEY') or '',
         timeout=GENERATION_SETTINGS['timeout_s'],
         temperature=GENERATION_SETTINGS['temperature'],
         max_tokens=GENERATION_SETTINGS['max_tokens'])
-    current = run_phase(monitor, 'gemini_current', 1)
+    current = run_phase(monitor, 'gemini_current', args.current_cycles,
+                        pace_seconds=GEMINI_PACE_SECONDS)
 
     # Persist per-cycle records.
-    csv_path = os.path.join(out_dir, 'real_provider_cycles.csv')
+    csv_path = os.path.join(out_dir, f'{args.out_prefix}_cycles.csv')
     fieldnames = ['phase', 'cycle', 'wall_seconds', 'ok_runs', 'failed_runs',
                   'gen_latency_mean_s',
                   'gen_latency_p50_s', 'gen_latency_p95_s',
@@ -203,7 +235,28 @@ def main():
             })
 
     # Full machine-readable result for the report.
-    json_path = os.path.join(out_dir, 'real_provider_results.json')
+    json_path = os.path.join(out_dir, f'{args.out_prefix}_results.json')
+    if args.current_cycles <= 1:
+        alert_note = {
+            'min_consecutive_cycles_override': 1,
+            'note': 'min_consecutive_cycles lowered from 2 to 1 because a '
+                    'single current cycle cannot satisfy two-cycle persistence; '
+                    'this is an experiment-only override',
+        }
+    else:
+        alert_note = {
+            'min_consecutive_cycles_override': None,
+            'note': 'the default two-cycle persistence rule is in force; a '
+                    'single flagged cycle stays silent until the next cycle '
+                    'flags as well',
+        }
+    if args.resume:
+        alert_note['resumed'] = {
+            'source_run': 'the committed run documented in '
+                          'REAL_PROVIDER_EXPERIMENT.md; its database provides '
+                          'the 50-run Groq reference window',
+            'groq_api_calls': 0,
+        }
     payload = {
         'started_at': started_at,
         'setup': {
@@ -225,10 +278,7 @@ def main():
             'embedding_model': monitor.config['embeddings']['model_name'],
             'embedding_device': monitor.config['embeddings']['device'],
             'reference_window_size': monitor.config['reference']['window_size'],
-            'min_consecutive_cycles_override': 1,
-            'note': 'min_consecutive_cycles lowered from 2 to 1 because a '
-                    'single current cycle cannot satisfy two-cycle persistence; '
-                    'this is an experiment-only override',
+            **alert_note,
         },
         'reference_cycles': reference,
         'current_cycles': current,

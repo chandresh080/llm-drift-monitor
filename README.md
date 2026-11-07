@@ -262,7 +262,9 @@ substitutes for the other.
   `DRIFT_MONITOR_TRACKING=0 python -m experiments.real_providers`. It fills the
   reference window from Groq, switches the target to Gemini for one current cycle with
   identical prompts and settings, and runs the standard detectors over the live data.
-  Full results and the cross-provider caveats are in `REAL_PROVIDER_EXPERIMENT.md`.
+  `--resume --current-cycles N` extends a completed run with more Gemini cycles under
+  the default alert policy. Full results, an extended five-cycle phase, and the
+  cross-provider caveats are in `REAL_PROVIDER_EXPERIMENT.md`.
 
 The service is also a plain JSON API: `GET /health`, `GET /drift/latest`,
 `GET /drift/results`, `GET /alerts`, `GET /runs`, `GET /stats`, `POST /runs`. The
@@ -316,8 +318,12 @@ no test ever calls a real API or consumes quota.
 - The numbers in "Does it actually work" come from simulations; real traffic windows
   are noisier than the synthetic ones.
 - The real hosted-provider experiment (`REAL_PROVIDER_EXPERIMENT.md`) compares two
-  different models from two different providers in a single trial. No drift fired, and
-  the result says nothing about within-model temporal drift, provider behavior in
-  isolation, or detection rates. Those claims rest on the simulations.
+  different models from two different providers. The pooled family never flagged, in
+  the single cycle or the five-cycle extension, and no alert fired even with the
+  default persistence rule; a category-level diagnostic did flag one category, but
+  category results do not change the verdict or page anyone. Nothing there says
+  anything about within-model temporal drift, provider behavior in isolation, or
+  detection rates: the extended cycles are repeats of one deterministic answer set,
+  not independent trials. Those claims rest on the simulations.
 - The free hosting tier has a small memory budget and a database that resets on
   redeploys; locally, persistence and MLflow logging are unrestricted.

@@ -386,6 +386,18 @@ or false-alarm claims; and, most importantly, this is a cross-provider, cross-mo
 comparison, so it measures a difference between two models, not provider behavior in
 isolation and not temporal drift within a single model.
 
+The extended phase (same day, five more Gemini cycles on the same database with the
+default configuration) exercises both missing pieces. The persistence rule ran
+unmodified and no cycle flagged, so no alert fired. The category family was fully
+tested in every cycle on Gemini only current windows versus the Groq reference, and
+one category is stable across repeats: refusal_probe, MMD statistic 0.450, raw p
+0.004, BH adjusted p 0.020, marked significant; the other four categories are not
+significant in the adjusted family. Category flags are diagnostic and do not set the
+drift verdict or fire alerts, so the pooled verdict of no drift stands. A repetition
+property limits what this phase adds: at temperature 0 the Gemini adapter returned
+textually identical answers to every prompt in all nine cycles, so the five cycles
+are repeats of the same statistical sample, not independent evidence.
+
 ## What these numbers do not claim
 
 - All rates are per-cycle frequencies under synthetic nulls and injected shifts.
