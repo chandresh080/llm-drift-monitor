@@ -156,7 +156,11 @@ answers with a saved baseline, using three small statistical tests:
    approximation, and the z-test otherwise.
 3. **What answers mean**: answers are turned into text embeddings, and an MMD test
    (kernel based, permutation p value) asks whether the overall meaning mix changed,
-   which catches topic or tone drift that length and counts miss.
+   which catches topic or tone drift that length and counts miss. Duplicate
+   embeddings are collapsed before the test (ten copies of one answer are one
+   observation), and when the panel is matched the results also carry a paired
+   prompt level permutation that exchanges whole prompts' answer sets, so repeated
+   prompts cannot pass for independent evidence.
 
 Alongside the embeddings, every answer gets rule based behavioral features: refusal
 markers, repetition ratio, code block presence, and token count. These stay separate
@@ -285,7 +289,7 @@ dashboard is a thin page over it.
 
 ## Testing
 
-`pytest` (92 tests) and `ruff check .` run in CI on every push. The tests cover the BH
+`pytest` (99 tests) and `ruff check .` run in CI on every push. The tests cover the BH
 correction against a hand-checked example, the reference window logic, the behavioral
 features, the sequential alert policy (streaks and the alpha spending schedule), the
 centroid baseline, alert storage, and the retry behaviour of the network adapters with
@@ -320,15 +324,15 @@ no test ever calls a real API or consumes quota.
 - The real hosted-provider experiment (`REAL_PROVIDER_EXPERIMENT.md`) compares two
   different models from two different providers. The pooled family never flagged,
   in the single cycle or the extension, and no alert fired even with the default
-  persistence rule. An early category-level flag was withdrawn after effective
-  sample counting showed pseudoreplication (both adapters proved deterministic at
-  temperature 0); the monitor now skips categories without enough distinct
-  observations and reports effective counts next to nominal ones, so the arithmetic
-  behind any future flag is visible. The permutation MMD also collapses duplicate
-  embeddings at entry, so a window of stored repeats is processed as the distinct
-  points it actually contains; KS and the validity proportion test deliberately
-  keep every stored run. Nothing there says anything about within-model temporal
-  drift, provider behavior in isolation, or detection rates. Those claims rest on
-  the simulations.
+  persistence rule. Three structure-aware corrections are documented there and in
+  the artifacts: an early category-level flag was withdrawn after effective sample
+  counting showed pseudoreplication, the monitor now skips categories without
+  enough distinct observations and reports effective counts next to nominal ones,
+  and the permutation MMD carries the matched panel's actual dependence structure
+  in two forms (duplicate embeddings collapsed at entry, plus a paired prompt
+  level permutation that exchanges whole prompts' answer sets and is reported as
+  a diagnostic beside the standard pooled test). Nothing there says anything about
+  within-model temporal drift, provider behavior in isolation, or detection rates.
+  Those claims rest on the simulations.
 - The free hosting tier has a small memory budget and a database that resets on
   redeploys; locally, persistence and MLflow logging are unrestricted.

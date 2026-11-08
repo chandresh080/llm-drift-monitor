@@ -1,11 +1,12 @@
 # Real Hosted-Provider Comparison: Groq Reference versus Gemini Current
 
-Execution date: 2026-11-08 (single cycle comparison start 11:07:15, extended run start
-11:23:58, local time). The experiment was first executed and recorded on 2026-11-07;
-both committed result artifacts were regenerated twice on 2026-11-08, the second time
-after the MMD permutation test itself began collapsing duplicate embedding vectors at
-its entry, so every number below describes the committed artifacts exactly. This is a
-**real hosted-provider comparison**, not a
+Execution date: 2026-11-08 (single cycle comparison start 11:53:35, extended run start
+11:57:16, local time). The experiment was first executed and recorded on 2026-11-07;
+both committed result artifacts were regenerated three times on 2026-11-08, most
+recently after the pooled MMD was joined by a paired prompt level permutation that
+treats the matched prompts, not the stored runs, as the exchangeable units, so every
+number below describes the committed artifacts exactly. This is a **real
+hosted-provider comparison**, not a
 synthetic benchmark and not a temporal drift study. All results come from the output
 files `results/real_provider_cycles.csv`, `results/real_provider_results.json`,
 `results/real_provider_extended_cycles.csv` and `results/real_provider_extended_results.json`,
@@ -31,7 +32,7 @@ temporal drift within a single model.
 | Generation settings | temperature 0.0, max_tokens 512, timeout 60 s for both providers (not fully identical: only Groq exposes reasoning_effort, next row) |
 | Groq specific setting | reasoning_effort = low (gpt-oss-20b is a reasoning model; see failures below) |
 | Embedding model | sentence-transformers/all-MiniLM-L6-v2, CPU, identical preprocessing both stages |
-| Detectors | KS on lengths, proportion test on validity (Fisher dispatch), permutation MMD (500 permutations, duplicate embeddings collapsed at entry), Benjamini-Hochberg at alpha 0.05, plus effect-size diagnostics; category-wise family gated by DISTINCT observation counts (see the pseudoreplication section) |
+| Detectors | KS on lengths, proportion test on validity (Fisher dispatch), permutation MMD (500 permutations, duplicate embeddings collapsed at entry), paired prompt level MMD diagnostic (exhaustive 1024 swap patterns on the 10 matched prompts), Benjamini-Hochberg at alpha 0.05, plus effect-size diagnostics; category-wise family gated by DISTINCT observation counts (see the pseudoreplication section) |
 | Windows | reference 50, current 10, matched prompt ids, complete cycles only; the category current window spans the trailing five complete cycles |
 | Config override | alerts.min_consecutive_cycles = 1 for the single cycle run (a single current cycle cannot satisfy two-cycle persistence); the extended run uses the default value of 2 |
 | Database | data/real_providers.db, fresh on each full run (gitignored); `--resume` keeps the reference window |
@@ -53,15 +54,15 @@ existing instrumentation):
 
 | Provider | p50 (s) | p95 (s) |
 | --- | --- | --- |
-| Groq | 0.431 to 1.527 across cycles | 0.822 to 2.047 across cycles |
-| Gemini | 1.866 | 12.497 |
+| Groq | 0.454 to 0.686 across cycles | 0.899 to 1.231 across cycles |
+| Gemini | 1.722 | 6.531 |
 
 Token usage as returned by the providers:
 
 | Provider | Calls | Prompt tokens | Completion tokens | Total tokens |
 | --- | --- | --- | --- | --- |
-| Groq | 50 | 435 | 1,515 | 1,950 |
-| Gemini | 10 | 13 | 17 | 30 |
+| Groq | 50 | 449 | 1,463 | 1,912 |
+| Gemini | 10 | 13 | 78 | 91 |
 
 (The two providers tokenize differently and return different usage fields, so token
 totals are not directly comparable.)
@@ -75,8 +76,9 @@ Pooled family, reference 50 versus current 10, both windows valid and complete:
 | KS (response lengths) | 0.30 | 0.395 | 1.0 | No |
 | Proportion / Fisher (validity) | n/a (Fisher has no z statistic) | 1.000 | 1.0 | No |
 | MMD (embeddings, 500 perms, deduplicated) | 0.000 | 0.980 | 1.0 | No |
+| Paired prompt level MMD (diagnostic, 1024 swap patterns) | -0.027 | 1.0 | n/a, reported raw | No |
 
-Effect-size diagnostics: centroid distance 0.153, length shift +19.5% (mean 827.7 to
+Effect-size diagnostics: centroid distance 0.152, length shift +20.2% (mean 823.1 to
 989.3 characters), refusal rate 0.0 in both windows. Pooled verdict:
 `overall_drift_detected = 0`, `overall_quality_degradation = 0`, no alerts generated.
 
@@ -92,17 +94,6 @@ Two reasons stack: the category current window needs five complete Gemini cycles
 (50 runs) and this run contributes one, and the gate below now requires enough
 DISTINCT observations even where the nominal count exists. The procedure reports the
 starvation rather than junk p values, exactly as it is specified to behave.
-
-## Pseudoreplication: what the pipeline counts as observations
-
-The first recording of this experiment (2026-11-07) ran with the category family
-gated on nominal sample counts. Five repeated Gemini cycles with identical answers
-reported `refusal_probe` as BH significant (MMD statistic 0.450, raw p 0.004,
-adjusted p 0.020). Recount shown at that time: the ten nominal runs per category
-were two to four distinct reference observations versus two distinct current
-observations. A permutation null that treats repeated identical values as
-independent inflates confidence, so that adjusted p value did not support the
-significance it displayed. The inference has been **withdrawn**.
 
 ## Pseudoreplication: what is deduplicated and what is not
 
@@ -150,27 +141,59 @@ MMD operates in embedding space where identical answers are literally the same
 point, while the count-based tests operate on labels where identical labels carry
 independent per run information.
 
+Exact deduplication also has a stated trade: two different prompts can legitimately
+produce identical embeddings, and collapsing them counts those as one observation.
+That is the conservative direction, and it costs nothing in these windows because
+the twelve distinct reference answers sit on ten distinct prompts; in generality it
+is a defensible compression of repeated evidence, not a universal definition of
+effective sample size.
+
+## Paired prompt level permutation: the dependence actually in the design
+
+The point level deduplication above removes exact repeats, but the panel repeats
+prompts, not just answers: every cycle runs the same ten matched prompt ids on both
+sides, so five different answers to one prompt are five observations that share a
+prompt as a source of variation. A run level permutation ignores that structure.
+The pooled diagnostics now include a second MMD permutation
+(`paired_cluster_mmd_test`) whose exchangeable unit is the matched prompt: each of
+the 1024 swap patterns exchanges the complete reference and current answer sets of
+whole prompts, everything enumerated exhaustively, with the unpermuted assignment
+inside the null so the smallest attainable p value is 1/1024.
+
+In the committed artifacts this diagnostic reports statistic -0.027 (MMD^2 can sit
+slightly negative when the two sides coincide exactly, which the observed
+assignment does: same answers, same prompts), raw p 1.0 with all ten prompt pairs
+matched, identical in every stored cycle. It is reported as a diagnostic alongside
+the standard pooled MMD, not wired into alerts: the alerting path stays the one
+definition shared by every adapter, and the paired test assumes a matched prompt
+panel that arbitrary (for example, free form text) adapters do not provide. Where
+the panel is matched, as here, the paired number is the one that respects the
+design's dependence structure. It does not cure the sample size: ten prompts per
+side carry ten exchangeable units, which is why the honest quantification of these
+windows remains a description of two fixed answer sets, and why more distinct
+prompts remains the named future work.
+
 The largest category distance observed before the gate existed (refusal_probe,
 0.450 on 2026-11-07 data) remains in the narrative as a descriptive observation, not
 an inferential one. The withdrawal applies to the recorded 2026-11-07 flag, and no
 category p value is emitted by the current pipeline for the stored windows.
 
-The pooled family's remaining qualification: with 12 distinct answers behind 50
-reference runs, the pooled MMD is now calibrated with respect to repeats, but
-twelve points still describe a comparison between two fixed answer sets rather than
-a test of generative distributions. The principled next steps, unchanged, are more
-distinct prompts per sample or a prompt level dependence aware test; the
-deduplication corrects the arithmetic, not the sampling design.
+The pooled family's remaining qualification, unchanged by the paired test: twelve
+distinct answers against ten describe a comparison between two fixed answer sets,
+not a test of generative distributions, and ten matched prompts are ten
+exchangeable units. The point level deduplication and the paired permutation
+correct the arithmetic; the honest fix for the information content itself is more
+distinct prompts per panel.
 
 ## Extended run: five Gemini cycles with the default persistence rule
 
-A second execution continued the same database on 2026-11-08 (start 11:23:58,
+A second execution continued the same database on 2026-11-08 (start 11:57:16,
 90 seconds after the single cycle comparison finished so Gemini's per model quota
 window had fully cleared), attempting five Gemini cycles on top of the completed
 single comparison, using the default configuration throughout: the two-cycle
-persistence rule active, and the distinct observation gate in the category family.
-The reference window stayed the comparison run's 50 Groq runs; no Groq calls were
-made. Command:
+persistence rule active, the distinct observation gate in the category family, and
+the paired prompt level diagnostic in the pooled results. The reference window
+stayed the comparison run's 50 Groq runs; no Groq calls were made. Command:
 
 ```
 DRIFT_MONITOR_TRACKING=0 python -m experiments.real_providers \
@@ -190,13 +213,15 @@ API execution in the committed artifact:
 | --- | --- | --- |
 | 1 to 5 | 10 each | all 50 calls successful, tests run in every cycle |
 
-Per-call latency across the five cycles: p50 1.33 to 2.405 s, p95 3.105 to 5.763 s.
-Token usage: 2,509 tokens total (86 prompt, 2,423 completion) across the 50
-successful calls.
+Per-call latency across the five cycles: p50 1.435 to 2.479 s, p95 2.974 to
+15.381 s (the fourth cycle contained one call that took about 15 seconds,
+presumably provider-side queueing). Token usage: 2,184 tokens total (81 prompt,
+2,103 completion) across the 50 successful calls.
 
 Pooled drift results are identical in all five cycles (KS statistic 0.30 raw p
-0.395, MMD statistic 0.000 raw p 0.980, computed over the deduplicated windows of
-12 distinct reference answers and 10 distinct current answers, all adjusted p 1.0):
+0.395, MMD statistic 0.000 raw p 0.980, paired prompt level MMD statistic -0.027
+raw p 1.0, computed over the same windows of 12 distinct reference answers and 10
+distinct current answers, ten matched prompts per side):
 `overall_drift_detected = 0` in every cycle and no alert fired. This identity is the
 pseudoreplication made visible: each cycle rebuilds its windows and recomputes its
 permutations, but the reference window and the per cycle current answers are the
@@ -221,8 +246,8 @@ counts make visible.
 
 | Quantity | Value | Meaning |
 | --- | --- | --- |
-| Provider per-call latency | Groq p95 0.822 to 2.047 s, Gemini p95 12.497 s (single cycle run) to 5.763 s max (extended run) | Provider generation time per model call |
-| End-to-end cycle wall time (single cycle Gemini run) | 13.253 s | Full Gemini cycle including generation, features, tests, storage |
+| Provider per-call latency | Groq p95 0.899 to 1.231 s, Gemini p95 6.531 s (single cycle run) to 15.381 s max (extended run) | Provider generation time per model call |
+| End-to-end cycle wall time (single cycle Gemini run) | 7.204 s | Full Gemini cycle including generation, features, tests, storage |
 | Monitoring overhead p95 | 0.388 s per cycle | Machinery cost without model calls (`experiments/overhead.py` benchmark, from `overhead_latency.csv`) |
 
 ## Failures encountered during development, and their fixes
@@ -277,8 +302,10 @@ the final configuration:
   genuinely different observations, and a failed call is a real event regardless
   of repeats). Twelves points against ten are a calibrated comparison of two answer
   sets, not an assay of generative distributions; every identical p value across
-  cycles is one comparison, not independent confirmation. The category family
-  emits no p values at all for these windows.
+  cycles is one comparison, not independent confirmation. The paired prompt level
+  permutation respects the matched panel's dependence structure but still carries
+  only ten exchangeable prompt units per side. The category family emits no p
+  values at all for these windows.
 - The flagged category was withdrawn: the 2026-11-07 recording marked refusal_probe
   BH significant at 0.020; recounted effective samples (four distinct reference
   observations versus two distinct current observations) showed the confidence was
@@ -290,7 +317,7 @@ the final configuration:
   comparison (one model, two versions) remains the missing demonstration for
   production drift claims.
 - Slow tail latencies exist on the free tier: one 48 second call (2026-11-07) and
-  one about 15 second call in the single cycle run (2026-11-08) succeeded without
+  one about 15 second call in the extended run (2026-11-08) succeeded without
   hitting the 60 second limit.
 - Different token accounting: the two providers return different token fields and
   count differently, so token totals are not directly comparable.

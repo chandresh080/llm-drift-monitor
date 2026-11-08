@@ -353,7 +353,7 @@ complementarity of the three detectors.
 Source: `REAL_PROVIDER_EXPERIMENT.md`, produced by `experiments/real_providers.py`
 on 2026-11-08 with the production monitoring pipeline unchanged, from regenerated
 committed artifacts (`results/real_provider_results.json` and
-`results/real_provider_extended_results.json`, runs started 11:07:15 and 11:23:58
+`results/real_provider_extended_results.json`, runs started 11:53:35 and 11:57:16
 local time). This is a **real hosted-provider comparison**, explicitly not a
 synthetic benchmark: the numbers in sections 1 through 10 come from simulated data,
 and these come from live API calls to two different providers. The two kinds of
@@ -374,19 +374,26 @@ Detector results (reference 50 versus current 10, pooled family):
 | KS (response lengths) | 0.30 | 0.395 | 1.0 | No |
 | Proportion / Fisher (validity) | n/a | 1.000 | 1.0 | No |
 | MMD (embeddings, 500 perms, duplicate embeddings collapsed at entry) | 0.000 | 0.980 | 1.0 | No |
+| Paired prompt level MMD (diagnostic, 1024 swap patterns) | -0.027 | 1.0 | n/a, reported raw | No |
 
-Verdict: no drift detected, no alerts. Effect sizes: centroid distance 0.153,
-length shift +19.5% (mean 827.7 to 989.3 characters), refusal rate 0.0 both sides.
-The committed JSON reports effective sample sizes next to the nominal ones: the
-pooled reference window holds 12 distinct answers behind its 50 runs, the current
-cycle's window 10 of 10, and MMD now computes over those distinct points because
-`mmd_test` collapses duplicate embeddings at entry. KS and the validity proportion
-test deliberately keep every stored run: different texts with equal lengths are
-genuinely different observations, and a failed call is a real event regardless of
-repeats. Timing, kept separate (see the report for details): provider per-call
-latency Groq p50 0.431 to 1.527 s and p95 0.822 to 2.047 s across cycles, Gemini
-p50 1.866 s and p95 12.497 s; end to end current cycle wall time 13.253 s;
-monitoring overhead p95 0.388 s per cycle from the section 9 benchmark.
+Verdict: no drift detected, no alerts. Effect sizes: centroid distance 0.152,
+length shift +20.2% (mean 823.1 to 989.3 characters), refusal rate 0.0 both sides.
+Three structural points stand behind those numbers. First, the committed JSON
+reports effective sample sizes next to the nominal ones: the pooled reference
+window holds 12 distinct answers behind its 50 runs, the current cycle's window
+10 of 10, and MMD computes over those distinct points because `mmd_test` collapses
+duplicate embeddings at entry. Second, the panel is matched (the same ten prompt
+ids are probed on both sides), so the standard run level permutation is joined in
+the results by a paired prompt level MMD that exchanges whole prompts' answer sets
+across all 1024 swap patterns; it reports statistic -0.027, raw p 1.0, ten matched
+pairs. KS and the validity proportion test deliberately keep every stored run:
+different texts with equal lengths are genuinely different observations, and a
+failed call is a real event regardless of repeats. Third, the identical pooled p
+values across every stored cycle are one comparison of two fixed answer sets, not
+independent confirmations. Timing, kept separate (see the report for details):
+provider per-call latency Groq p50 0.454 to 0.686 s and p95 0.899 to 1.231 s across
+cycles, Gemini p50 1.722 s and p95 6.531 s; end to end current cycle wall time
+7.204 s; monitoring overhead p95 0.388 s per cycle from the section 9 benchmark.
 
 Limitations, restated from the report: a single current cycle cannot exercise the
 two-cycle persistence rule or the category-wise family; one trial supports no
@@ -399,18 +406,19 @@ The extended run (five Gemini cycles on the same database with the default
 configuration, 90 seconds after the comparison run so the per model quota window
 had cleared) exercises the missing pieces and executed clean end to end: five of
 five cycles stored results, 50 calls all successful, zero errors, no alert fired
-with the default two-cycle persistence rule. It also carries the backbone of the
-round's statistical correction. Under the earlier gating, this shape of run had
-flagged the refusal_probe category BH significant (adjusted p 0.020); recounting
-showed the ten nominal runs per category were only two to four distinct
-observations per side, so that inference has been withdrawn, the category gate now
-counts distinct observations, and every category in the committed artifact is
-skipped (insufficient distinct responses, 2 to 3 of 10 reference and 2 of 10
-current) with counts reported in place of p values. The pooled MMD's remaining
-qualification: even deduplicated, 12 distinct points against 10 describe a
-comparison of two fixed answer sets, not a calibrated assay of generative
-distributions, and the identical pooled p values across the five cycles are one
-comparison repeated against a deterministic target, not independent confirmation.
+with the default two-cycle persistence rule, and the paired diagnostic identical
+in all five cycles at ten matched prompt pairs per cycle. It also carries the
+record of the round's two statistical corrections. Under the earlier gating, this
+shape of run had flagged the refusal_probe category BH significant (adjusted p
+0.020); recounting showed the ten nominal runs per category were only two to four
+distinct observations per side, so that inference has been withdrawn, the category
+gate now counts distinct observations, and every category in the committed
+artifact is skipped (insufficient distinct responses, 2 to 3 of 10 reference and
+2 of 10 current) with counts reported in place of p values. The pooled MMD's
+remaining qualification: even deduplicated and prompt paired, twelve distinct
+points against ten carry ten exchangeable prompt units and describe a comparison
+of two fixed answer sets, not a calibrated assay of generative distributions; more
+distinct prompts per panel remains the honest fix of the information content.
 
 ## What these numbers do not claim
 
@@ -438,7 +446,8 @@ comparison repeated against a deterministic target, not independent confirmation
   cross-model measurement. It validates that the pipeline runs end to end against
   live APIs and measures a difference between two different models served by two
   different providers. Its category-level flag from the first recording was
-  withdrawn after effective sample counting showed pseudoreplication, and the
-  monitor now skips categories that cannot support calibrated inference. The
-  section supports no claim about within-model temporal drift, provider behavior in
-  isolation, detection rate, or false alarm rate.
+  withdrawn after effective sample counting showed pseudoreplication, the monitor
+  now skips categories that cannot support calibrated inference, and the pooled
+  MMD and its paired prompt level diagnostic carry the reported dependence
+  structure. The section supports no claim about within-model temporal drift,
+  provider behavior in isolation, detection rate, or false alarm rate.

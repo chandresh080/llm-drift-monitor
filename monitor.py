@@ -16,7 +16,7 @@ from embeddings import EmbeddingExtractor
 from drift_tests import (ks_test, proportion_test, mmd_test,
                          benjamini_hochberg_correction, centroid_distance,
                          count_unique_embeddings, holm_correction,
-                         category_mmd_tests)
+                         paired_cluster_mmd_test, category_mmd_tests)
 from behavior_features import extract_behavior_features, refusal_rate
 from sequential_testing import (spent_alpha, consecutive_flagged_history,
                                 consecutive_streak)
@@ -896,6 +896,29 @@ class LLMDriftMonitor:
             ref_embeddings)
         results['current_unique_responses'] = count_unique_embeddings(
             cur_embeddings)
+
+        # Paired prompt level MMD diagnostic: the matched panel probes the
+        # same prompt ids on both sides, and runs from one prompt share that
+        # prompt as a source of variation a run level permutation ignores.
+        # This permutation exchanges whole prompts' answer sets instead, so
+        # repeated answers to one prompt cannot manufacture cross group
+        # confidence. Reported alongside the standard pooled test; it changes
+        # no alert path, and the shared alerting definition stays the one
+        # above.
+        ref_paired = self.storage.get_embeddings_with_run_ids_for_runs(
+            ref_run_ids)
+        cur_paired = self.storage.get_embeddings_with_run_ids_for_runs(
+            cur_run_ids)
+        ref_prompt_of = {r['id']: r.get('prompt_id') for r in ref_runs}
+        cur_prompt_of = {r['id']: r.get('prompt_id') for r in cur_runs}
+        pc_stat, pc_pval, pc_pairs = paired_cluster_mmd_test(
+            [emb for _, emb in ref_paired], [emb for _, emb in cur_paired],
+            [ref_prompt_of.get(run_id, '') for run_id, _ in ref_paired],
+            [cur_prompt_of.get(run_id, '') for run_id, _ in cur_paired],
+            random_seed=self.random_seed)
+        results['paired_cluster_mmd_statistic'] = pc_stat
+        results['paired_cluster_mmd_pvalue'] = pc_pval
+        results['paired_cluster_prompt_pairs'] = pc_pairs
 
         # Effect sizes, kept separate from significance: with enough samples a
         # trivial change becomes significant, so alerts report magnitude too.

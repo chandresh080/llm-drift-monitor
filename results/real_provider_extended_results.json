@@ -1,5 +1,5 @@
 {
-  "started_at": "2026-11-08T11:23:58.259453",
+  "started_at": "2026-11-08T11:57:16.209266",
   "setup": {
     "reference_provider": "Groq",
     "reference_model": "openai/gpt-oss-20b",
@@ -34,18 +34,18 @@
     {
       "phase": "gemini_current",
       "cycle": 1,
-      "wall_seconds": 11.186,
-      "gen_latency_mean_s": 2.391,
-      "gen_latency_p50_s": 1.989,
-      "gen_latency_p95_s": 4.141,
+      "wall_seconds": 15.338,
+      "gen_latency_mean_s": 2.577,
+      "gen_latency_p50_s": 1.562,
+      "gen_latency_p95_s": 6.255,
       "usage": {
-        "promptTokenCount": 16,
+        "promptTokenCount": 13,
         "candidatesTokenCount": 508,
-        "totalTokenCount": 524,
+        "totalTokenCount": 521,
         "promptTokensDetails": [
           {
             "modality": "TEXT",
-            "tokenCount": 16
+            "tokenCount": 13
           }
         ],
         "serviceTier": "standard"
@@ -55,7 +55,7 @@
       "ok_runs": 10,
       "failed_runs": 0,
       "results": {
-        "timestamp": "2026-11-08T11:24:09.454200",
+        "timestamp": "2026-11-08T11:57:31.522320",
         "reference_size": 50,
         "current_size": 10,
         "ref_length_count": 50,
@@ -76,10 +76,13 @@
         "mmd_raw_pvalue": 0.9800399201596807,
         "reference_unique_responses": 12,
         "current_unique_responses": 10,
-        "ref_mean_length": 827.7,
+        "paired_cluster_mmd_statistic": -0.027407084880490817,
+        "paired_cluster_mmd_pvalue": 1.0,
+        "paired_cluster_prompt_pairs": 10,
+        "ref_mean_length": 823.1,
         "cur_mean_length": 989.3,
-        "length_shift_pct": 19.5,
-        "centroid_distance": 0.152783,
+        "length_shift_pct": 20.2,
+        "centroid_distance": 0.152425,
         "ref_refusal_rate": 0.0,
         "cur_refusal_rate": 0.0,
         "refusal_rate_change": 0.0,
@@ -99,10 +102,10 @@
     {
       "phase": "gemini_current",
       "cycle": 2,
-      "wall_seconds": 4.881,
-      "gen_latency_mean_s": 1.802,
-      "gen_latency_p50_s": 1.33,
-      "gen_latency_p95_s": 3.105,
+      "wall_seconds": 5.109,
+      "gen_latency_mean_s": 1.92,
+      "gen_latency_p50_s": 1.523,
+      "gen_latency_p95_s": 3.175,
       "usage": {
         "promptTokenCount": 16,
         "candidatesTokenCount": 508,
@@ -120,7 +123,7 @@
       "ok_runs": 10,
       "failed_runs": 0,
       "results": {
-        "timestamp": "2026-11-08T11:25:24.327435",
+        "timestamp": "2026-11-08T11:58:46.639525",
         "reference_size": 50,
         "current_size": 10,
         "ref_length_count": 50,
@@ -141,10 +144,13 @@
         "mmd_raw_pvalue": 0.9800399201596807,
         "reference_unique_responses": 12,
         "current_unique_responses": 10,
-        "ref_mean_length": 827.7,
+        "paired_cluster_mmd_statistic": -0.027407084880490817,
+        "paired_cluster_mmd_pvalue": 1.0,
+        "paired_cluster_prompt_pairs": 10,
+        "ref_mean_length": 823.1,
         "cur_mean_length": 989.3,
-        "length_shift_pct": 19.5,
-        "centroid_distance": 0.152783,
+        "length_shift_pct": 20.2,
+        "centroid_distance": 0.152425,
         "ref_refusal_rate": 0.0,
         "cur_refusal_rate": 0.0,
         "refusal_rate_change": 0.0,
@@ -164,18 +170,18 @@
     {
       "phase": "gemini_current",
       "cycle": 3,
-      "wall_seconds": 5.269,
-      "gen_latency_mean_s": 2.265,
-      "gen_latency_p50_s": 1.946,
-      "gen_latency_p95_s": 4.708,
+      "wall_seconds": 4.86,
+      "gen_latency_mean_s": 1.874,
+      "gen_latency_p50_s": 1.44,
+      "gen_latency_p95_s": 3.021,
       "usage": {
-        "promptTokenCount": 19,
+        "promptTokenCount": 16,
         "candidatesTokenCount": 508,
-        "totalTokenCount": 527,
+        "totalTokenCount": 524,
         "promptTokensDetails": [
           {
             "modality": "TEXT",
-            "tokenCount": 19
+            "tokenCount": 16
           }
         ],
         "serviceTier": "standard"
@@ -185,7 +191,7 @@
       "ok_runs": 10,
       "failed_runs": 0,
       "results": {
-        "timestamp": "2026-11-08T11:26:39.610326",
+        "timestamp": "2026-11-08T12:00:01.488077",
         "reference_size": 50,
         "current_size": 10,
         "ref_length_count": 50,
@@ -206,10 +212,13 @@
         "mmd_raw_pvalue": 0.9800399201596807,
         "reference_unique_responses": 12,
         "current_unique_responses": 10,
-        "ref_mean_length": 827.7,
+        "paired_cluster_mmd_statistic": -0.027407084880490817,
+        "paired_cluster_mmd_pvalue": 1.0,
+        "paired_cluster_prompt_pairs": 10,
+        "ref_mean_length": 823.1,
         "cur_mean_length": 989.3,
-        "length_shift_pct": 19.5,
-        "centroid_distance": 0.152783,
+        "length_shift_pct": 20.2,
+        "centroid_distance": 0.152425,
         "ref_refusal_rate": 0.0,
         "cur_refusal_rate": 0.0,
         "refusal_rate_change": 0.0,
@@ -229,18 +238,18 @@
     {
       "phase": "gemini_current",
       "cycle": 4,
-      "wall_seconds": 6.332,
-      "gen_latency_mean_s": 2.827,
-      "gen_latency_p50_s": 2.405,
-      "gen_latency_p95_s": 5.763,
+      "wall_seconds": 16.851,
+      "gen_latency_mean_s": 5.618,
+      "gen_latency_p50_s": 2.479,
+      "gen_latency_p95_s": 15.381,
       "usage": {
-        "promptTokenCount": 19,
-        "candidatesTokenCount": 391,
-        "totalTokenCount": 410,
+        "promptTokenCount": 20,
+        "candidatesTokenCount": 71,
+        "totalTokenCount": 91,
         "promptTokensDetails": [
           {
             "modality": "TEXT",
-            "tokenCount": 19
+            "tokenCount": 20
           }
         ],
         "serviceTier": "standard"
@@ -250,7 +259,7 @@
       "ok_runs": 10,
       "failed_runs": 0,
       "results": {
-        "timestamp": "2026-11-08T11:27:55.880788",
+        "timestamp": "2026-11-08T12:01:28.300864",
         "reference_size": 50,
         "current_size": 10,
         "ref_length_count": 50,
@@ -271,10 +280,13 @@
         "mmd_raw_pvalue": 0.9800399201596807,
         "reference_unique_responses": 12,
         "current_unique_responses": 10,
-        "ref_mean_length": 827.7,
+        "paired_cluster_mmd_statistic": -0.027407084880490817,
+        "paired_cluster_mmd_pvalue": 1.0,
+        "paired_cluster_prompt_pairs": 10,
+        "ref_mean_length": 823.1,
         "cur_mean_length": 989.3,
-        "length_shift_pct": 19.5,
-        "centroid_distance": 0.152783,
+        "length_shift_pct": 20.2,
+        "centroid_distance": 0.152425,
         "ref_refusal_rate": 0.0,
         "cur_refusal_rate": 0.0,
         "refusal_rate_change": 0.0,
@@ -345,10 +357,10 @@
     {
       "phase": "gemini_current",
       "cycle": 5,
-      "wall_seconds": 5.465,
-      "gen_latency_mean_s": 2.201,
-      "gen_latency_p50_s": 1.927,
-      "gen_latency_p95_s": 3.691,
+      "wall_seconds": 5.056,
+      "gen_latency_mean_s": 1.879,
+      "gen_latency_p50_s": 1.435,
+      "gen_latency_p95_s": 2.974,
       "usage": {
         "promptTokenCount": 16,
         "candidatesTokenCount": 508,
@@ -366,7 +378,7 @@
       "ok_runs": 10,
       "failed_runs": 0,
       "results": {
-        "timestamp": "2026-11-08T11:29:11.399739",
+        "timestamp": "2026-11-08T12:02:43.305710",
         "reference_size": 50,
         "current_size": 10,
         "ref_length_count": 50,
@@ -387,10 +399,13 @@
         "mmd_raw_pvalue": 0.9800399201596807,
         "reference_unique_responses": 12,
         "current_unique_responses": 10,
-        "ref_mean_length": 827.7,
+        "paired_cluster_mmd_statistic": -0.027407084880490817,
+        "paired_cluster_mmd_pvalue": 1.0,
+        "paired_cluster_prompt_pairs": 10,
+        "ref_mean_length": 823.1,
         "cur_mean_length": 989.3,
-        "length_shift_pct": 19.5,
-        "centroid_distance": 0.152783,
+        "length_shift_pct": 20.2,
+        "centroid_distance": 0.152425,
         "ref_refusal_rate": 0.0,
         "cur_refusal_rate": 0.0,
         "refusal_rate_change": 0.0,

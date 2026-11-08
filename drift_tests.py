@@ -236,6 +236,122 @@ def mmd_test(X: List[List[float]], Y: List[List[float]],
     pvalue = (count_larger + 1) / (n_permutations + 1)
     return mmd_obs_stat, float(max(0.0, min(1.0, pvalue)))
 
+def paired_cluster_mmd_test(X: List[List[float]],
+                            Y: List[List[float]],
+                            x_cluster_labels: List[str],
+                            y_cluster_labels: List[str],
+                            random_seed: int = 42,
+                            n_permutations: int = 1000,
+                            sigma: Optional[float] = None
+                            ) -> Tuple[float, float, int]:
+    """MMD permutation test that permutes at prompt level, not run level.
+
+    The panel probes the same matched prompts on both sides of the window,
+    so every run produced for one prompt shares that prompt as a source of
+    variation. A run level permutation ignores that dependence and can treat
+    five answers to one prompt as five independent observations. Here the
+    exchangeable unit is the matched prompt: each permutation exchanges the
+    complete reference and current answer sets of whole prompts, so a
+    prompt's runs move as one cluster regardless of how many repeated or
+    distinct answers it contributed. Repeated identical answers therefore
+    cannot manufacture cross group confidence, because both the observed
+    statistic and every permutation derive their contrast from between
+    prompt redistribution only.
+
+    The matched design supports exact enumeration: with P paired prompts
+    there are 2^P swap patterns. All are evaluated when 2^P is at most 4096;
+    otherwise a seeded random sample of n_permutations patterns is drawn,
+    always including the unpermuted assignment. Either way the identity is
+    part of the null distribution, so the smallest attainable p value is
+    one over the number of evaluated patterns.
+
+    Cluster labels that appear on only one side are excluded from the test:
+    the pairing is the point, and an unmatched prompt has no within prompt
+    exchange to permute.
+
+    Args:
+        X: Reference embeddings, one per stored run
+        Y: Current embeddings, one per stored run
+        x_cluster_labels: Prompt id (or any cluster key) per X run
+        y_cluster_labels: Prompt id per Y run, same label space as X
+        random_seed: Seed for the sampled pattern branch
+        n_permutations: Sample size when 2^P exceeds the enumeration cap
+        sigma: RBF kernel bandwidth (None for median heuristic)
+
+    Returns:
+        (statistic, pvalue, number of matched prompts). statistic is the
+        unbiased MMD^2 of the observed assignment, reported directly rather
+        than square rooted, so it is on the same scale as the permutation
+        statistic it is compared against. When no prompt id occurs on both
+        sides, returns (nan, 1.0, 0): pairing is the test's premise, and
+        silently falling back to run level shuffling would hide a failed
+        premise rather than surface it.
+    """
+    nan_result = (float('nan'), 1.0, 0)
+    if (not X or not Y
+            or len(X) != len(x_cluster_labels)
+            or len(Y) != len(y_cluster_labels)):
+        return nan_result
+    common = sorted({str(v) for v in x_cluster_labels}
+                    & {str(v) for v in y_cluster_labels})
+    if not common:
+        return nan_result
+
+    x_keep = [i for i, v in enumerate(x_cluster_labels)
+              if str(v) in common]
+    y_keep = [j for j, v in enumerate(y_cluster_labels)
+              if str(v) in common]
+    nx, ny = len(x_keep), len(y_keep)
+    if nx < 2 or ny < 2:
+        return (float('nan'), 1.0, len(common))
+
+    pair_of = {label: k for k, label in enumerate(common)}
+    Z = np.vstack([np.asarray(X, dtype=float)[x_keep],
+                   np.asarray(Y, dtype=float)[y_keep]])
+    K, _ = _compute_kernel_matrix(Z, sigma)
+
+    side = np.zeros(nx + ny, dtype=bool)  # False = reference group
+    side[nx:] = True
+    pair = np.array([pair_of[str(x_cluster_labels[i])] for i in x_keep]
+                    + [pair_of[str(y_cluster_labels[j])] for j in y_keep])
+    all_idx = np.arange(nx + ny)
+
+    def mmd2_of(pattern: int) -> Optional[float]:
+        swapped = np.array([(pattern >> k) & 1 for k in range(len(common))],
+                           dtype=bool)
+        new_side = np.where(swapped[pair], ~side, side)
+        idx_x = all_idx[~new_side]
+        idx_y = all_idx[new_side]
+        if idx_x.size < 2 or idx_y.size < 2:
+            return None
+        return _unbiased_mmd2_from_kernel(K, idx_x, idx_y)
+
+    obs = mmd2_of(0)
+    if obs is None:  # cannot happen after the counts guard, kept for safety
+        return (float('nan'), 1.0, len(common))
+
+    p_patterns = len(common)
+    if (1 << p_patterns) <= 4096:
+        patterns = list(range(1 << p_patterns))
+    else:
+        rng = np.random.default_rng(random_seed)
+        sample = rng.integers(0, 1 << p_patterns, size=n_permutations)
+        patterns = [0] + [int(p) for p in dict.fromkeys(sample.tolist())]
+
+    evaluated = 0
+    count_larger = 0
+    for pattern in patterns:
+        stat = mmd2_of(pattern)
+        if stat is None:
+            continue
+        evaluated += 1
+        if stat >= obs - 1e-12:
+            count_larger += 1
+    if evaluated <= 1:
+        return (float(obs), 1.0, len(common))
+    pvalue = count_larger / evaluated
+    return (float(obs), float(max(0.0, min(1.0, pvalue))), len(common))
+
 def benjamini_hochberg_correction(pvalues: List[float], alpha: float = 0.05) -> Tuple[List[float], List[bool]]:
     """
     Apply Benjamini-Hochberg correction for multiple testing.

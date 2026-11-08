@@ -1,6 +1,6 @@
 phase,cycle,wall_seconds,ok_runs,failed_runs,gen_latency_mean_s,gen_latency_p50_s,gen_latency_p95_s,prompt_tokens,completion_tokens,total_tokens,error,tests_run
-gemini_current,1,11.186,10,0,2.391,1.989,4.141,16,508,524,,True
-gemini_current,2,4.881,10,0,1.802,1.33,3.105,16,508,524,,True
-gemini_current,3,5.269,10,0,2.265,1.946,4.708,19,508,527,,True
-gemini_current,4,6.332,10,0,2.827,2.405,5.763,19,391,410,,True
-gemini_current,5,5.465,10,0,2.201,1.927,3.691,16,508,524,,True
+gemini_current,1,15.338,10,0,2.577,1.562,6.255,13,508,521,,True
+gemini_current,2,5.109,10,0,1.92,1.523,3.175,16,508,524,,True
+gemini_current,3,4.86,10,0,1.874,1.44,3.021,16,508,524,,True
+gemini_current,4,16.851,10,0,5.618,2.479,15.381,20,71,91,,True
+gemini_current,5,5.056,10,0,1.879,1.435,2.974,16,508,524,,True

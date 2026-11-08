@@ -1,6 +1,6 @@
 import sqlite3
 import os
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import json
 from contextlib import contextmanager
 
@@ -303,6 +303,38 @@ class DriftMonitorStorage:
                     continue
             return embeddings
     
+    def get_embeddings_with_run_ids_for_runs(
+            self, run_ids: List[int]) -> List[Tuple[int, List[float]]]:
+        """Embeddings paired with their run ids, in run id order.
+
+        The run level pairing exists for prompt level analysis: cluster labels
+        such as prompt ids must attach to the exact runs a window selected,
+        not to whatever order the database happens to return rows in. Rows
+        whose embedding cannot be decoded are skipped, mirroring
+        get_embeddings_for_runs, but the run id travels with the vector so
+        the caller can align labels with certainty.
+        """
+        if not run_ids:
+            return []
+        with self._db() as conn:
+            conn.row_factory = sqlite3.Row
+            placeholders = ','.join('?' for _ in run_ids)
+            cursor = conn.execute(f"""
+                SELECT e.run_id, e.embedding_blob
+                FROM embeddings e
+                JOIN probe_runs pr ON e.run_id = pr.id
+                WHERE pr.id IN ({placeholders}) AND pr.run_status = 'success'
+                ORDER BY pr.id ASC
+            """, run_ids)
+            paired = []
+            for row in cursor.fetchall():
+                try:
+                    emb = json.loads(row['embedding_blob'])
+                    paired.append((int(row['run_id']), emb))
+                except Exception:
+                    continue
+            return paired
+
     def get_all_test_results(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """Get all test results."""
         with self._db() as conn:

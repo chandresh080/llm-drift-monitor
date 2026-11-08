@@ -1,5 +1,5 @@
 {
-  "started_at": "2026-11-08T11:07:15.883526",
+  "started_at": "2026-11-08T11:53:35.818419",
   "setup": {
     "reference_provider": "Groq",
     "reference_model": "openai/gpt-oss-20b",
@@ -29,18 +29,18 @@
     {
       "phase": "groq_reference",
       "cycle": 1,
-      "wall_seconds": 8.881,
-      "gen_latency_mean_s": 0.805,
-      "gen_latency_p50_s": 0.739,
-      "gen_latency_p95_s": 1.177,
+      "wall_seconds": 8.964,
+      "gen_latency_mean_s": 0.777,
+      "gen_latency_p50_s": 0.686,
+      "gen_latency_p95_s": 1.231,
       "usage": {
-        "queue_time": 0.367293368,
+        "queue_time": 0.367890941,
         "prompt_tokens": 87,
-        "prompt_time": 0.00557895,
+        "prompt_time": 0.004827297,
         "completion_tokens": 303,
-        "completion_time": 0.311984813,
+        "completion_time": 0.333072957,
         "total_tokens": 390,
-        "total_time": 0.317563763,
+        "total_time": 0.337900254,
         "completion_tokens_details": {
           "reasoning_tokens": 5
         }
@@ -53,18 +53,18 @@
     {
       "phase": "groq_reference",
       "cycle": 2,
-      "wall_seconds": 2.337,
-      "gen_latency_mean_s": 0.673,
-      "gen_latency_p50_s": 0.573,
-      "gen_latency_p95_s": 1.005,
+      "wall_seconds": 1.816,
+      "gen_latency_mean_s": 0.674,
+      "gen_latency_p50_s": 0.616,
+      "gen_latency_p95_s": 1.015,
       "usage": {
-        "queue_time": 0.31578097,
+        "queue_time": 0.367328559,
         "prompt_tokens": 87,
-        "prompt_time": 0.00470321,
+        "prompt_time": 0.004135549,
         "completion_tokens": 303,
-        "completion_time": 0.310809949,
+        "completion_time": 0.315049347,
         "total_tokens": 390,
-        "total_time": 0.315513159,
+        "total_time": 0.319184896,
         "completion_tokens_details": {
           "reasoning_tokens": 5
         }
@@ -77,20 +77,20 @@
     {
       "phase": "groq_reference",
       "cycle": 3,
-      "wall_seconds": 1.994,
-      "gen_latency_mean_s": 0.667,
-      "gen_latency_p50_s": 0.611,
-      "gen_latency_p95_s": 0.987,
+      "wall_seconds": 1.66,
+      "gen_latency_mean_s": 0.682,
+      "gen_latency_p50_s": 0.454,
+      "gen_latency_p95_s": 1.111,
       "usage": {
-        "queue_time": 0.313992627,
-        "prompt_tokens": 87,
-        "prompt_time": 0.005687562,
-        "completion_tokens": 303,
-        "completion_time": 0.344174225,
-        "total_tokens": 390,
-        "total_time": 0.349861787,
+        "queue_time": 0.387188898,
+        "prompt_tokens": 101,
+        "prompt_time": 0.342293994,
+        "completion_tokens": 251,
+        "completion_time": 0.269576948,
+        "total_tokens": 352,
+        "total_time": 0.611870942,
         "completion_tokens_details": {
-          "reasoning_tokens": 5
+          "reasoning_tokens": 60
         }
       },
       "error": null,
@@ -101,18 +101,18 @@
     {
       "phase": "groq_reference",
       "cycle": 4,
-      "wall_seconds": 4.331,
-      "gen_latency_mean_s": 1.583,
-      "gen_latency_p50_s": 1.527,
-      "gen_latency_p95_s": 2.047,
+      "wall_seconds": 1.545,
+      "gen_latency_mean_s": 0.652,
+      "gen_latency_p50_s": 0.564,
+      "gen_latency_p95_s": 0.978,
       "usage": {
-        "queue_time": 0.365443767,
+        "queue_time": 0.156860778,
         "prompt_tokens": 87,
-        "prompt_time": 0.004162572,
+        "prompt_time": 0.00427288,
         "completion_tokens": 303,
-        "completion_time": 0.310799352,
+        "completion_time": 0.323065907,
         "total_tokens": 390,
-        "total_time": 0.314961924,
+        "total_time": 0.327338787,
         "completion_tokens_details": {
           "reasoning_tokens": 5
         }
@@ -125,18 +125,18 @@
     {
       "phase": "groq_reference",
       "cycle": 5,
-      "wall_seconds": 1.681,
-      "gen_latency_mean_s": 0.559,
-      "gen_latency_p50_s": 0.431,
-      "gen_latency_p95_s": 0.822,
+      "wall_seconds": 1.636,
+      "gen_latency_mean_s": 0.623,
+      "gen_latency_p50_s": 0.592,
+      "gen_latency_p95_s": 0.899,
       "usage": {
-        "queue_time": 0.242971699,
+        "queue_time": 0.048288641,
         "prompt_tokens": 87,
-        "prompt_time": 0.004462198,
+        "prompt_time": 0.009253207,
         "completion_tokens": 303,
-        "completion_time": 0.315364127,
+        "completion_time": 0.343462121,
         "total_tokens": 390,
-        "total_time": 0.319826325,
+        "total_time": 0.352715328,
         "completion_tokens_details": {
           "reasoning_tokens": 5
         }
@@ -151,18 +151,18 @@
     {
       "phase": "gemini_current",
       "cycle": 1,
-      "wall_seconds": 13.253,
-      "gen_latency_mean_s": 3.081,
-      "gen_latency_p50_s": 1.866,
-      "gen_latency_p95_s": 12.497,
+      "wall_seconds": 7.204,
+      "gen_latency_mean_s": 2.339,
+      "gen_latency_p50_s": 1.722,
+      "gen_latency_p95_s": 6.531,
       "usage": {
-        "promptTokenCount": 13,
-        "candidatesTokenCount": 17,
-        "totalTokenCount": 30,
+        "promptTokenCount": 22,
+        "candidatesTokenCount": 69,
+        "totalTokenCount": 91,
         "promptTokensDetails": [
           {
             "modality": "TEXT",
-            "tokenCount": 13
+            "tokenCount": 22
           }
         ],
         "serviceTier": "standard"
@@ -172,7 +172,7 @@
       "ok_runs": 10,
       "failed_runs": 0,
       "results": {
-        "timestamp": "2026-11-08T11:22:32.860263",
+        "timestamp": "2026-11-08T11:55:38.529272",
         "reference_size": 50,
         "current_size": 10,
         "ref_length_count": 50,
@@ -193,10 +193,13 @@
         "mmd_raw_pvalue": 0.9800399201596807,
         "reference_unique_responses": 12,
         "current_unique_responses": 10,
-        "ref_mean_length": 827.7,
+        "paired_cluster_mmd_statistic": -0.027407084880490817,
+        "paired_cluster_mmd_pvalue": 1.0,
+        "paired_cluster_prompt_pairs": 10,
+        "ref_mean_length": 823.1,
         "cur_mean_length": 989.3,
-        "length_shift_pct": 19.5,
-        "centroid_distance": 0.152783,
+        "length_shift_pct": 20.2,
+        "centroid_distance": 0.152425,
         "ref_refusal_rate": 0.0,
         "cur_refusal_rate": 0.0,
         "refusal_rate_change": 0.0,

@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 from drift_tests import (
     ks_test,
@@ -6,6 +8,7 @@ from drift_tests import (
     benjamini_hochberg_correction,
     category_mmd_tests,
     count_unique_embeddings,
+    paired_cluster_mmd_test,
     unique_embeddings
 )
 
@@ -268,6 +271,110 @@ class TestDeduplication:
     def test_unique_embeddings_helper_preserves_order(self):
         vectors = [[2.0, 2.0], [1.0, 1.0], [2.0, 2.0]]
         assert unique_embeddings(vectors) == [[2.0, 2.0], [1.0, 1.0]]
+
+
+class TestPairedClusterMMD:
+    """The matched panel makes prompts, not runs, the exchangeable units.
+
+    A prompt's repeated answers move as one cluster when the permutation
+    exchanges phases, so no amount of per prompt repetition manufactures
+    cross group confidence. These tests pin the premises (pairing required,
+    deterministic, permutation preserving prompt structure) and the honest
+    behavior on degenerate inputs.
+    """
+
+    def setUp_pairs(self, n_prompts=10, copies=5,
+                    shift=0.0, spread=0.1):
+        """Reference and current points grouped by matched prompt ids.
+
+        Reference answers to prompt k sit at (k, 0); current answers at
+        (k, shift) plus a small spread so the two sides are not single
+        point masses unless shift is large.
+        """
+        rng = np.random.default_rng(11)
+        X, Y, xl, yl = [], [], [], []
+        for k in range(n_prompts):
+            for _ in range(copies):
+                base_x = [float(k) + spread * rng.normal(), 0.0]
+                base_y = [float(k) + shift + spread * rng.normal(), 0.0]
+                X.append(base_x)
+                Y.append(base_y)
+                xl.append(f'p{k}')
+                yl.append(f'p{k}')
+        return X, Y, xl, yl
+
+    def test_no_shared_prompts_reports_broken_premise(self):
+        X, Y, _, _ = self.setUp_pairs()
+        stat, p, pairs = paired_cluster_mmd_test(
+            X, Y, ['a1', 'a2'], ['b1', 'b2'])
+        assert math.isnan(stat) and p == 1.0 and pairs == 0
+
+    def test_clear_shift_attains_enumeration_floor(self):
+        # Ten matched prompts, every current answer shifted far from its
+        # prompt's reference cloud: the unpermuted assignment is the most
+        # separated of all 1024 swaps. With equal copies per side the full
+        # swap produces the same statistic as the identity (the two sides
+        # just exchange names), so exactly two patterns attain the maximum.
+        X, Y, xl, yl = self.setUp_pairs(shift=50.0)
+        stat, p, pairs = paired_cluster_mmd_test(X, Y, xl, yl)
+        assert pairs == 10
+        assert stat > 0.0
+        assert p == 2.0 / 1024
+
+    def test_identical_sides_yield_large_p(self):
+        # No phase difference: swapping label sets changes nothing, so the
+        # observed statistic sits inside a dense middle of the null.
+        X, Y, xl, yl = self.setUp_pairs(shift=0.0)
+        stat, p, pairs = paired_cluster_mmd_test(X, Y, xl, yl)
+        assert p > 0.10
+
+    def test_point_order_does_not_change_the_result(self):
+        X, Y, xl, yl = self.setUp_pairs(shift=3.0)
+        order = np.random.default_rng(5).permutation(len(X))
+        Xs = [X[i] for i in order]
+        xls = [xl[i] for i in order]
+        stat0, p0, _ = paired_cluster_mmd_test(X, Y, xl, yl)
+        stat1, p1, _ = paired_cluster_mmd_test(Xs, Y, xls, yl)
+        assert abs(stat0 - stat1) < 1e-12
+        assert abs(p0 - p1) < 1e-12
+
+    def test_prompt_cluster_prevents_cross_prompt_confidence(self):
+        # The pseudoreplication trap in clustered form: five cycles of the
+        # same prompt on each side, one prompt only. Run level MMD sees ten
+        # runs; the paired test sees two clusters, and with one pair the
+        # swap is symmetric, so no calibrated separation is possible and the
+        # result must be non significant rather than manufactured.
+        X = [[1.0, 0.0]] * 5
+        Y = [[100.0, 0.0]] * 5
+        stat, p, pairs = paired_cluster_mmd_test(
+            X, Y, ['same'] * 5, ['same'] * 5)
+        assert pairs == 1
+        assert 0.0 < p <= 1.0
+        # Two points per swap side is valid; with one prompt pair the
+        # exchangeable information is one bit, far from calibrated.
+        assert p > 0.05
+
+    def test_sampled_branch_when_pairs_exceed_enumeration_cap(self):
+        # Thirteen matched prompts: 2^13 = 8192 exceeds the enumeration cap,
+        # so the test samples with the seed and always keeps the identity.
+        # The clear shift still drives the p to the sampled floor.
+        X, Y, xl, yl = self.setUp_pairs(n_prompts=13, shift=50.0)
+        stat, p, pairs = paired_cluster_mmd_test(
+            X, Y, xl, yl, n_permutations=300, random_seed=7)
+        assert pairs == 13
+        assert stat > 0.0
+        assert p > 0.0
+        assert p <= 0.01
+
+    def test_unmatched_prompts_exclude_from_pairing(self):
+        X, Y, xl, yl = self.setUp_pairs(n_prompts=4)
+        # Reference has one extra prompt the current side never saw: it
+        # pairs to nothing and is dropped, with the count of matched pairs
+        # reported honestly.
+        xl_extra = xl + ['unmatched']
+        X_extra = X + [[9.0, 9.0]]
+        stat, p, pairs = paired_cluster_mmd_test(X_extra, Y, xl_extra, yl)
+        assert pairs == 4
 
 
 class TestPipelineIntegration:
