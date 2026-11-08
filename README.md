@@ -285,7 +285,7 @@ dashboard is a thin page over it.
 
 ## Testing
 
-`pytest` (82 tests) and `ruff check .` run in CI on every push. The tests cover the BH
+`pytest` (92 tests) and `ruff check .` run in CI on every push. The tests cover the BH
 correction against a hand-checked example, the reference window logic, the behavioral
 features, the sequential alert policy (streaks and the alpha spending schedule), the
 centroid baseline, alert storage, and the retry behaviour of the network adapters with
@@ -324,8 +324,11 @@ no test ever calls a real API or consumes quota.
   sample counting showed pseudoreplication (both adapters proved deterministic at
   temperature 0); the monitor now skips categories without enough distinct
   observations and reports effective counts next to nominal ones, so the arithmetic
-  behind any future flag is visible. Nothing there says anything about within-model
-  temporal drift, provider behavior in isolation, or detection rates. Those claims
-  rest on the simulations.
+  behind any future flag is visible. The permutation MMD also collapses duplicate
+  embeddings at entry, so a window of stored repeats is processed as the distinct
+  points it actually contains; KS and the validity proportion test deliberately
+  keep every stored run. Nothing there says anything about within-model temporal
+  drift, provider behavior in isolation, or detection rates. Those claims rest on
+  the simulations.
 - The free hosting tier has a small memory budget and a database that resets on
   redeploys; locally, persistence and MLflow logging are unrestricted.

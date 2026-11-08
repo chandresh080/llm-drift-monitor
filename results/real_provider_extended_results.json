@@ -1,5 +1,5 @@
 {
-  "started_at": "2026-11-08T10:02:49.500309",
+  "started_at": "2026-11-08T11:23:58.259453",
   "setup": {
     "reference_provider": "Groq",
     "reference_model": "openai/gpt-oss-20b",
@@ -34,42 +34,18 @@
     {
       "phase": "gemini_current",
       "cycle": 1,
-      "wall_seconds": 10.297,
-      "gen_latency_mean_s": null,
-      "gen_latency_p50_s": null,
-      "gen_latency_p95_s": null,
+      "wall_seconds": 11.186,
+      "gen_latency_mean_s": 2.391,
+      "gen_latency_p50_s": 1.989,
+      "gen_latency_p95_s": 4.141,
       "usage": {
-        "promptTokenCount": 19,
+        "promptTokenCount": 16,
         "candidatesTokenCount": 508,
-        "totalTokenCount": 527,
+        "totalTokenCount": 524,
         "promptTokensDetails": [
           {
             "modality": "TEXT",
-            "tokenCount": 19
-          }
-        ],
-        "serviceTier": "standard"
-      },
-      "error": "RuntimeError: Gemini native endpoint returned HTTP 429: {\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://aistudio.google.com/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 15, model: gemini-3.1-flash-lite, description: Generate content requests per minute limit exceeded on Free Tier. See https://aistudio.google.com/docs/rate-limits.\\nPlease retry in 263.089281ms.\",\n    \"status\": \"RESOURCE_EXHAUSTED\",\n    \"details\": [\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.Help\",\n        \"links\": [\n          {\n            \"description\": \"Learn more about Gemini API quotas\",\n            \"url\": \"https://aistudio.google.com/docs/rate-limits\"\n          }\n        ]\n      },\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.QuotaFailure\",\n        \"violations\": [\n          {\n            \"description\": \"Generate content requests per minute limit exceeded on Free Tier. See https://aistudio.google.com/docs/rate-limits.\",\n            \"quotaMetric\": \"generativelanguage.googleapis.com/generate_content_free_tier_requests\",\n            \"quotaId\": \"GenerateRequestsPerMinutePerProjectPerModel-FreeTier\",\n            \"quotaDimensions\": {\n              \"location\": \"global\",\n              \"model\": \"gemini-3.1-flash-lite\"\n            },\n            \"quotaValue\": \"15\"\n          }\n        ]\n      },\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.RetryInfo\",\n        \"retryDelay\": \"0s\"\n      }\n    ]\n  }\n}\n",
-      "tests_run": false,
-      "ok_runs": 0,
-      "failed_runs": 0
-    },
-    {
-      "phase": "gemini_current",
-      "cycle": 2,
-      "wall_seconds": 12.993,
-      "gen_latency_mean_s": 1.946,
-      "gen_latency_p50_s": 1.463,
-      "gen_latency_p95_s": 3.307,
-      "usage": {
-        "promptTokenCount": 26,
-        "candidatesTokenCount": 34,
-        "totalTokenCount": 60,
-        "promptTokensDetails": [
-          {
-            "modality": "TEXT",
-            "tokenCount": 26
+            "tokenCount": 16
           }
         ],
         "serviceTier": "standard"
@@ -79,7 +55,7 @@
       "ok_runs": 10,
       "failed_runs": 0,
       "results": {
-        "timestamp": "2026-11-08T10:04:22.113689",
+        "timestamp": "2026-11-08T11:24:09.454200",
         "reference_size": 50,
         "current_size": 10,
         "ref_length_count": 50,
@@ -96,14 +72,79 @@
         "proportion_z_raw_pvalue": 1.0,
         "proportion_test_method": "fisher",
         "mmd_statistic": 0.0,
-        "mmd_pvalue": 0.9780439121756487,
-        "mmd_raw_pvalue": 0.9780439121756487,
+        "mmd_pvalue": 0.9800399201596807,
+        "mmd_raw_pvalue": 0.9800399201596807,
         "reference_unique_responses": 12,
         "current_unique_responses": 10,
-        "ref_mean_length": 828.4,
+        "ref_mean_length": 827.7,
         "cur_mean_length": 989.3,
-        "length_shift_pct": 19.4,
-        "centroid_distance": 0.152853,
+        "length_shift_pct": 19.5,
+        "centroid_distance": 0.152783,
+        "ref_refusal_rate": 0.0,
+        "cur_refusal_rate": 0.0,
+        "refusal_rate_change": 0.0,
+        "category_tests": {},
+        "ks_adjusted_pvalue": 1.0,
+        "ks_significant": 0,
+        "proportion_z_adjusted_pvalue": 1.0,
+        "proportion_z_significant": 0,
+        "mmd_adjusted_pvalue": 1.0,
+        "mmd_significant": 0,
+        "bh_significant_tests": [],
+        "overall_drift_detected": 0,
+        "overall_quality_degradation": 0
+      },
+      "alerts": []
+    },
+    {
+      "phase": "gemini_current",
+      "cycle": 2,
+      "wall_seconds": 4.881,
+      "gen_latency_mean_s": 1.802,
+      "gen_latency_p50_s": 1.33,
+      "gen_latency_p95_s": 3.105,
+      "usage": {
+        "promptTokenCount": 16,
+        "candidatesTokenCount": 508,
+        "totalTokenCount": 524,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 16
+          }
+        ],
+        "serviceTier": "standard"
+      },
+      "error": null,
+      "tests_run": true,
+      "ok_runs": 10,
+      "failed_runs": 0,
+      "results": {
+        "timestamp": "2026-11-08T11:25:24.327435",
+        "reference_size": 50,
+        "current_size": 10,
+        "ref_length_count": 50,
+        "cur_length_count": 10,
+        "ref_emb_count": 50,
+        "cur_emb_count": 10,
+        "ref_valid_count": 50,
+        "cur_valid_count": 10,
+        "ks_statistic": 0.3,
+        "ks_pvalue": 0.39459210638345227,
+        "ks_raw_pvalue": 0.39459210638345227,
+        "proportion_z_stat": NaN,
+        "proportion_z_pvalue": 1.0,
+        "proportion_z_raw_pvalue": 1.0,
+        "proportion_test_method": "fisher",
+        "mmd_statistic": 0.0,
+        "mmd_pvalue": 0.9800399201596807,
+        "mmd_raw_pvalue": 0.9800399201596807,
+        "reference_unique_responses": 12,
+        "current_unique_responses": 10,
+        "ref_mean_length": 827.7,
+        "cur_mean_length": 989.3,
+        "length_shift_pct": 19.5,
+        "centroid_distance": 0.152783,
         "ref_refusal_rate": 0.0,
         "cur_refusal_rate": 0.0,
         "refusal_rate_change": 0.0,
@@ -123,18 +164,18 @@
     {
       "phase": "gemini_current",
       "cycle": 3,
-      "wall_seconds": 17.165,
-      "gen_latency_mean_s": 3.203,
-      "gen_latency_p50_s": 1.603,
-      "gen_latency_p95_s": 15.461,
+      "wall_seconds": 5.269,
+      "gen_latency_mean_s": 2.265,
+      "gen_latency_p50_s": 1.946,
+      "gen_latency_p95_s": 4.708,
       "usage": {
-        "promptTokenCount": 20,
-        "candidatesTokenCount": 71,
-        "totalTokenCount": 91,
+        "promptTokenCount": 19,
+        "candidatesTokenCount": 508,
+        "totalTokenCount": 527,
         "promptTokensDetails": [
           {
             "modality": "TEXT",
-            "tokenCount": 20
+            "tokenCount": 19
           }
         ],
         "serviceTier": "standard"
@@ -144,7 +185,7 @@
       "ok_runs": 10,
       "failed_runs": 0,
       "results": {
-        "timestamp": "2026-11-08T10:05:49.320928",
+        "timestamp": "2026-11-08T11:26:39.610326",
         "reference_size": 50,
         "current_size": 10,
         "ref_length_count": 50,
@@ -161,14 +202,14 @@
         "proportion_z_raw_pvalue": 1.0,
         "proportion_test_method": "fisher",
         "mmd_statistic": 0.0,
-        "mmd_pvalue": 0.9780439121756487,
-        "mmd_raw_pvalue": 0.9780439121756487,
+        "mmd_pvalue": 0.9800399201596807,
+        "mmd_raw_pvalue": 0.9800399201596807,
         "reference_unique_responses": 12,
         "current_unique_responses": 10,
-        "ref_mean_length": 828.4,
+        "ref_mean_length": 827.7,
         "cur_mean_length": 989.3,
-        "length_shift_pct": 19.4,
-        "centroid_distance": 0.152853,
+        "length_shift_pct": 19.5,
+        "centroid_distance": 0.152783,
         "ref_refusal_rate": 0.0,
         "cur_refusal_rate": 0.0,
         "refusal_rate_change": 0.0,
@@ -188,18 +229,18 @@
     {
       "phase": "gemini_current",
       "cycle": 4,
-      "wall_seconds": 4.205,
-      "gen_latency_mean_s": 1.833,
-      "gen_latency_p50_s": 1.388,
-      "gen_latency_p95_s": 3.64,
+      "wall_seconds": 6.332,
+      "gen_latency_mean_s": 2.827,
+      "gen_latency_p50_s": 2.405,
+      "gen_latency_p95_s": 5.763,
       "usage": {
-        "promptTokenCount": 22,
-        "candidatesTokenCount": 69,
-        "totalTokenCount": 91,
+        "promptTokenCount": 19,
+        "candidatesTokenCount": 391,
+        "totalTokenCount": 410,
         "promptTokensDetails": [
           {
             "modality": "TEXT",
-            "tokenCount": 22
+            "tokenCount": 19
           }
         ],
         "serviceTier": "standard"
@@ -209,7 +250,7 @@
       "ok_runs": 10,
       "failed_runs": 0,
       "results": {
-        "timestamp": "2026-11-08T10:07:03.498505",
+        "timestamp": "2026-11-08T11:27:55.880788",
         "reference_size": 50,
         "current_size": 10,
         "ref_length_count": 50,
@@ -226,18 +267,69 @@
         "proportion_z_raw_pvalue": 1.0,
         "proportion_test_method": "fisher",
         "mmd_statistic": 0.0,
-        "mmd_pvalue": 0.9780439121756487,
-        "mmd_raw_pvalue": 0.9780439121756487,
+        "mmd_pvalue": 0.9800399201596807,
+        "mmd_raw_pvalue": 0.9800399201596807,
         "reference_unique_responses": 12,
         "current_unique_responses": 10,
-        "ref_mean_length": 828.4,
+        "ref_mean_length": 827.7,
         "cur_mean_length": 989.3,
-        "length_shift_pct": 19.4,
-        "centroid_distance": 0.152853,
+        "length_shift_pct": 19.5,
+        "centroid_distance": 0.152783,
         "ref_refusal_rate": 0.0,
         "cur_refusal_rate": 0.0,
         "refusal_rate_change": 0.0,
-        "category_tests": {},
+        "category_tests": {
+          "code": {
+            "mmd_statistic": null,
+            "pvalue": null,
+            "reason": "insufficient distinct responses (3 of 10 reference, 2 of 10 current)",
+            "n_reference": 10,
+            "n_current": 10,
+            "unique_reference": 3,
+            "unique_current": 2,
+            "pseudoreplicated": 1
+          },
+          "factual": {
+            "mmd_statistic": null,
+            "pvalue": null,
+            "reason": "insufficient distinct responses (3 of 10 reference, 2 of 10 current)",
+            "n_reference": 10,
+            "n_current": 10,
+            "unique_reference": 3,
+            "unique_current": 2,
+            "pseudoreplicated": 1
+          },
+          "formatting": {
+            "mmd_statistic": null,
+            "pvalue": null,
+            "reason": "insufficient distinct responses (2 of 10 reference, 2 of 10 current)",
+            "n_reference": 10,
+            "n_current": 10,
+            "unique_reference": 2,
+            "unique_current": 2,
+            "pseudoreplicated": 1
+          },
+          "reasoning": {
+            "mmd_statistic": null,
+            "pvalue": null,
+            "reason": "insufficient distinct responses (2 of 10 reference, 2 of 10 current)",
+            "n_reference": 10,
+            "n_current": 10,
+            "unique_reference": 2,
+            "unique_current": 2,
+            "pseudoreplicated": 1
+          },
+          "refusal_probe": {
+            "mmd_statistic": null,
+            "pvalue": null,
+            "reason": "insufficient distinct responses (2 of 10 reference, 2 of 10 current)",
+            "n_reference": 10,
+            "n_current": 10,
+            "unique_reference": 2,
+            "unique_current": 2,
+            "pseudoreplicated": 1
+          }
+        },
         "ks_adjusted_pvalue": 1.0,
         "ks_significant": 0,
         "proportion_z_adjusted_pvalue": 1.0,
@@ -253,10 +345,10 @@
     {
       "phase": "gemini_current",
       "cycle": 5,
-      "wall_seconds": 3.879,
-      "gen_latency_mean_s": 1.584,
-      "gen_latency_p50_s": 1.257,
-      "gen_latency_p95_s": 3.048,
+      "wall_seconds": 5.465,
+      "gen_latency_mean_s": 2.201,
+      "gen_latency_p50_s": 1.927,
+      "gen_latency_p95_s": 3.691,
       "usage": {
         "promptTokenCount": 16,
         "candidatesTokenCount": 508,
@@ -274,7 +366,7 @@
       "ok_runs": 10,
       "failed_runs": 0,
       "results": {
-        "timestamp": "2026-11-08T10:08:28.851467",
+        "timestamp": "2026-11-08T11:29:11.399739",
         "reference_size": 50,
         "current_size": 10,
         "ref_length_count": 50,
@@ -291,14 +383,14 @@
         "proportion_z_raw_pvalue": 1.0,
         "proportion_test_method": "fisher",
         "mmd_statistic": 0.0,
-        "mmd_pvalue": 0.9780439121756487,
-        "mmd_raw_pvalue": 0.9780439121756487,
+        "mmd_pvalue": 0.9800399201596807,
+        "mmd_raw_pvalue": 0.9800399201596807,
         "reference_unique_responses": 12,
         "current_unique_responses": 10,
-        "ref_mean_length": 828.4,
+        "ref_mean_length": 827.7,
         "cur_mean_length": 989.3,
-        "length_shift_pct": 19.4,
-        "centroid_distance": 0.152853,
+        "length_shift_pct": 19.5,
+        "centroid_distance": 0.152783,
         "ref_refusal_rate": 0.0,
         "cur_refusal_rate": 0.0,
         "refusal_rate_change": 0.0,

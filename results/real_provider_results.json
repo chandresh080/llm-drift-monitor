@@ -1,5 +1,5 @@
 {
-  "started_at": "2026-11-08T10:00:41.014520",
+  "started_at": "2026-11-08T11:07:15.883526",
   "setup": {
     "reference_provider": "Groq",
     "reference_model": "openai/gpt-oss-20b",
@@ -29,18 +29,18 @@
     {
       "phase": "groq_reference",
       "cycle": 1,
-      "wall_seconds": 8.738,
-      "gen_latency_mean_s": 0.733,
-      "gen_latency_p50_s": 0.623,
-      "gen_latency_p95_s": 1.001,
+      "wall_seconds": 8.881,
+      "gen_latency_mean_s": 0.805,
+      "gen_latency_p50_s": 0.739,
+      "gen_latency_p95_s": 1.177,
       "usage": {
-        "queue_time": 0.367618807,
+        "queue_time": 0.367293368,
         "prompt_tokens": 87,
-        "prompt_time": 0.004104209,
+        "prompt_time": 0.00557895,
         "completion_tokens": 303,
-        "completion_time": 0.308189444,
+        "completion_time": 0.311984813,
         "total_tokens": 390,
-        "total_time": 0.312293653,
+        "total_time": 0.317563763,
         "completion_tokens_details": {
           "reasoning_tokens": 5
         }
@@ -53,18 +53,18 @@
     {
       "phase": "groq_reference",
       "cycle": 2,
-      "wall_seconds": 1.83,
-      "gen_latency_mean_s": 0.687,
-      "gen_latency_p50_s": 0.615,
-      "gen_latency_p95_s": 1.019,
+      "wall_seconds": 2.337,
+      "gen_latency_mean_s": 0.673,
+      "gen_latency_p50_s": 0.573,
+      "gen_latency_p95_s": 1.005,
       "usage": {
-        "queue_time": 0.367510458,
+        "queue_time": 0.31578097,
         "prompt_tokens": 87,
-        "prompt_time": 0.004669098,
+        "prompt_time": 0.00470321,
         "completion_tokens": 303,
-        "completion_time": 0.314599852,
+        "completion_time": 0.310809949,
         "total_tokens": 390,
-        "total_time": 0.31926895,
+        "total_time": 0.315513159,
         "completion_tokens_details": {
           "reasoning_tokens": 5
         }
@@ -77,20 +77,20 @@
     {
       "phase": "groq_reference",
       "cycle": 3,
-      "wall_seconds": 1.554,
-      "gen_latency_mean_s": 0.67,
-      "gen_latency_p50_s": 0.558,
-      "gen_latency_p95_s": 1.037,
+      "wall_seconds": 1.994,
+      "gen_latency_mean_s": 0.667,
+      "gen_latency_p50_s": 0.611,
+      "gen_latency_p95_s": 0.987,
       "usage": {
-        "queue_time": 0.37944463,
-        "prompt_tokens": 90,
-        "prompt_time": 0.035867075,
-        "completion_tokens": 512,
-        "completion_time": 0.530952626,
-        "total_tokens": 602,
-        "total_time": 0.566819701,
+        "queue_time": 0.313992627,
+        "prompt_tokens": 87,
+        "prompt_time": 0.005687562,
+        "completion_tokens": 303,
+        "completion_time": 0.344174225,
+        "total_tokens": 390,
+        "total_time": 0.349861787,
         "completion_tokens_details": {
-          "reasoning_tokens": 43
+          "reasoning_tokens": 5
         }
       },
       "error": null,
@@ -101,20 +101,20 @@
     {
       "phase": "groq_reference",
       "cycle": 4,
-      "wall_seconds": 1.362,
-      "gen_latency_mean_s": 0.428,
-      "gen_latency_p50_s": 0.466,
-      "gen_latency_p95_s": 0.57,
+      "wall_seconds": 4.331,
+      "gen_latency_mean_s": 1.583,
+      "gen_latency_p50_s": 1.527,
+      "gen_latency_p95_s": 2.047,
       "usage": {
-        "queue_time": 0.157064781,
-        "prompt_tokens": 90,
-        "prompt_time": 0.006444458,
-        "completion_tokens": 463,
-        "completion_time": 0.491171321,
-        "total_tokens": 553,
-        "total_time": 0.497615779,
+        "queue_time": 0.365443767,
+        "prompt_tokens": 87,
+        "prompt_time": 0.004162572,
+        "completion_tokens": 303,
+        "completion_time": 0.310799352,
+        "total_tokens": 390,
+        "total_time": 0.314961924,
         "completion_tokens_details": {
-          "reasoning_tokens": 6
+          "reasoning_tokens": 5
         }
       },
       "error": null,
@@ -125,18 +125,18 @@
     {
       "phase": "groq_reference",
       "cycle": 5,
-      "wall_seconds": 1.921,
-      "gen_latency_mean_s": 0.676,
-      "gen_latency_p50_s": 0.628,
-      "gen_latency_p95_s": 0.947,
+      "wall_seconds": 1.681,
+      "gen_latency_mean_s": 0.559,
+      "gen_latency_p50_s": 0.431,
+      "gen_latency_p95_s": 0.822,
       "usage": {
-        "queue_time": 0.367151507,
+        "queue_time": 0.242971699,
         "prompt_tokens": 87,
-        "prompt_time": 0.004669292,
+        "prompt_time": 0.004462198,
         "completion_tokens": 303,
-        "completion_time": 0.30600682,
+        "completion_time": 0.315364127,
         "total_tokens": 390,
-        "total_time": 0.310676112,
+        "total_time": 0.319826325,
         "completion_tokens_details": {
           "reasoning_tokens": 5
         }
@@ -151,18 +151,18 @@
     {
       "phase": "gemini_current",
       "cycle": 1,
-      "wall_seconds": 4.651,
-      "gen_latency_mean_s": 1.854,
-      "gen_latency_p50_s": 1.307,
-      "gen_latency_p95_s": 3.912,
+      "wall_seconds": 13.253,
+      "gen_latency_mean_s": 3.081,
+      "gen_latency_p50_s": 1.866,
+      "gen_latency_p95_s": 12.497,
       "usage": {
-        "promptTokenCount": 16,
-        "candidatesTokenCount": 508,
-        "totalTokenCount": 524,
+        "promptTokenCount": 13,
+        "candidatesTokenCount": 17,
+        "totalTokenCount": 30,
         "promptTokensDetails": [
           {
             "modality": "TEXT",
-            "tokenCount": 16
+            "tokenCount": 13
           }
         ],
         "serviceTier": "standard"
@@ -172,7 +172,7 @@
       "ok_runs": 10,
       "failed_runs": 0,
       "results": {
-        "timestamp": "2026-11-08T10:02:41.760185",
+        "timestamp": "2026-11-08T11:22:32.860263",
         "reference_size": 50,
         "current_size": 10,
         "ref_length_count": 50,
@@ -189,14 +189,14 @@
         "proportion_z_raw_pvalue": 1.0,
         "proportion_test_method": "fisher",
         "mmd_statistic": 0.0,
-        "mmd_pvalue": 0.9780439121756487,
-        "mmd_raw_pvalue": 0.9780439121756487,
+        "mmd_pvalue": 0.9800399201596807,
+        "mmd_raw_pvalue": 0.9800399201596807,
         "reference_unique_responses": 12,
         "current_unique_responses": 10,
-        "ref_mean_length": 828.4,
+        "ref_mean_length": 827.7,
         "cur_mean_length": 989.3,
-        "length_shift_pct": 19.4,
-        "centroid_distance": 0.152853,
+        "length_shift_pct": 19.5,
+        "centroid_distance": 0.152783,
         "ref_refusal_rate": 0.0,
         "cur_refusal_rate": 0.0,
         "refusal_rate_change": 0.0,

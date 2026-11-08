@@ -1,43 +1,6 @@
 phase,cycle,wall_seconds,ok_runs,failed_runs,gen_latency_mean_s,gen_latency_p50_s,gen_latency_p95_s,prompt_tokens,completion_tokens,total_tokens,error,tests_run
-gemini_current,1,10.297,0,0,,,,19,508,527,"RuntimeError: Gemini native endpoint returned HTTP 429: {
-  ""error"": {
-    ""code"": 429,
-    ""message"": ""You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://aistudio.google.com/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 15, model: gemini-3.1-flash-lite, description: Generate content requests per minute limit exceeded on Free Tier. See https://aistudio.google.com/docs/rate-limits.\nPlease retry in 263.089281ms."",
-    ""status"": ""RESOURCE_EXHAUSTED"",
-    ""details"": [
-      {
-        ""@type"": ""type.googleapis.com/google.rpc.Help"",
-        ""links"": [
-          {
-            ""description"": ""Learn more about Gemini API quotas"",
-            ""url"": ""https://aistudio.google.com/docs/rate-limits""
-          }
-        ]
-      },
-      {
-        ""@type"": ""type.googleapis.com/google.rpc.QuotaFailure"",
-        ""violations"": [
-          {
-            ""description"": ""Generate content requests per minute limit exceeded on Free Tier. See https://aistudio.google.com/docs/rate-limits."",
-            ""quotaMetric"": ""generativelanguage.googleapis.com/generate_content_free_tier_requests"",
-            ""quotaId"": ""GenerateRequestsPerMinutePerProjectPerModel-FreeTier"",
-            ""quotaDimensions"": {
-              ""location"": ""global"",
-              ""model"": ""gemini-3.1-flash-lite""
-            },
-            ""quotaValue"": ""15""
-          }
-        ]
-      },
-      {
-        ""@type"": ""type.googleapis.com/google.rpc.RetryInfo"",
-        ""retryDelay"": ""0s""
-      }
-    ]
-  }
-}
-",False
-gemini_current,2,12.993,10,0,1.946,1.463,3.307,26,34,60,,True
-gemini_current,3,17.165,10,0,3.203,1.603,15.461,20,71,91,,True
-gemini_current,4,4.205,10,0,1.833,1.388,3.64,22,69,91,,True
-gemini_current,5,3.879,10,0,1.584,1.257,3.048,16,508,524,,True
+gemini_current,1,11.186,10,0,2.391,1.989,4.141,16,508,524,,True
+gemini_current,2,4.881,10,0,1.802,1.33,3.105,16,508,524,,True
+gemini_current,3,5.269,10,0,2.265,1.946,4.708,19,508,527,,True
+gemini_current,4,6.332,10,0,2.827,2.405,5.763,19,391,410,,True
+gemini_current,5,5.465,10,0,2.201,1.927,3.691,16,508,524,,True

@@ -178,17 +178,28 @@ def mmd_test(X: List[List[float]], Y: List[List[float]],
     """
     Perform MMD test using fast vectorized kernel permutation testing.
     Uses median heuristic bandwidth if sigma is None or <= 0.
-    
+
+    Duplicate embedding vectors are collapsed before testing: repeated
+    identical answers are one point in feature space, not independent
+    observations, so the permutation null treats each distinct vector once.
+    This is what keeps the calibration honest under deterministic adapters.
+    Side effects of that rule: two windows of many identical vectors get
+    counted as their few distinct points, and equal response lengths are
+    unaffected because the KS test (over lengths) treats distinct texts with
+    the same length as the different observations they are.
+
     Args:
         X: Reference embeddings (list or array of vectors)
         Y: Current embeddings (list or array of vectors)
         n_permutations: Number of permutations
         random_seed: Random seed for reproducibility
         sigma: RBF kernel bandwidth (None for median heuristic)
-    
+
     Returns:
         (mmd_statistic, pvalue)
     """
+    X = unique_embeddings(list(X))
+    Y = unique_embeddings(list(Y))
     if len(X) == 0 or len(Y) == 0:
         return 0.0, 1.0
     
@@ -324,16 +335,33 @@ def holm_correction(pvalues: List[float], alpha: float = 0.05) -> Tuple[List[flo
     return list(adjusted), [a <= alpha for a in adjusted]
 
 
+def unique_embeddings(vectors: List[List[float]]) -> List[List[float]]:
+    """Return the distinct embedding vectors, preserving first seen order.
+
+    A deterministic adapter (temperature 0 with identical prompts) repeats
+    the same response many times, and each repeat is the same point in
+    feature space rather than an independent observation. Duplicate vectors
+    are collapsed once, here, so every MMD caller computes over the
+    information that actually exists.
+    """
+    seen = set()
+    out: List[List[float]] = []
+    for v in vectors:
+        key = tuple(float(x) for x in v)
+        if key not in seen:
+            seen.add(key)
+            out.append(v)
+    return out
+
+
 def count_unique_embeddings(vectors: List[List[float]]) -> int:
     """How many distinct embedding vectors are in a window.
 
-    A deterministic adapter (temperature 0 with identical prompts) can repeat
-    the same response many times, so the nominal count of stored runs
-    overstates the effective sample size. Reported alongside the nominal
-    counts so pseudoreplication is visible in the results instead of only in
-    prose.
+    The nominal count of stored runs overstates the effective sample size
+    under a deterministic adapter; reported alongside the nominal counts so
+    pseudoreplication is visible in the results instead of only in prose.
     """
-    return len({tuple(float(x) for x in v) for v in vectors})
+    return len(unique_embeddings(vectors))
 
 
 def category_mmd_tests(ref_by_category: Dict[str, List[List[float]]],

@@ -1,10 +1,11 @@
 # Real Hosted-Provider Comparison: Groq Reference versus Gemini Current
 
-Execution date: 2026-11-08 (single cycle comparison start 10:00:41, extended run start
-10:02:49, local time). The experiment was first executed and recorded on 2026-11-07;
-both committed result artifacts were regenerated on 2026-11-08 after an effective
-sample size gate was added to the category family, so every number below describes
-the committed artifacts exactly. This is a **real hosted-provider comparison**, not a
+Execution date: 2026-11-08 (single cycle comparison start 11:07:15, extended run start
+11:23:58, local time). The experiment was first executed and recorded on 2026-11-07;
+both committed result artifacts were regenerated twice on 2026-11-08, the second time
+after the MMD permutation test itself began collapsing duplicate embedding vectors at
+its entry, so every number below describes the committed artifacts exactly. This is a
+**real hosted-provider comparison**, not a
 synthetic benchmark and not a temporal drift study. All results come from the output
 files `results/real_provider_cycles.csv`, `results/real_provider_results.json`,
 `results/real_provider_extended_cycles.csv` and `results/real_provider_extended_results.json`,
@@ -30,7 +31,7 @@ temporal drift within a single model.
 | Generation settings | temperature 0.0, max_tokens 512, timeout 60 s for both providers (not fully identical: only Groq exposes reasoning_effort, next row) |
 | Groq specific setting | reasoning_effort = low (gpt-oss-20b is a reasoning model; see failures below) |
 | Embedding model | sentence-transformers/all-MiniLM-L6-v2, CPU, identical preprocessing both stages |
-| Detectors | KS on lengths, proportion test on validity (Fisher dispatch), permutation MMD (500 permutations), Benjamini-Hochberg at alpha 0.05, plus effect-size diagnostics; category-wise family gated by EFFECTIVE sample counts (see the gating section) |
+| Detectors | KS on lengths, proportion test on validity (Fisher dispatch), permutation MMD (500 permutations, duplicate embeddings collapsed at entry), Benjamini-Hochberg at alpha 0.05, plus effect-size diagnostics; category-wise family gated by DISTINCT observation counts (see the pseudoreplication section) |
 | Windows | reference 50, current 10, matched prompt ids, complete cycles only; the category current window spans the trailing five complete cycles |
 | Config override | alerts.min_consecutive_cycles = 1 for the single cycle run (a single current cycle cannot satisfy two-cycle persistence); the extended run uses the default value of 2 |
 | Database | data/real_providers.db, fresh on each full run (gitignored); `--resume` keeps the reference window |
@@ -52,15 +53,15 @@ existing instrumentation):
 
 | Provider | p50 (s) | p95 (s) |
 | --- | --- | --- |
-| Groq | 0.47 to 0.63 across cycles | 0.57 to 1.04 across cycles |
-| Gemini | 1.31 | 3.91 |
+| Groq | 0.431 to 1.527 across cycles | 0.822 to 2.047 across cycles |
+| Gemini | 1.866 | 12.497 |
 
 Token usage as returned by the providers:
 
 | Provider | Calls | Prompt tokens | Completion tokens | Total tokens |
 | --- | --- | --- | --- | --- |
-| Groq | 50 | 441 | 1,884 | 2,325 |
-| Gemini | 10 | 16 | 508 | 524 |
+| Groq | 50 | 435 | 1,515 | 1,950 |
+| Gemini | 10 | 13 | 17 | 30 |
 
 (The two providers tokenize differently and return different usage fields, so token
 totals are not directly comparable.)
@@ -73,19 +74,18 @@ Pooled family, reference 50 versus current 10, both windows valid and complete:
 | --- | --- | --- | --- | --- |
 | KS (response lengths) | 0.30 | 0.395 | 1.0 | No |
 | Proportion / Fisher (validity) | n/a (Fisher has no z statistic) | 1.000 | 1.0 | No |
-| MMD (embeddings, 500 perms) | 0.000 | 0.978 | 1.0 | No |
+| MMD (embeddings, 500 perms, deduplicated) | 0.000 | 0.980 | 1.0 | No |
 
-Effect-size diagnostics: centroid distance 0.153, length shift +19.4% (mean 828.4 to
+Effect-size diagnostics: centroid distance 0.153, length shift +19.5% (mean 827.7 to
 989.3 characters), refusal rate 0.0 in both windows. Pooled verdict:
 `overall_drift_detected = 0`, `overall_quality_degradation = 0`, no alerts generated.
 
-Effective sample sizes are now reported next to the nominal window size in the
-committed JSON: `reference_unique_responses` is 12 of a nominal 50, and
+Effective sample sizes are reported next to the nominal window size in the committed
+JSON: `reference_unique_responses` is 12 of a nominal 50, and
 `current_unique_responses` is 10 of a nominal 10. The reference window was collected
 at temperature 0 from the same ten prompts five times, so fifty stored runs carry
-only twelve distinct answers; any pooled p value over that window inherits the
-pseudoreplication caveat spelled out below. Single Gemini cycle pooled results: no
-drift detected, no alerts.
+only twelve distinct answers; those twelve, not fifty, are what MMD computes over.
+Single Gemini cycle pooled results: no drift detected, no alerts.
 
 Category-wise MMD: no categories were tested, reported as an empty tested family.
 Two reasons stack: the category current window needs five complete Gemini cycles
@@ -93,7 +93,7 @@ Two reasons stack: the category current window needs five complete Gemini cycles
 DISTINCT observations even where the nominal count exists. The procedure reports the
 starvation rather than junk p values, exactly as it is specified to behave.
 
-## Effective sample size gating: what changed and why
+## Pseudoreplication: what the pipeline counts as observations
 
 The first recording of this experiment (2026-11-07) ran with the category family
 gated on nominal sample counts. Five repeated Gemini cycles with identical answers
@@ -104,11 +104,24 @@ observations. A permutation null that treats repeated identical values as
 independent inflates confidence, so that adjusted p value did not support the
 significance it displayed. The inference has been **withdrawn**.
 
-The fix keeps the category family's existing design ("a thin category cannot produce
-a junk p value") and applies it to the information that is actually present: the
-minimum `min_samples_per_category` gate now counts distinct embedding vectors per
-side. In the current committed extended artifact every category is therefore
-skipped, with counts reported in place of p values:
+## Pseudoreplication: what is deduplicated and what is not
+
+The first recording of this experiment (2026-11-07) ran with the category family
+gated on nominal sample counts. Five repeated Gemini cycles with identical answers
+reported `refusal_probe` as BH significant (MMD statistic 0.450, raw p 0.004,
+adjusted p 0.020). Recount shown at that time: the ten nominal runs per category
+were two to four distinct reference observations versus two distinct current
+observations. A permutation null that treats repeated identical values as
+independent inflates confidence, so that adjusted p value did not support the
+significance it displayed. The inference has been **withdrawn**.
+
+Two corrections followed, in the order they were applied:
+
+1. The category family's minimum `min_samples_per_category` gate now counts distinct
+   embedding vectors per side, keeping that family's existing design ("a thin
+   category cannot produce a junk p value"). In the current committed extended
+   artifact every category is therefore skipped, with counts reported in place of
+   p values:
 
 | Category | Reference: distinct of nominal | Current: distinct of nominal | Decision |
 | --- | --- | --- | --- |
@@ -118,82 +131,98 @@ skipped, with counts reported in place of p values:
 | reasoning | 2 of 10 | 2 of 10 | skipped, insufficient distinct responses |
 | refusal_probe | 2 of 10 | 2 of 10 | skipped, insufficient distinct responses |
 
+2. `mmd_test` itself now collapses duplicate embeddings at its entry, in first seen
+   order, so BOTH the category path and the pooled path compute over the distinct
+   observations rather than repeats of them. A fifty run reference window carrying
+   twelve distinct answers is a twelve point window to the test, and ten copies of
+   one answer count as one observation. Two windows of all identical vectors return
+   the conservative (statistic 0.0, p 1.0). The on disk pooled MMD changed
+   accordingly across the two regenerations: raw p 0.978 before the collapse (the
+   duplicates have mass in the median bandwidth heuristic), 0.980 after, with the
+   conclusion (no drift, no alerts) unchanged.
+
+What is deliberately NOT deduplicated: the KS test on response lengths and the
+validity proportion test keep every stored run. Different texts with equal lengths
+are different observations, and a failed call is a real event even when a previous
+cycle failed identically; collapsing those would understate the very frequencies
+those tests measure. This asymmetry is a stated design decision, not an oversight:
+MMD operates in embedding space where identical answers are literally the same
+point, while the count-based tests operate on labels where identical labels carry
+independent per run information.
+
 The largest category distance observed before the gate existed (refusal_probe,
 0.450 on 2026-11-07 data) remains in the narrative as a descriptive observation, not
-an inferential one. Calendar concentration: the withdrawal applies to the recorded
-2026-11-07 flag, and no category p value is emitted by the current pipeline for the
-stored windows.
+an inferential one. The withdrawal applies to the recorded 2026-11-07 flag, and no
+category p value is emitted by the current pipeline for the stored windows.
 
-The pooled family is unchanged by the gate: all three tests keep treating each
-stored run as an observation, because the pooled windows are the shared alerting
-path for every adapter including stochastic ones. Its pseudoreplication is exposed
-instead of hidden (`reference_unique_responses` / `current_unique_responses` in the
-JSON), and the qualification follows: with 12 distinct answers behind 50 reference
-runs, the pooled p values over deterministic windows are a description of the
-comparison between two fixed answer sets, not a calibrated test of generative
-distributions. The honest fix for the pooled side, as for categories, is more
-distinct prompts per sample or a prompt level dependence aware test, not the
-reported flag alone.
+The pooled family's remaining qualification: with 12 distinct answers behind 50
+reference runs, the pooled MMD is now calibrated with respect to repeats, but
+twelve points still describe a comparison between two fixed answer sets rather than
+a test of generative distributions. The principled next steps, unchanged, are more
+distinct prompts per sample or a prompt level dependence aware test; the
+deduplication corrects the arithmetic, not the sampling design.
 
 ## Extended run: five Gemini cycles with the default persistence rule
 
-A second execution continued the same database on 2026-11-08 (start 10:02:49),
-attempting five Gemini cycles on top of the completed single comparison, using the
-default configuration throughout: the two-cycle persistence rule active, and the
-category gate on distinct observations. The reference window stayed the rerun's
-50 Groq runs; no Groq calls were made. Command:
+A second execution continued the same database on 2026-11-08 (start 11:23:58,
+90 seconds after the single cycle comparison finished so Gemini's per model quota
+window had fully cleared), attempting five Gemini cycles on top of the completed
+single comparison, using the default configuration throughout: the two-cycle
+persistence rule active, and the distinct observation gate in the category family.
+The reference window stayed the comparison run's 50 Groq runs; no Groq calls were
+made. Command:
 
 ```
 DRIFT_MONITOR_TRACKING=0 python -m experiments.real_providers \
   --resume --current-cycles 5 --out-prefix real_provider_extended
 ```
 
-Execution was not clean end to end and is reported as it happened: cycle 1 failed
-with Gemini HTTP 429 RESOURCE_EXHAUSTED (the free tier's per model request counter
-was still carrying the single cycle run's ten Gemini calls from two minutes
-earlier), all ten calls of that cycle failed, and zero runs were stored for it. The
-remaining four cycles succeeded; this is recorded in the committed artifact rather
-than being cleaned up afterwards.
+Execution was clean end to end: five of five cycles stored results, 50 Gemini calls
+all successful, zero errors and zero rate-limit events. This required the spacing
+above; an earlier regeneration attempt on the same day (failure 5 below) had its
+first cycle rejected with HTTP 429 because the previous invocation's ten Gemini
+calls were still inside the quota window, and that event is kept in the failure
+history as the documented lesson.
 
 API execution in the committed artifact:
 
 | Cycle | Stored runs | Outcome |
 | --- | --- | --- |
-| 1 | 0 | HTTP 429 RESOURCE_EXHAUSTED, all ten calls failed, no runs stored |
-| 2 to 5 | 10 each | eight of the value's tests run in each; 40 calls, all successful |
+| 1 to 5 | 10 each | all 50 calls successful, tests run in every cycle |
 
-Per-call latency across the four stored cycles: p50 1.26 to 1.60 s, p95 3.05 to
-15.46 s (the third stored cycle contained one call that took about 15 seconds,
-presumably provider-side queueing). Token usage: 1,293 tokens across the 40
+Per-call latency across the five cycles: p50 1.33 to 2.405 s, p95 3.105 to 5.763 s.
+Token usage: 2,509 tokens total (86 prompt, 2,423 completion) across the 50
 successful calls.
 
-Pooled drift results are identical in all four stored cycles (KS statistic 0.30 raw
-p 0.395, Fisher p 1.000, MMD statistic 0.000 raw p 0.978, all adjusted p 1.0):
+Pooled drift results are identical in all five cycles (KS statistic 0.30 raw p
+0.395, MMD statistic 0.000 raw p 0.980, computed over the deduplicated windows of
+12 distinct reference answers and 10 distinct current answers, all adjusted p 1.0):
 `overall_drift_detected = 0` in every cycle and no alert fired. This identity is the
 pseudoreplication made visible: each cycle rebuilds its windows and recomputes its
 permutations, but the reference window and the per cycle current answers are the
 same fixed answer sets every time, so the numbers cannot change. Repeating cycles
-against a deterministic target adds no statistical evidence.
+against a deterministic target adds no statistical evidence, and nothing in this
+artifact claims otherwise.
 
 ## What the artifacts say about determinism
 
 Both providers behaved deterministically at the pinned settings in these runs, on
 top of the earlier direct measurement (2026-11-07, on the database that existed
-before the rerun: one distinct response text per panel prompt across 90 stored Gemini
-responses, and 50 Groq reference runs carrying 15 distinct texts). In the current
-artifacts, `current_unique_responses` is 10 in every stored cycle against an
-unchanging reference of 12 distinct answers in 50 runs, and the pooled p values are
-identical to the sixteen digit precision in every tested cycle. Groq's fresh
-reference window carried 12 distinct texts this time rather than 15, which shows the
-reference side is not perfectly frozen across reruns, in a small way that the
-reported unique counts make visible.
+before the reruns: one distinct response text per panel prompt across 90 stored
+Gemini responses). In the current artifacts, `current_unique_responses` is 10 in
+every stored cycle against an unchanging reference of 12 distinct answers in 50
+runs, and the pooled p values are identical to the sixteen digit precision in every
+tested cycle. Groq's reference window has carried a different distinct text count
+across recordings (15 on 2026-11-07, 12 on 2026-11-08), which shows the reference
+side is not perfectly frozen across reruns, in a small way that the reported unique
+counts make visible.
 
 ## Timing, kept separate by design
 
 | Quantity | Value | Meaning |
 | --- | --- | --- |
-| Provider per-call latency | Groq p95 0.57 to 1.04 s, Gemini p95 3.05 to 15.46 s across stored cycles | Provider generation time per model call |
-| End-to-end cycle wall time (last single cycle Gemini cycle) | 4.65 s | Full Gemini cycle including generation, features, tests, storage |
+| Provider per-call latency | Groq p95 0.822 to 2.047 s, Gemini p95 12.497 s (single cycle run) to 5.763 s max (extended run) | Provider generation time per model call |
+| End-to-end cycle wall time (single cycle Gemini run) | 13.253 s | Full Gemini cycle including generation, features, tests, storage |
 | Monitoring overhead p95 | 0.388 s per cycle | Machinery cost without model calls (`experiments/overhead.py` benchmark, from `overhead_latency.csv`) |
 
 ## Failures encountered during development, and their fixes
@@ -224,14 +253,15 @@ the final configuration:
    Groq's 25 second pacing failed with RESOURCE_EXHAUSTED errors surfaced verbatim
    through the adapter. Fix: the Gemini stage spaces cycles 70 seconds apart; the
    corrected recording completed five of five cycles with zero errors.
-5. HTTP 429 again on extended cycle 1 on 2026-11-08 after the artifact
-   regeneration: the rerun of the single cycle comparison completed two minutes
-   earlier and its ten Gemini calls still counted against the per model window, so
-   the extended run's first burst was rejected. Left in the record as-is: one failed
-   cycle with zero stored runs, four clean cycles after it. The general lesson stands
-   for consecutive experiment invocations as well as for cycles inside one
-   invocation: Gemini's free tier needs at least a minute of spacing after any
-   burst.
+5. HTTP 429 on extended cycle 1 during the first 2026-11-08 regeneration attempt:
+   the preceding invocation of the single cycle comparison had completed two
+   minutes earlier, and its ten Gemini calls were still inside the per model quota
+   window, so the extended run's first burst was rejected with zero stored runs.
+   Fix: at least 90 seconds between the end of any invocation that touched Gemini
+   and the start of the next one. The final committed runs used that spacing and
+   completed both stages with zero errors. The lesson generalizes the in-run
+   pacing rule: consecutive experiment invocations stack against the same rolling
+   window exactly as cycles inside one invocation do.
 
 ## Limitations
 
@@ -240,28 +270,35 @@ the final configuration:
   difference, not provider behavior in isolation and not within-model drift.
 - Determinism bounds the statistics: both adapters ran at temperature 0, so the
   pooled windows describe two fixed answer sets rather than sampling from
-  generative distributions. The pooled family keeps counting every stored run as an
-  observation (it is the shared alerting path for all adapters), its unique counts
-  are reported so the gap between nominal and effective samples is visible
-  (12 distinct of 50 reference runs in these artifacts), and every identical p value
-  across cycles in these artifacts is one comparison, not independent confirmation.
-  The category family no longer emits p values at all for these windows.
+  generative distributions. MMD now collapses duplicate embeddings, so its pooled
+  windows hold 12 distinct reference points and 10 distinct current points (the
+  unique counts are reported in the JSON), while KS and the validity proportion
+  test deliberately keep every stored run (equal lengths from different texts are
+  genuinely different observations, and a failed call is a real event regardless
+  of repeats). Twelves points against ten are a calibrated comparison of two answer
+  sets, not an assay of generative distributions; every identical p value across
+  cycles is one comparison, not independent confirmation. The category family
+  emits no p values at all for these windows.
 - The flagged category was withdrawn: the 2026-11-07 recording marked refusal_probe
   BH significant at 0.020; recounted effective samples (four distinct reference
   observations versus two distinct current observations) showed the confidence was
-  inflated by pseudoreplication, so the inference is retracted here and the gate now
-  prevents it structurally. The descriptive distance (MMD statistic 0.450, the
-  largest of the five) stays in the narrative only.
+  inflated by pseudoreplication, so the inference is retracted here and the gate
+  and the MMD deduplication now prevent it structurally. The descriptive distance
+  (MMD statistic 0.450, the largest of the five) stays in the narrative only.
 - No detection-rate or false-alarm claims follow from any of this; the synthetic
   benchmarks remain the source for those metrics, and a within-model temporal
   comparison (one model, two versions) remains the missing demonstration for
   production drift claims.
 - Slow tail latencies exist on the free tier: one 48 second call (2026-11-07) and
-  one 15 second call (2026-11-08) succeeded without hitting the 60 second limit.
+  one about 15 second call in the single cycle run (2026-11-08) succeeded without
+  hitting the 60 second limit.
 - Different token accounting: the two providers return different token fields and
   count differently, so token totals are not directly comparable.
-- Extended cycle 1's recorded 429 leaves the extended run at four stored cycles, not
-  five: the persistence rule ran unmodified over the cycles that stored results.
+- The quota-spacing rules matter beyond a single invocation: the first regeneration
+  attempt on 2026-11-08 had its extended cycle 1 rejected with HTTP 429 because
+  the prior invocation's Gemini calls were still inside the rolling window; the
+  final committed runs waited 90 seconds between invocations and recorded zero
+  errors.
 
 ## Reproducing
 
@@ -273,9 +310,10 @@ DRIFT_MONITOR_TRACKING=0 python -m experiments.real_providers
 
 Optional flags: `--reference-cycles N` (default 5), `--current-cycles N` (a value
 above 1 keeps the default two-cycle persistence rule and lets the category window
-accumulate five cycles; the effective sample gate still applies inside it),
+accumulate five cycles; the distinct observation gate still applies inside it),
 `--resume` (extend an existing data/real_providers.db by skipping the Groq
-reference collection; wait for the provider's rate window to clear first),
+reference collection; leave at least 90 seconds between invocations that touch
+Gemini so the per model quota window clears),
 `--out-prefix` (default `real_provider`), and `--out-dir`. The run deletes and
 rebuilds `data/real_providers.db` unless resuming, so every fresh execution starts
 from an empty history. Without the needed keys the script exits before any API

@@ -5,7 +5,8 @@ from drift_tests import (
     mmd_test,
     benjamini_hochberg_correction,
     category_mmd_tests,
-    count_unique_embeddings
+    count_unique_embeddings,
+    unique_embeddings
 )
 
 class TestKSTest:
@@ -223,6 +224,50 @@ class TestUniqueCounts:
         assert cat['n_reference'] == 2 and cat['n_current'] == 1
         assert cat['unique_reference'] == 1
         assert cat['pseudoreplicated'] == 1
+
+
+class TestDeduplication:
+    """MMD treats duplicate vectors as one point, not repeated samples.
+    Ten copies of one answer are one observation; otherwise the permutation
+    null would grant a comparison of two single points the confidence of a
+    ten versus ten test."""
+
+    def test_duplicates_equivalent_to_manual_dedup(self):
+        np.random.seed(7)
+        base_x = np.random.normal(0, 1, (6, 8)).tolist()
+        base_y = np.random.normal(2, 1, (6, 8)).tolist()
+        x_duped = base_x + base_x[:2] + base_x[:2]
+        stat_dup, p_dup = mmd_test(x_duped, base_y, n_permutations=200,
+                                   random_seed=3)
+        stat_ref, p_ref = mmd_test(base_x, base_y, n_permutations=200,
+                                   random_seed=3)
+        assert abs(stat_dup - stat_ref) < 1e-12
+        assert abs(p_dup - p_ref) < 1e-12
+
+    def test_two_single_point_masses_not_significant(self):
+        # Naively, ten copies of one vector versus ten copies of another far
+        # vector produce a tiny p value; deduplicated it is one observation
+        # against one, which cannot support distributional inference.
+        x = [[0.0, 0.0]] * 10
+        y = [[10.0, 10.0]] * 10
+        stat, p = mmd_test(x, y, n_permutations=500, random_seed=42)
+        assert (stat, p) == (0.0, 1.0)
+
+    def test_duplicated_multi_point_windows_no_spurious_rejection(self):
+        # Two distinct answers per side, five copies of each: the collapse is
+        # valid, but at two effective observations per side the permutation
+        # has almost no power. The honest outcome is a moderate p value, in
+        # contrast to the tiny p value the duplicates would have manufactured.
+        x = [[0.0, 0.0], [1.0, 0.0]] * 5
+        y = [[100.0, 0.0], [101.0, 0.0]] * 5
+        stat, p = mmd_test(x, y, n_permutations=200, random_seed=42)
+        assert stat > 0.0
+        assert 0.0 < p <= 1.0
+        assert p > 1.0 / 201  # no fabricated near zero p from mass repeats
+
+    def test_unique_embeddings_helper_preserves_order(self):
+        vectors = [[2.0, 2.0], [1.0, 1.0], [2.0, 2.0]]
+        assert unique_embeddings(vectors) == [[2.0, 2.0], [1.0, 1.0]]
 
 
 class TestPipelineIntegration:

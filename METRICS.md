@@ -353,11 +353,11 @@ complementarity of the three detectors.
 Source: `REAL_PROVIDER_EXPERIMENT.md`, produced by `experiments/real_providers.py`
 on 2026-11-08 with the production monitoring pipeline unchanged, from regenerated
 committed artifacts (`results/real_provider_results.json` and
-`results/real_provider_extended_results.json`). This is a **real hosted-provider
-comparison**, explicitly not a synthetic benchmark: the numbers in sections 1
-through 10 come from simulated data, and these come from live API calls to two
-different providers. The two kinds of results are not comparable and are kept in
-separate sections for that reason.
+`results/real_provider_extended_results.json`, runs started 11:07:15 and 11:23:58
+local time). This is a **real hosted-provider comparison**, explicitly not a
+synthetic benchmark: the numbers in sections 1 through 10 come from simulated data,
+and these come from live API calls to two different providers. The two kinds of
+results are not comparable and are kept in separate sections for that reason.
 
 Setup: 5 Groq cycles (`openai/gpt-oss-20b`, 50 calls, all successful) fill the
 50 run reference window, then 1 Gemini cycle (`gemini-3.1-flash-lite` via the
@@ -373,46 +373,46 @@ Detector results (reference 50 versus current 10, pooled family):
 | --- | --- | --- | --- | --- |
 | KS (response lengths) | 0.30 | 0.395 | 1.0 | No |
 | Proportion / Fisher (validity) | n/a | 1.000 | 1.0 | No |
-| MMD (embeddings, 500 perms) | 0.000 | 0.978 | 1.0 | No |
+| MMD (embeddings, 500 perms, duplicate embeddings collapsed at entry) | 0.000 | 0.980 | 1.0 | No |
 
 Verdict: no drift detected, no alerts. Effect sizes: centroid distance 0.153,
-length shift +19.4%, refusal rate 0.0 both sides. The committed JSON now also
-reports effective sample sizes next to the nominal ones: the pooled reference
-window is 12 distinct answers behind its 50 runs, the current cycle's window is
-10 of 10.
-
-Timing, kept separate (see the report for details): provider per-call latency Groq
-p95 0.57 to 1.04 s across cycles, Gemini p95 3.91 s; end to end current cycle wall
-time 4.65 s; monitoring overhead p95 0.388 s per cycle from the section 9
-benchmark.
+length shift +19.5% (mean 827.7 to 989.3 characters), refusal rate 0.0 both sides.
+The committed JSON reports effective sample sizes next to the nominal ones: the
+pooled reference window holds 12 distinct answers behind its 50 runs, the current
+cycle's window 10 of 10, and MMD now computes over those distinct points because
+`mmd_test` collapses duplicate embeddings at entry. KS and the validity proportion
+test deliberately keep every stored run: different texts with equal lengths are
+genuinely different observations, and a failed call is a real event regardless of
+repeats. Timing, kept separate (see the report for details): provider per-call
+latency Groq p50 0.431 to 1.527 s and p95 0.822 to 2.047 s across cycles, Gemini
+p50 1.866 s and p95 12.497 s; end to end current cycle wall time 13.253 s;
+monitoring overhead p95 0.388 s per cycle from the section 9 benchmark.
 
 Limitations, restated from the report: a single current cycle cannot exercise the
-two-cycle persistence rule or the category-wise family (the category family
-starved and reported nothing rather than junk p values); one trial supports no
+two-cycle persistence rule or the category-wise family; one trial supports no
 detection-rate or false-alarm claims; and, most importantly, this is a
 cross-provider, cross-model comparison, so it measures a difference between two
 models, not provider behavior in isolation and not temporal drift within a single
 model.
 
-The extended run (five attempted Gemini cycles on the same database with the
-default configuration) exercises the missing pieces, and delivers a correction
-worth recording exactly. Cycle 1 failed with Gemini HTTP 429 and stored nothing;
-cycles 2 to 5 stored results and every alert path stayed silent, with the default
-two-cycle persistence rule running unmodified. Under the earlier, nominal sample
-gating, an extension like this had flagged the refusal_probe category BH
-significant (adjusted p 0.020); recounting showed the ten nominal runs per
-category were only two to four distinct observations per side, so the inference
-has been withdrawn, and the category gate now counts distinct observations.
-Recomputed against the current committed artifacts, every category is skipped
-(insufficient distinct responses, 2 to 3 of 10 reference and 2 of 10 current),
-with counts reported in place of p values. The pooled family keeps the stored
-window definition shared by all adapters; its pseudoreplication is exposed by the
-reported unique counts, and every identical pooled p value across cycles in the
-artifacts is one comparison over a fixed answer set, not independent
-confirmation, because both providers proved deterministic at temperature 0 in
-these runs.
+The extended run (five Gemini cycles on the same database with the default
+configuration, 90 seconds after the comparison run so the per model quota window
+had cleared) exercises the missing pieces and executed clean end to end: five of
+five cycles stored results, 50 calls all successful, zero errors, no alert fired
+with the default two-cycle persistence rule. It also carries the backbone of the
+round's statistical correction. Under the earlier gating, this shape of run had
+flagged the refusal_probe category BH significant (adjusted p 0.020); recounting
+showed the ten nominal runs per category were only two to four distinct
+observations per side, so that inference has been withdrawn, the category gate now
+counts distinct observations, and every category in the committed artifact is
+skipped (insufficient distinct responses, 2 to 3 of 10 reference and 2 of 10
+current) with counts reported in place of p values. The pooled MMD's remaining
+qualification: even deduplicated, 12 distinct points against 10 describe a
+comparison of two fixed answer sets, not a calibrated assay of generative
+distributions, and the identical pooled p values across the five cycles are one
+comparison repeated against a deterministic target, not independent confirmation.
 
-## ## What these numbers do not claim
+## What these numbers do not claim
 
 - All rates are per-cycle frequencies under synthetic nulls and injected shifts.
 - Separate BH corrections in the pooled family and the category family do not add up
