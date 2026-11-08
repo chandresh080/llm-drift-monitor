@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Drift Monitor - Dashboard</title>
-<meta name="description" content="Monitors whether an LLM's responses change over time using canary prompts and statistical tests.">
+<title>Drift Monitor - Live monitoring console</title>
+<meta name="description" content="A live monitoring console for LLM behaviour: canary prompts, statistical tests, and the evidence behind every verdict.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23171917'/%3E%3Cline x1='6' y1='21' x2='15' y2='21' stroke='%236C726B' stroke-width='2.5' stroke-linecap='round'/%3E%3Cpath d='M15 21 L21 21 L26 11' fill='none' stroke='%23C2542B' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/static/app.css">
 </head>
@@ -27,12 +27,20 @@
 
   <section class="masthead">
     <div>
-      <h1>Is the model changing?</h1>
+      <h1>Live monitoring console</h1>
       <p class="lede">
-        Every cycle sends the same set of canary prompts to the target model and compares
-        the new responses against the recorded baseline. Responses are scored on length,
-        validity, and semantic content. Three statistical tests look for differences;
-        significant ones are flagged as alerts for human review.
+        This service sends a fixed panel of canary prompts to a model, compares the new
+        responses with the recorded reference window, and shows what the statistics
+        observed. Every panel answers the same three questions: what is being monitored,
+        whether behaviour changed, and what evidence supports that judgement.
+      </p>
+      <p class="env-note">
+        <strong>This environment</strong> runs a deterministic demo adapter (an offline
+        model stand-in) with a seeded history, so the console is interactive and free of
+        quota costs. It is not continuously monitoring a hosted provider. Related but
+        separate: the <a href="https://github.com/chandresh-pandey-ml/llm-drift-monitor/blob/main/README.md" target="_blank" rel="noopener">README</a>
+        lists all four evaluation scopes (this demo, local Ollama, the recorded Groq vs
+        Gemini hosted experiment, and the simulation evaluation below).
       </p>
     </div>
     <div class="masthead-actions">
@@ -43,81 +51,233 @@
 
   <div id="banner" class="banner" hidden></div>
 
-  <section class="kpi-row">
-    <div class="kpi">
-      <h2 class="kpi-label">Drift status</h2>
-      <div id="kpi-drift" class="kpi-value">...</div>
-      <div id="kpi-drift-sub" class="kpi-sub">most recent cycle vs baseline</div>
-    </div>
-    <div class="kpi">
-      <h2 class="kpi-label">Tests that fired</h2>
-      <div id="kpi-flagged" class="kpi-value">...</div>
-      <div id="kpi-flagged-sub" class="kpi-sub">p values below 0.05 after correction</div>
-    </div>
-    <div class="kpi">
-      <h2 class="kpi-label">Responses stored</h2>
-      <div id="kpi-runs" class="kpi-value">...</div>
-      <div id="kpi-runs-sub" class="kpi-sub">each cycle records 10 more</div>
-    </div>
-    <div class="kpi">
-      <h2 class="kpi-label">Target adapter</h2>
-      <div id="kpi-provider" class="kpi-value">...</div>
-      <div id="kpi-provider-sub" class="kpi-sub">no external calls leave this instance</div>
-    </div>
-  </section>
+  <nav class="tabs" aria-label="Dashboard views">
+    <button class="tab tab-active" id="tab-btn-console" type="button">Console</button>
+    <button class="tab" id="tab-btn-evaluation" type="button">System evaluation</button>
+  </nav>
 
-  <section class="grid-tests">
-    <div class="panel">
-      <div class="panel-head">
-        <h3>Adjusted p values, recent cycles</h3>
-        <span class="panel-hint">points below the dashed 0.05 line are significant</span>
+  <!-- ================= CONSOLE ================= -->
+  <div id="tab-console">
+    <section class="kpi-row">
+      <div class="kpi">
+        <h2 class="kpi-label">Latest monitoring verdict</h2>
+        <div id="kpi-drift" class="kpi-value">...</div>
+        <div id="kpi-drift-sub" class="kpi-sub">most recent cycle vs the reference window</div>
       </div>
-      <div id="pval-chart" class="pval-chart">
-        <p class="empty">No cycles recorded yet.</p>
+      <div class="kpi">
+        <h2 class="kpi-label">Detectors flagged</h2>
+        <div id="kpi-flagged" class="kpi-value">...</div>
+        <div id="kpi-flagged-sub" class="kpi-sub">significant tests in the latest cycle</div>
       </div>
-      <table class="data-table" id="results-table" hidden>
-        <thead>
-          <tr>
-            <th>Cycle</th><th class="num">Length p</th><th class="num">Empty p</th>
-            <th class="num">Meaning p</th><th>Tests fired</th><th>Outcome</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-    </div>
+      <div class="kpi">
+        <h2 class="kpi-label">Total probe responses</h2>
+        <div id="kpi-runs" class="kpi-value">...</div>
+        <div id="kpi-runs-sub" class="kpi-sub">stored canary answers across all cycles</div>
+      </div>
+      <div class="kpi">
+        <h2 class="kpi-label">Target model</h2>
+        <div id="kpi-provider" class="kpi-value">...</div>
+        <div id="kpi-provider-sub" class="kpi-sub">what the canary prompts are sent to</div>
+      </div>
+    </section>
 
-    <div class="panel">
-      <div class="panel-head"><h3>Alerts</h3><span class="panel-hint">newest first</span></div>
-      <ul id="alerts-list" class="alert-list"><li class="empty">Loading...</li></ul>
-      <div class="panel-foot">
-        <h4>Detector reference</h4>
-        <ul class="legend">
-          <li><b>Length</b> (KS test): compares the distribution of response lengths.</li>
-          <li><b>Empty</b> (z test): tracks the rate of malformed or refused responses.</li>
-          <li><b>Meaning</b> (MMD test): compares response embeddings to detect semantic drift.</li>
+    <section class="panel">
+      <details class="config-details">
+        <summary>Monitoring configuration</summary>
+        <dl id="config-list" class="config-grid">
+          <div><dt>Target model</dt><dd id="cfg-model">...</dd></div>
+          <div><dt>Embedding model</dt><dd id="cfg-embedding">...</dd></div>
+          <div><dt>Reference window</dt><dd id="cfg-ref">...</dd></div>
+          <div><dt>Current window</dt><dd id="cfg-cur">...</dd></div>
+          <div><dt>Prompt panel</dt><dd id="cfg-panel">...</dd></div>
+          <div><dt>Significance threshold</dt><dd id="cfg-alpha">...</dd></div>
+          <div><dt>Alert persistence rule</dt><dd id="cfg-persist">...</dd></div>
+          <div><dt>Last completed cycle</dt><dd id="cfg-last-run">...</dd></div>
+        </dl>
+      </details>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">Detector results</h2>
+      <p class="panel-note">
+        The verdict above comes from three independent tests. Flagging means the measured
+        difference was unlikely under the reference window, after multiple testing
+        correction, and it survived as an alert only if it repeated for consecutive cycles.
+      </p>
+      <div class="detector-row" id="detector-row">
+        <div class="detector" data-testid="ks">
+          <div class="detector-head">
+            <span class="detector-name">Response length</span>
+            <span class="chip chip-ok" id="det-ks-decision">...</span>
+          </div>
+          <div class="detector-method">Kolmogorov-Smirnov test</div>
+          <div class="detector-p"><span id="det-ks-p" class="detector-p-value">...</span>
+            <span class="detector-p-label">adjusted p-value</span></div>
+          <p class="detector-desc">Compares the shape of response-length distributions
+            between the reference and current windows.</p>
+        </div>
+        <div class="detector" data-testid="validity">
+          <div class="detector-head">
+            <span class="detector-name">Response validity</span>
+            <span class="chip chip-ok" id="det-prop-decision">...</span>
+          </div>
+          <div class="detector-method">Fisher's exact test (or z)</div>
+          <div class="detector-p"><span id="det-prop-p" class="detector-p-value">...</span>
+            <span class="detector-p-label">adjusted p-value</span></div>
+          <p class="detector-desc">Tracks malformed, empty or invalid answers. The refusal
+            rate is reported separately as a behaviour rate, not part of this flag.</p>
+        </div>
+        <div class="detector" data-testid="mmd">
+          <div class="detector-head">
+            <span class="detector-name">Semantic change</span>
+            <span class="chip chip-ok" id="det-mmd-decision">...</span>
+          </div>
+          <div class="detector-method">Maximum Mean Discrepancy, permutation test</div>
+          <div class="detector-p"><span id="det-mmd-p" class="detector-p-value">...</span>
+            <span class="detector-p-label">adjusted p-value</span></div>
+          <p class="detector-desc">Compares response embeddings, over distinct answers
+            only, so repeated identical answers count once.</p>
+        </div>
+      </div>
+      <h3 class="subhead">Effect sizes for the latest cycle</h3>
+      <div class="effect-row" id="effect-row">
+        <div class="effect"><span class="effect-label">Mean response length change</span>
+          <span id="eff-length" class="effect-value">...</span></div>
+        <div class="effect"><span class="effect-label">Embedding centroid distance</span>
+          <span id="eff-centroid" class="effect-value">...</span></div>
+        <div class="effect"><span class="effect-label">Refusal rate change</span>
+          <span id="eff-refusal" class="effect-value">...</span></div>
+      </div>
+      <p id="effect-note" class="panel-note">
+        A p-value describes evidence against the null, not practical importance.
+        Older stored cycles may predate these effect size fields; run a check to record them.
+      </p>
+      <h3 class="subhead">Per prompt comparison from the latest cycle</h3>
+      <div id="comparison-wrap"></div>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">Category localization</h2>
+      <p class="panel-note">
+        When a pooled change is detected, the category family tries to locate it. Categories
+        without enough <em>distinct</em> observations are reported as counts, without a test
+        result: this monitor declines to make a statistical claim it cannot support. This row
+        is honest reporting of evidence, not a category drift score.
+      </p>
+      <div id="categories-wrap"></div>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">Recent activity and alerts</h2>
+      <p class="panel-note">
+        A cycle that flags once is recorded but stays silent: with the two cycle persistence
+        rule, an alert fires only when the same verdict repeats for consecutive cycles.
+      </p>
+      <div class="act-grid">
+        <div>
+          <h3 class="subhead">Cycles</h3>
+          <div id="activity-list"></div>
+        </div>
+        <div>
+          <h3 class="subhead">Alerts</h3>
+          <div id="alerts-list"></div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ================= EVALUATION ================= -->
+  <div id="tab-evaluation" hidden>
+    <section class="panel">
+      <div class="chip chip-warn">Simulation results, not live production performance</div>
+      <p class="panel-note">
+        Everything in this tab comes from controlled simulations committed with the
+        repository (experiments under <code>experiments/</code>, outputs under <code>results/</code>),
+        not from this demo service. They characterise how the detectors behave under known
+        shifts and under quiet conditions.
+      </p>
+      <div class="eval-row" id="eval-headline">
+        <div class="kpi eval-card">
+          <h2 class="kpi-label">Mean detection delay</h2>
+          <div id="ev-delay" class="kpi-value">...</div>
+          <div id="ev-delay-sub" class="kpi-sub">under the evaluated 1.2 sigma shift, with the shipped alert policy</div>
+        </div>
+        <div class="kpi eval-card">
+          <h2 class="kpi-label">False alarms</h2>
+          <div id="ev-fa" class="kpi-value">...</div>
+          <div id="ev-fa-sub" class="kpi-sub">per 100 quiet days in simulation</div>
+        </div>
+        <div class="kpi eval-card">
+          <h2 class="kpi-label">Detection rate</h2>
+          <div id="ev-detect" class="kpi-value">...</div>
+          <div id="ev-detect-sub" class="kpi-sub">for the particular evaluated simulated shift</div>
+        </div>
+        <div class="kpi eval-card">
+          <h2 class="kpi-label">p95 monitoring overhead</h2>
+          <div id="ev-overhead" class="kpi-value">...</div>
+          <div id="ev-overhead-sub" class="kpi-sub">per cycle, excluding provider inference</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">Detection delay and false-alarm trade-off</h2>
+      <p class="panel-note">The same simulated shift, four alert policies. Merging evidence
+        across cycles (the k-of-n and persistence rules) trades a little speed for a large
+        reduction in noise. The shipped policy is persist2, the two-cycle persistence rule.</p>
+      <div id="eval-tradeoff"></div>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">Power curves at the production window</h2>
+      <p class="panel-note">Detection power (probability of flagging) for each test against
+        increasing simulated shift magnitude, at the production current window of 10 responses.
+        Even a real but small shift can be invisible at this sample size, which is exactly the
+        limitation stated elsewhere.</p>
+      <div id="eval-power"></div>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">Distribution shift versus quality regression</h2>
+      <p class="panel-note">The 2x2 question the monitor is designed for: did the response
+        distribution change (benign or otherwise), or did response quality degrade? Rows are
+        conditions in simulation, columns are the monitor's signal families.</p>
+      <div id="eval-reliability"></div>
+    </section>
+  </div>
+
+  <footer class="footer">
+    <div class="footer-cols">
+      <div>
+        <h3 class="subhead">REST API</h3>
+        <ul class="api-list">
+          <li><a href="/health">GET /health</a></li>
+          <li><a href="/drift/latest">GET /drift/latest</a></li>
+          <li><a href="/drift/results?limit=10">GET /drift/results</a></li>
+          <li><a href="/drift/comparison">GET /drift/comparison</a></li>
+          <li><a href="/drift/categories">GET /drift/categories</a></li>
+          <li><a href="/alerts?limit=10">GET /alerts</a></li>
+          <li><a href="/config">GET /config</a></li>
+          <li><a href="/evaluation">GET /evaluation</a></li>
+        </ul>
+      </div>
+      <div>
+        <h3 class="subhead">Project</h3>
+        <ul class="api-list">
+          <li><a href="https://github.com/chandresh-pandey-ml/llm-drift-monitor" target="_blank" rel="noopener">GitHub repository</a></li>
+          <li><a href="https://github.com/chandresh-pandey-ml/llm-drift-monitor/blob/main/METRICS.md" target="_blank" rel="noopener">Evaluation report (METRICS.md)</a></li>
+          <li><a href="https://github.com/chandresh-pandey-ml/llm-drift-monitor/blob/main/REAL_PROVIDER_EXPERIMENT.md" target="_blank" rel="noopener">Hosted-provider experiment report</a></li>
+          <li><a href="/metrics">GET /metrics</a> (service counters)</li>
         </ul>
       </div>
     </div>
-  </section>
-
-  <section class="panel panel-api">
-    <div class="panel-head">
-      <h3>REST API</h3>
-      <span class="panel-hint">the dashboard is one client of this service; every route returns JSON</span>
-    </div>
-    <ul class="api-list">
-      <li><a href="/health"><code>GET /health</code></a><span>service and database status</span></li>
-      <li><a href="/drift/latest"><code>GET /drift/latest</code></a><span>most recent outcome</span></li>
-      <li><a href="/drift/results"><code>GET /drift/results</code></a><span>full result log</span></li>
-      <li><a href="/alerts"><code>GET /alerts</code></a><span>alert history</span></li>
-      <li><a href="/runs"><code>GET /runs</code></a><span>stored responses</span></li>
-      <li><a href="/stats"><code>GET /stats</code></a><span>exact counts</span></li>
-      <li><code>POST /runs</code><span>start a new cycle</span></li>
-    </ul>
-    <p class="api-note">Source code and the full methodology are in
-      <a href="https://github.com/chandresh-pandey-ml/llm-drift-monitor" target="_blank" rel="noopener">the GitHub repository</a>.
-      This instance runs on Render's free plan and pauses between visits; allow up to a minute for the first request.</p>
-  </section>
+    <p class="footer-note">
+      Verdicts here describe the monitored behaviour of the configured target model against
+      its own recorded reference window. "Stable" means no statistically significant
+      difference was found in the latest cycle; it is not a statement that the model is good.
+      Run history is one probe per panel prompt per cycle; no claim covers unprobed behaviour.
+    </p>
+  </footer>
 
 </main>
 

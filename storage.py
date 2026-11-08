@@ -21,6 +21,22 @@ class DriftMonitorStorage:
             if name not in existing:
                 conn.execute(f"ALTER TABLE probe_runs ADD COLUMN {column}")
 
+    def _migrate_test_columns(self, conn: sqlite3.Connection) -> None:
+        """Add effect size and distinct count columns to test_results, if missing.
+
+        Databases created before these fields existed (including the committed
+        demo seed) get NULL for the new columns; the dashboard renders
+        effect sizes only when the latest cycle stored them, and a fresh
+        cycle fills them in.
+        """
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(test_results)")}
+        for column in ("length_shift_pct REAL", "centroid_distance REAL",
+                       "refusal_rate_reference REAL", "refusal_rate_current REAL",
+                       "unique_reference INTEGER", "unique_current INTEGER"):
+            name = column.split()[0]
+            if name not in existing:
+                conn.execute(f"ALTER TABLE test_results ADD COLUMN {column}")
+
     def _init_db(self):
         """Initialize database schema."""
         with self._db() as conn:
@@ -78,11 +94,18 @@ class DriftMonitorStorage:
                     mmd_raw_pvalue REAL,
                     mmd_adjusted_pvalue REAL,
                     mmd_significant INTEGER,
+                    length_shift_pct REAL,
+                    centroid_distance REAL,
+                    refusal_rate_reference REAL,
+                    refusal_rate_current REAL,
+                    unique_reference INTEGER,
+                    unique_current INTEGER,
                     bh_significant_tests TEXT,  -- JSON list
                     overall_drift_detected INTEGER,
                     overall_quality_degradation INTEGER
                 )
             """)
+            self._migrate_test_columns(conn)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS alerts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -181,22 +204,28 @@ class DriftMonitorStorage:
                 INSERT INTO test_results (
                     timestamp, reference_size, current_size,
                     ks_statistic, ks_pvalue, ks_raw_pvalue, ks_adjusted_pvalue, ks_significant,
-                    proportion_z_stat, proportion_z_pvalue, proportion_z_raw_pvalue, 
+                    proportion_z_stat, proportion_z_pvalue, proportion_z_raw_pvalue,
                     proportion_z_adjusted_pvalue, proportion_z_significant,
                     mmd_statistic, mmd_pvalue, mmd_raw_pvalue, mmd_adjusted_pvalue, mmd_significant,
+                    length_shift_pct, centroid_distance,
+                    refusal_rate_reference, refusal_rate_current,
+                    unique_reference, unique_current,
                     bh_significant_tests, overall_drift_detected, overall_quality_degradation
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 results['timestamp'], results['reference_size'], results['current_size'],
                 results.get('ks_statistic'), results.get('ks_pvalue'), results.get('ks_raw_pvalue'),
                 results.get('ks_adjusted_pvalue'), results.get('ks_significant', 0),
-                results.get('proportion_z_stat'), results.get('proportion_z_pvalue'), 
+                results.get('proportion_z_stat'), results.get('proportion_z_pvalue'),
                 results.get('proportion_z_raw_pvalue'), results.get('proportion_z_adjusted_pvalue'),
                 results.get('proportion_z_significant', 0),
                 results.get('mmd_statistic'), results.get('mmd_pvalue'), results.get('mmd_raw_pvalue'),
                 results.get('mmd_adjusted_pvalue'), results.get('mmd_significant', 0),
-                json.dumps(results.get('bh_significant_tests', [])), 
-                results.get('overall_drift_detected', 0), 
+                results.get('length_shift_pct'), results.get('centroid_distance'),
+                results.get('ref_refusal_rate'), results.get('cur_refusal_rate'),
+                results.get('reference_unique_responses'), results.get('current_unique_responses'),
+                json.dumps(results.get('bh_significant_tests', [])),
+                results.get('overall_drift_detected', 0),
                 results.get('overall_quality_degradation', 0)
             ))
             conn.commit()
@@ -392,6 +421,27 @@ class DriftMonitorStorage:
                 WHERE run_id IN ({placeholders})
             """, run_ids)
             return [dict(r) for r in cursor.fetchall()]
+
+    def get_refusal_with_run_ids_for_runs(
+            self, run_ids: List[int]) -> List[Tuple[int, int]]:
+        """Refusal flags paired with their run ids, in run id order.
+
+        Window display needs the refusal flag attached to the exact run the
+        window selected, not to whatever order the database returns rows in.
+        Runs without a stored feature row are simply absent from the result.
+        """
+        if not run_ids:
+            return []
+        with self._db() as conn:
+            placeholders = ','.join('?' for _ in run_ids)
+            cursor = conn.execute(f"""
+                SELECT rf.run_id, rf.is_refusal
+                FROM response_features rf
+                WHERE rf.run_id IN ({placeholders})
+                ORDER BY rf.run_id ASC
+            """, run_ids)
+            return [(int(r[0]), int(r[1] or 0))
+                    for r in cursor.fetchall()]
 
 
     

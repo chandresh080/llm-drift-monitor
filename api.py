@@ -18,6 +18,7 @@ Operational shape, sized for a single small container:
   format, and every request is logged with a correlation id.
 """
 
+import csv
 import json
 import os
 import queue
@@ -213,13 +214,28 @@ class RunResponse(BaseModel):
 class DriftLatestResponse(BaseModel):
     drift_detected: Optional[int] = None
     flagged_tests: Optional[list] = None
+    timestamp: Optional[str] = None
+    reference_size: Optional[int] = None
+    current_size: Optional[int] = None
     ks_statistic: Optional[float] = None
     ks_pvalue: Optional[float] = None
+    ks_adjusted_pvalue: Optional[float] = None
+    ks_significant: Optional[int] = None
     proportion_z_statistic: Optional[float] = None
     proportion_z_pvalue: Optional[float] = None
+    proportion_z_adjusted_pvalue: Optional[float] = None
+    proportion_z_significant: Optional[int] = None
     mmd_statistic: Optional[float] = None
     mmd_pvalue: Optional[float] = None
+    mmd_adjusted_pvalue: Optional[float] = None
+    mmd_significant: Optional[int] = None
     bh_significant_tests: Optional[list] = None
+    length_shift_pct: Optional[float] = None
+    centroid_distance: Optional[float] = None
+    refusal_rate_reference: Optional[float] = None
+    refusal_rate_current: Optional[float] = None
+    unique_reference: Optional[int] = None
+    unique_current: Optional[int] = None
 
 
 class ProbeRunResponse(BaseModel):
@@ -346,13 +362,27 @@ def _compute_latest_drift() -> DriftLatestResponse:
     return DriftLatestResponse(
         drift_detected=latest.get('overall_drift_detected') if latest else None,
         flagged_tests=flagged,
+        timestamp=latest.get('timestamp') if latest else None,
+        reference_size=latest.get('reference_size') if latest else None,
+        current_size=latest.get('current_size') if latest else None,
         ks_statistic=latest.get('ks_statistic') if latest else None,
         ks_pvalue=latest.get('ks_pvalue') if latest else None,
+        ks_adjusted_pvalue=latest.get('ks_adjusted_pvalue') if latest else None,
+        ks_significant=latest.get('ks_significant') if latest else None,
         proportion_z_statistic=latest.get('proportion_z_stat') if latest else None,
         proportion_z_pvalue=latest.get('proportion_z_pvalue') if latest else None,
+        proportion_z_adjusted_pvalue=latest.get('proportion_z_adjusted_pvalue') if latest else None,
+        proportion_z_significant=latest.get('proportion_z_significant') if latest else None,
         mmd_statistic=latest.get('mmd_statistic') if latest else None,
         mmd_pvalue=latest.get('mmd_pvalue') if latest else None,
-        bh_significant_tests=flagged,
+        mmd_adjusted_pvalue=latest.get('mmd_adjusted_pvalue') if latest else None,
+        mmd_significant=latest.get('mmd_significant') if latest else None,
+        length_shift_pct=latest.get('length_shift_pct') if latest else None,
+        centroid_distance=latest.get('centroid_distance') if latest else None,
+        refusal_rate_reference=latest.get('refusal_rate_reference') if latest else None,
+        refusal_rate_current=latest.get('refusal_rate_current') if latest else None,
+        unique_reference=latest.get('unique_reference') if latest else None,
+        unique_current=latest.get('unique_current') if latest else None,
     )
 
 
@@ -370,6 +400,139 @@ def get_stats() -> Dict[str, Any]:
         "test_results": _get_storage().count_test_results(),
         "alerts": _get_storage().count_alerts(),
     })
+
+
+@app.get("/config")
+def get_config() -> Dict[str, Any]:
+    """Monitoring configuration the dashboard labels itself with.
+
+    Read only configuration that shapes what a visitor sees; secrets and
+    provider keys are never included.
+    """
+    monitor = _get_monitor()
+    cfg = monitor.config
+    return cached_read("config", lambda: {
+        "target_model": monitor.adapter.model_id,
+        "adapter_type": type(monitor.adapter).__name__,
+        "embedding_model": cfg['embeddings']['model_name'].split('/')[-1],
+        "reference_window": cfg['reference']['window_size'],
+        "current_window": cfg['monitoring']['batch_size'],
+        "tests_start_at_responses": cfg['reference']['window_size']
+        + cfg['monitoring']['batch_size'],
+        "prompt_panel_version": monitor.canary_prompts['version'],
+        "prompt_panel_probes": len(monitor.canary_prompts['prompts']),
+        "probes_per_cycle": cfg['monitoring']['batch_size'],
+        "alpha": cfg['alerts'].get('significance_threshold', 0.05),
+        "min_consecutive_cycles": cfg['alerts'].get(
+            'min_consecutive_cycles', 2),
+        "category_window_cycles": cfg['monitoring'].get(
+            'category_window_cycles', 5),
+        "min_samples_per_category": cfg['monitoring'].get(
+            'min_samples_per_category', 8),
+    })
+
+
+@app.get("/drift/comparison")
+def get_comparison() -> Dict[str, Any]:
+    """Reference versus current answers, prompt by prompt, for inspection.
+
+    What the detectors compared: the matched panel's prompts and both
+    windows' stored answers with their validity, refusal flag and length.
+    """
+    return cached_read("comparison", _get_monitor().get_window_comparison)
+
+
+@app.get("/drift/categories")
+def get_categories() -> Dict[str, Any]:
+    """Category family state: tested categories with adjusted p values,
+    skipped categories with their distinct sample counts."""
+    return cached_read("categories", _get_monitor().get_category_localization)
+
+
+@app.get("/evaluation")
+def get_evaluation() -> Dict[str, Any]:
+    """Committed simulation results, summarized for the evaluation tab.
+
+    Reads the experiments' committed CSV outputs. These numbers come from
+    controlled simulations, not from the live demo service. Missing files
+    degrade gracefully to null fields instead of failing the dashboard.
+    """
+    def read_rows(name: str) -> list:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "results", name)
+        if not os.path.exists(path):
+            return []
+        with open(path, newline="") as f:
+            return list(csv.DictReader(f))
+
+    def rule_row(rows: list, rule: str) -> Optional[Dict[str, str]]:
+        for r in rows:
+            if r.get('rule') == rule and float(r.get('alpha', 0) or 0) == 0.05:
+                return r
+        return None
+
+    delay = read_rows("delay_detection_delay.csv")
+    alarms = read_rows("delay_false_alarms.csv")
+    default = "persist2"  # the shipped alert policy: two-cycle persistence
+    d_row = rule_row(delay, default) or (delay[0] if delay else None)
+    a_row = rule_row(alarms, default) or (alarms[0] if alarms else None)
+
+    overhead = read_rows("overhead_latency.csv")
+    overhead_p95 = None
+    if overhead:
+        seconds = sorted(float(r['cycle_seconds']) for r in overhead
+                         if r.get('cycle_seconds'))
+        if seconds:
+            # p95 by nearest rank over the recorded benchmark cycles
+            overhead_p95 = seconds[min(len(seconds) - 1,
+                                       max(0, int(0.95 * len(seconds) + 0.9999) - 1))]
+
+    tradeoff = []
+    for rule in ("single", "kofn", "persist2", "cusum"):
+        d = rule_row(delay, rule)
+        a = rule_row(alarms, rule)
+        if d:
+            tradeoff.append({
+                "rule": rule,
+                "mean_detection_delay_days": d.get(
+                    'mean_detection_delay_days'),
+                "detection_rate_pct": d.get('detection_rate_pct'),
+                "false_alarms_per_100_days": (a or {}).get(
+                    'false_alarms_per_100_days'),
+            })
+
+    power = [r for r in read_rows("power_curves.csv") if r.get('power')]
+    power_mmd = [r for r in power if r.get('test') == 'mmd' and r.get('n') == '10']
+    power_ks = [r for r in power if r.get('test') == 'ks' and r.get('n') == '10']
+
+    reliability = [r for r in read_rows("reliability_results.csv")
+                   if r.get('row_type') == 'condition']
+
+    return {
+        "headline": {
+            "mean_detection_delay_days": (d_row or {}).get(
+                'mean_detection_delay_days'),
+            "detection_rate_pct": (d_row or {}).get('detection_rate_pct'),
+            "evaluated_shift_sigma": (d_row or {}).get(
+                'shift_magnitude_sigma'),
+            "false_alarms_per_100_days": (a_row or {}).get(
+                'false_alarms_per_100_days'),
+            "overhead_p95_seconds": (
+                round(overhead_p95, 3) if overhead_p95 is not None else None),
+            "default_rule": default,
+        },
+        "tradeoff": tradeoff,
+        "power_curves": {
+            "mmd_n10": power_mmd,
+            "ks_n10": power_ks,
+        },
+        "reliability_conditions": reliability,
+        "source": "Simulation runs committed under results/; experiments: "
+                  "delay.py (detection delay and false alarms), power.py "
+                  "(power curves), overhead.py (cycle overhead), and "
+                  "reliability.py (distribution shift versus quality "
+                  "regression). Not live production performance.",
+    }
 
 
 @app.get("/health")

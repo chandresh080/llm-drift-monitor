@@ -1050,6 +1050,125 @@ class LLMDriftMonitor:
             ref_by_cat, cur_by_cat, min_samples_per_category=min_per_cat,
             alpha=alpha, n_permutations=500, random_seed=self.random_seed)
 
+    def get_window_comparison(self) -> Dict[str, Any]:
+        """Reference versus current answers for display, prompt by prompt.
+
+        Uses the exact window selection a monitoring cycle uses (matched
+        prompt ids, panel version, complete cycles only), so the panel shows
+        what the detectors actually compared. One answer per prompt per
+        window is shown: the most recent run in the reference window and the
+        most recent in the current window, with validity, refusal flag and
+        length so a visitor can see metadata next to the text. Not a
+        statistical result, a readout: a semantic drift flag can be harmless,
+        and the panel exists so a person can inspect what changed.
+        """
+        num_probes = self.config['monitoring']['batch_size']
+        cycle_items = balanced_category_subset(self.canary_prompts['prompts'],
+                                               num_probes)
+        cur_prompt_ids = [item['id'] for item in cycle_items]
+        prompt_by_id = {p['id']: p for p in self.canary_prompts['prompts']}
+        ref_size = self.config['reference']['window_size']
+        cur_size = num_probes
+        all_runs = complete_cycles_only(self.storage.get_all_runs_ordered(),
+                                        cur_prompt_ids)
+        ref_runs, cur_runs = select_matched_windows(
+            all_runs, self.canary_prompts['version'], cur_prompt_ids,
+            ref_size, cur_size)
+        ready = len(ref_runs) >= ref_size and len(cur_runs) >= cur_size
+        if not ready:
+            return {
+                'ready': False,
+                'reference_stored': len(ref_runs),
+                'reference_required': ref_size,
+                'current_stored': len(cur_runs),
+                'current_required': cur_size,
+                'tests_start_at': ref_size + cur_size,
+                'rows': [],
+            }
+
+        ref_by_prompt: Dict[str, Dict[str, Any]] = {}
+        for run in ref_runs:  # ordered oldest first; later runs overwrite
+            pid = run.get('prompt_id') or ''
+            if pid:
+                ref_by_prompt[pid] = run
+        cur_by_prompt: Dict[str, Dict[str, Any]] = {}
+        for run in cur_runs:
+            pid = run.get('prompt_id') or ''
+            if pid:
+                cur_by_prompt[pid] = run
+
+        ref_ids = [r['id'] for r in ref_by_prompt.values()]
+        cur_ids = [r['id'] for r in cur_by_prompt.values()]
+        refusal_of = dict(self.storage.get_refusal_with_run_ids_for_runs(
+            ref_ids + cur_ids))
+
+        def describe(run: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+            if run is None:
+                return {'text': None, 'length': None, 'is_valid': None,
+                        'is_refusal': None}
+            return {
+                'text': run.get('response_text'),
+                'length': run.get('response_length'),
+                'is_valid': run.get('is_valid'),
+                'is_refusal': refusal_of.get(run['id']),
+            }
+
+        rows = []
+        for pid in cur_prompt_ids:
+            prompt = prompt_by_id.get(pid, {})
+            rows.append({
+                'prompt_id': pid,
+                'category': prompt.get('category', 'unknown'),
+                'prompt_text': prompt.get('text', pid),
+                'reference': describe(ref_by_prompt.get(pid)),
+                'current': describe(cur_by_prompt.get(pid)),
+            })
+        return {
+            'ready': True,
+            'reference_size': ref_size,
+            'current_size': cur_size,
+            'rows': rows,
+        }
+
+    def get_category_localization(self) -> Dict[str, Any]:
+        """Category family state for display, without inventing statistics.
+
+        Reports what the category family genuinely holds: the distinct and
+        nominal counts per side, the skip decision when the distinct sample
+        gate fails, and the BH adjusted p value only when a category is
+        actually tested. This is the panel that shows the monitor declining
+        to make a claim it cannot support.
+        """
+        num_probes = self.config['monitoring']['batch_size']
+        cycle_items = balanced_category_subset(self.canary_prompts['prompts'],
+                                               num_probes)
+        cur_prompt_ids = [item['id'] for item in cycle_items]
+        cur_size = num_probes
+        all_runs = complete_cycles_only(self.storage.get_all_runs_ordered(),
+                                        cur_prompt_ids)
+        tests = self._run_category_tests(all_runs, cur_prompt_ids, cur_size)
+        rows = []
+        for category in sorted(tests):
+            entry = tests[category]
+            rows.append({
+                'category': category,
+                'decision': ('skipped' if entry.get('mmd_statistic') is None
+                             else 'tested'),
+                'reason': entry.get('reason'),
+                'adjusted_pvalue': entry.get('adjusted_pvalue'),
+                'n_reference': entry.get('n_reference'),
+                'n_current': entry.get('n_current'),
+                'unique_reference': entry.get('unique_reference'),
+                'unique_current': entry.get('unique_current'),
+            })
+        return {
+            'category_window_cycles': self.config.get(
+                'monitoring', {}).get('category_window_cycles', 5),
+            'min_samples_per_category': self.config.get(
+                'monitoring', {}).get('min_samples_per_category', 8),
+            'rows': rows,
+        }
+
     def _generate_alerts(self, results: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Generate alerts based on test results.
 

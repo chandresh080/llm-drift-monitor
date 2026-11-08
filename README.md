@@ -8,7 +8,9 @@ and behavioral signals buy?** The experiments section answers this with numbers
 rather than intuition.
 
 Live demo: [llm-drift-monitor-api.onrender.com](https://llm-drift-monitor-api.onrender.com)
-(dashboard at `/`). The hosted demo is self-contained and needs no API keys.
+(dashboard at `/`). The hosted demo is self-contained and needs no API keys: it runs a
+deterministic demo adapter (an offline stand-in for a model) with a seeded history, so
+it demonstrates the monitoring pipeline, not a hosted provider.
 
 [![CI](https://github.com/chandresh-pandey-ml/llm-drift-monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/chandresh-pandey-ml/llm-drift-monitor/actions/workflows/ci.yml)
 
@@ -252,12 +254,20 @@ substitutes for the other.
 
 ## Try it
 
-- Live demo: open the URL above and press "Run a check now". Ten answers get stored
-  and the panels refresh. At least 60 saved answers are needed for the tests to run,
-  and the demo history already contains a stretch where the answers deliberately
-  changed: the shift is caught by MMD (usually with KS), the alerts start on the
-  second flagged cycle because a flag must persist, and each alert names the affected
-  prompt categories, so the alert panel shows the full pipeline on a fresh visit.
+- Live demo: open the URL above and press "Run a check". Ten answers get stored
+  and the panels refresh; the demo page then walks the full loop illustrated below:
+  verdict, detector cards with effect sizes, the per prompt reference vs current
+  comparison, category evidence with the counts behind every skip decision, alert
+  history, and a separate System evaluation tab for the simulation numbers. It uses
+  four environments that answer different questions (this demo, local Ollama, the
+  recorded Groq vs Gemini hosted experiment, and the simulation evaluation); the
+  demo tab itself only ever runs the demo adapter. At least 60 saved answers are
+  needed for the tests to run, and the demo history already contains a stretch
+  where the answers deliberately changed: the shift is caught by MMD (usually with
+  KS), the alerts start on the second flagged cycle because a flag must persist,
+  and each alert names the detectors that fired plus the effect sizes, while the
+  category panel reports what the evidence can and cannot localize, so the alert
+  panel shows the full pipeline on a fresh visit.
 - Local, no keys needed: `python -m scripts.generate_seed_db`, then
   `uvicorn api:app --port 8000` and open `http://localhost:8000`.
 - With your own local model (Ollama): point `config/config.yaml` at `target.type: local`
