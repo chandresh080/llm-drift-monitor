@@ -318,15 +318,14 @@ no test ever calls a real API or consumes quota.
 - The numbers in "Does it actually work" come from simulations; real traffic windows
   are noisier than the synthetic ones.
 - The real hosted-provider experiment (`REAL_PROVIDER_EXPERIMENT.md`) compares two
-  different models from two different providers. The pooled family never flagged, in
-  the single cycle or the five-cycle extension, and no alert fired even with the
-  default persistence rule; a category-level diagnostic did flag one category, but
-  that flag is pseudoreplicated (both adapters proved deterministic at temperature
-  0, so ten nominal runs per category are two to four distinct answers per side) and
-  category results do not change the verdict or page anyone. The monitor now reports
-  effective unique sample counts alongside nominal ones so this is visible in any
-  future run's output. Nothing there says anything about within-model temporal
-  drift, provider behavior in isolation, or detection rates. Those claims rest on
-  the simulations.
+  different models from two different providers. The pooled family never flagged,
+  in the single cycle or the extension, and no alert fired even with the default
+  persistence rule. An early category-level flag was withdrawn after effective
+  sample counting showed pseudoreplication (both adapters proved deterministic at
+  temperature 0); the monitor now skips categories without enough distinct
+  observations and reports effective counts next to nominal ones, so the arithmetic
+  behind any future flag is visible. Nothing there says anything about within-model
+  temporal drift, provider behavior in isolation, or detection rates. Those claims
+  rest on the simulations.
 - The free hosting tier has a small memory budget and a database that resets on
   redeploys; locally, persistence and MLflow logging are unrestricted.

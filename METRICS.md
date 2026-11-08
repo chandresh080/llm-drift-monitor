@@ -350,19 +350,22 @@ complementarity of the three detectors.
 
 ## 11. Real hosted-provider comparison, Groq reference versus Gemini current
 
-Source: `REAL_PROVIDER_EXPERIMENT.md`, produced by `experiments/real_providers.py` on
-2026-11-07 with the production monitoring pipeline unchanged. This is a **real
-hosted-provider comparison**, explicitly not a synthetic benchmark: the numbers in
-sections 1 through 10 come from simulated data, and these come from live API calls to
-two different providers. The two kinds of results are not comparable and are kept in
+Source: `REAL_PROVIDER_EXPERIMENT.md`, produced by `experiments/real_providers.py`
+on 2026-11-08 with the production monitoring pipeline unchanged, from regenerated
+committed artifacts (`results/real_provider_results.json` and
+`results/real_provider_extended_results.json`). This is a **real hosted-provider
+comparison**, explicitly not a synthetic benchmark: the numbers in sections 1
+through 10 come from simulated data, and these come from live API calls to two
+different providers. The two kinds of results are not comparable and are kept in
 separate sections for that reason.
 
-Setup: 5 Groq cycles (`openai/gpt-oss-20b`, 50 calls, all successful) fill the 50-run
-reference window, then 1 Gemini cycle (`gemini-3.1-flash-lite` via the native
-generateContent endpoint, 10 calls, all successful) serves as current. Identical 10
-prompt panel (suite 2.1.0), temperature 0.0, max_tokens 512, same embedding model and
-normalization both phases. Groq additionally uses reasoning_effort low because
-gpt-oss-20b is a reasoning model (documented in the experiment report).
+Setup: 5 Groq cycles (`openai/gpt-oss-20b`, 50 calls, all successful) fill the
+50 run reference window, then 1 Gemini cycle (`gemini-3.1-flash-lite` via the
+native generateContent endpoint, 10 calls, all successful) serves as current.
+Identical 10 prompt panel (suite 2.1.0), temperature 0.0, max_tokens 512, same
+embedding model and normalization across providers. Groq additionally uses
+reasoning_effort low because gpt-oss-20b is a reasoning model (documented in the
+report).
 
 Detector results (reference 50 versus current 10, pooled family):
 
@@ -372,46 +375,44 @@ Detector results (reference 50 versus current 10, pooled family):
 | Proportion / Fisher (validity) | n/a | 1.000 | 1.0 | No |
 | MMD (embeddings, 500 perms) | 0.000 | 0.978 | 1.0 | No |
 
-Verdict: no drift detected, no alerts. Effect sizes: centroid distance 0.152, length
-shift +19.2%, refusal rate 0.0 both sides.
+Verdict: no drift detected, no alerts. Effect sizes: centroid distance 0.153,
+length shift +19.4%, refusal rate 0.0 both sides. The committed JSON now also
+reports effective sample sizes next to the nominal ones: the pooled reference
+window is 12 distinct answers behind its 50 runs, the current cycle's window is
+10 of 10.
 
-Timing, kept separate (see the report for details): provider per-call latency Groq p95
-0.98 to 1.15 s across cycles, Gemini p95 2.59 s; end-to-end current-cycle wall time
-4.13 s; monitoring overhead p95 0.388 s per cycle from the section 9 benchmark.
+Timing, kept separate (see the report for details): provider per-call latency Groq
+p95 0.57 to 1.04 s across cycles, Gemini p95 3.91 s; end to end current cycle wall
+time 4.65 s; monitoring overhead p95 0.388 s per cycle from the section 9
+benchmark.
 
 Limitations, restated from the report: a single current cycle cannot exercise the
-two-cycle persistence rule or the category-wise family (the category family starved
-and reported nothing rather than junk p values); one trial supports no detection-rate
-or false-alarm claims; and, most importantly, this is a cross-provider, cross-model
-comparison, so it measures a difference between two models, not provider behavior in
-isolation and not temporal drift within a single model.
+two-cycle persistence rule or the category-wise family (the category family
+starved and reported nothing rather than junk p values); one trial supports no
+detection-rate or false-alarm claims; and, most importantly, this is a
+cross-provider, cross-model comparison, so it measures a difference between two
+models, not provider behavior in isolation and not temporal drift within a single
+model.
 
-The extended phase (same day, five more Gemini cycles on the same database with the
-default configuration) exercises both missing pieces. The persistence rule ran
-unmodified and no cycle flagged, so no alert fired. The category family was fully
-tested in every cycle on Gemini only current windows versus the Groq reference, and
-one category is stable across repeats: refusal_probe, MMD statistic 0.450, raw p
-0.004, BH adjusted p 0.020, marked significant; the other four categories are not
-significant in the adjusted family. Category flags are diagnostic and do not set the
-drift verdict or fire alerts, so the pooled verdict of no drift stands.
+The extended run (five attempted Gemini cycles on the same database with the
+default configuration) exercises the missing pieces, and delivers a correction
+worth recording exactly. Cycle 1 failed with Gemini HTTP 429 and stored nothing;
+cycles 2 to 5 stored results and every alert path stayed silent, with the default
+two-cycle persistence rule running unmodified. Under the earlier, nominal sample
+gating, an extension like this had flagged the refusal_probe category BH
+significant (adjusted p 0.020); recounting showed the ten nominal runs per
+category were only two to four distinct observations per side, so the inference
+has been withdrawn, and the category gate now counts distinct observations.
+Recomputed against the current committed artifacts, every category is skipped
+(insufficient distinct responses, 2 to 3 of 10 reference and 2 of 10 current),
+with counts reported in place of p values. The pooled family keeps the stored
+window definition shared by all adapters; its pseudoreplication is exposed by the
+reported unique counts, and every identical pooled p value across cycles in the
+artifacts is one comparison over a fixed answer set, not independent
+confirmation, because both providers proved deterministic at temperature 0 in
+these runs.
 
-Two qualifications make that category flag statistically honest rather than a
-headline. First, both adapters proved deterministic at temperature 0: every Gemini
-response to a given prompt is identical across all nine cycles, and the 50 Groq
-reference runs share 15 distinct texts. The monitor now reports effective sample
-sizes next to the nominal ones (pooled windows carry `reference_unique_responses`
-and `current_unique_responses`; each category carries `unique_reference`,
-`unique_current` and a `pseudoreplicated` flag). In this recorded run the
-pseudoreplicated flag is set for every category and both pooled windows: nominal ten
-samples per category are two to four distinct observations per side, the pooled
-reference window's 50 runs are 15 distinct answers. The refusal_probe significance
-of 0.020 therefore means a consistent localization of a cross-model difference, not
-calibrated inference, because the permutation null treats repeated identical values
-as independent. Second, the same determinism means the five extended cycles repeat
-one identical sample: identical p values across cycles are one comparison, not five
-independent confirmations.
-
-## What these numbers do not claim
+## ## What these numbers do not claim
 
 - All rates are per-cycle frequencies under synthetic nulls and injected shifts.
 - Separate BH corrections in the pooled family and the category family do not add up
@@ -434,7 +435,10 @@ independent confirmations.
   precision in particular is relative to the simulation's alert-day structure. None
   is a production guarantee.
 - The real hosted-provider comparison (section 11) is a single cross-provider,
-  cross-model trial. It validates that the pipeline runs end to end against live
-  APIs and measures a difference between two different models served by two
-  different providers. It supports no claim about within-model temporal drift,
-  provider behavior in isolation, detection rate, or false alarm rate.
+  cross-model measurement. It validates that the pipeline runs end to end against
+  live APIs and measures a difference between two different models served by two
+  different providers. Its category-level flag from the first recording was
+  withdrawn after effective sample counting showed pseudoreplication, and the
+  monitor now skips categories that cannot support calibrated inference. The
+  section supports no claim about within-model temporal drift, provider behavior in
+  isolation, detection rate, or false alarm rate.

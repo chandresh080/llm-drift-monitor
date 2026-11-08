@@ -1,5 +1,5 @@
 {
-  "started_at": "2026-11-07T20:57:05.465316",
+  "started_at": "2026-11-08T10:00:41.014520",
   "setup": {
     "reference_provider": "Groq",
     "reference_model": "openai/gpt-oss-20b",
@@ -29,18 +29,18 @@
     {
       "phase": "groq_reference",
       "cycle": 1,
-      "wall_seconds": 8.912,
-      "gen_latency_mean_s": 0.8,
-      "gen_latency_p50_s": 0.686,
-      "gen_latency_p95_s": 1.154,
+      "wall_seconds": 8.738,
+      "gen_latency_mean_s": 0.733,
+      "gen_latency_p50_s": 0.623,
+      "gen_latency_p95_s": 1.001,
       "usage": {
-        "queue_time": 0.315934976,
+        "queue_time": 0.367618807,
         "prompt_tokens": 87,
-        "prompt_time": 0.004119015,
-        "completion_tokens": 290,
-        "completion_time": 0.297709085,
-        "total_tokens": 377,
-        "total_time": 0.3018281,
+        "prompt_time": 0.004104209,
+        "completion_tokens": 303,
+        "completion_time": 0.308189444,
+        "total_tokens": 390,
+        "total_time": 0.312293653,
         "completion_tokens_details": {
           "reasoning_tokens": 5
         }
@@ -53,18 +53,18 @@
     {
       "phase": "groq_reference",
       "cycle": 2,
-      "wall_seconds": 1.634,
-      "gen_latency_mean_s": 0.606,
-      "gen_latency_p50_s": 0.493,
-      "gen_latency_p95_s": 1.009,
+      "wall_seconds": 1.83,
+      "gen_latency_mean_s": 0.687,
+      "gen_latency_p50_s": 0.615,
+      "gen_latency_p95_s": 1.019,
       "usage": {
-        "queue_time": 0.28524161,
+        "queue_time": 0.367510458,
         "prompt_tokens": 87,
-        "prompt_time": 0.005717321,
-        "completion_tokens": 301,
-        "completion_time": 0.354262582,
-        "total_tokens": 388,
-        "total_time": 0.359979903,
+        "prompt_time": 0.004669098,
+        "completion_tokens": 303,
+        "completion_time": 0.314599852,
+        "total_tokens": 390,
+        "total_time": 0.31926895,
         "completion_tokens_details": {
           "reasoning_tokens": 5
         }
@@ -77,20 +77,20 @@
     {
       "phase": "groq_reference",
       "cycle": 3,
-      "wall_seconds": 1.776,
-      "gen_latency_mean_s": 0.679,
-      "gen_latency_p50_s": 0.56,
-      "gen_latency_p95_s": 0.985,
+      "wall_seconds": 1.554,
+      "gen_latency_mean_s": 0.67,
+      "gen_latency_p50_s": 0.558,
+      "gen_latency_p95_s": 1.037,
       "usage": {
-        "queue_time": 0.365692931,
-        "prompt_tokens": 87,
-        "prompt_time": 0.004472458,
-        "completion_tokens": 290,
-        "completion_time": 0.330505089,
-        "total_tokens": 377,
-        "total_time": 0.334977547,
+        "queue_time": 0.37944463,
+        "prompt_tokens": 90,
+        "prompt_time": 0.035867075,
+        "completion_tokens": 512,
+        "completion_time": 0.530952626,
+        "total_tokens": 602,
+        "total_time": 0.566819701,
         "completion_tokens_details": {
-          "reasoning_tokens": 5
+          "reasoning_tokens": 43
         }
       },
       "error": null,
@@ -101,20 +101,20 @@
     {
       "phase": "groq_reference",
       "cycle": 4,
-      "wall_seconds": 1.769,
-      "gen_latency_mean_s": 0.758,
-      "gen_latency_p50_s": 0.729,
-      "gen_latency_p95_s": 0.981,
+      "wall_seconds": 1.362,
+      "gen_latency_mean_s": 0.428,
+      "gen_latency_p50_s": 0.466,
+      "gen_latency_p95_s": 0.57,
       "usage": {
-        "queue_time": 0.316012315,
-        "prompt_tokens": 87,
-        "prompt_time": 0.004140106,
-        "completion_tokens": 302,
-        "completion_time": 0.340753541,
-        "total_tokens": 389,
-        "total_time": 0.344893647,
+        "queue_time": 0.157064781,
+        "prompt_tokens": 90,
+        "prompt_time": 0.006444458,
+        "completion_tokens": 463,
+        "completion_time": 0.491171321,
+        "total_tokens": 553,
+        "total_time": 0.497615779,
         "completion_tokens_details": {
-          "reasoning_tokens": 5
+          "reasoning_tokens": 6
         }
       },
       "error": null,
@@ -125,18 +125,18 @@
     {
       "phase": "groq_reference",
       "cycle": 5,
-      "wall_seconds": 1.72,
-      "gen_latency_mean_s": 0.601,
-      "gen_latency_p50_s": 0.494,
-      "gen_latency_p95_s": 0.999,
+      "wall_seconds": 1.921,
+      "gen_latency_mean_s": 0.676,
+      "gen_latency_p50_s": 0.628,
+      "gen_latency_p95_s": 0.947,
       "usage": {
-        "queue_time": 0.36713737,
+        "queue_time": 0.367151507,
         "prompt_tokens": 87,
-        "prompt_time": 0.005585252,
-        "completion_tokens": 301,
-        "completion_time": 0.341794905,
-        "total_tokens": 388,
-        "total_time": 0.347380157,
+        "prompt_time": 0.004669292,
+        "completion_tokens": 303,
+        "completion_time": 0.30600682,
+        "total_tokens": 390,
+        "total_time": 0.310676112,
         "completion_tokens_details": {
           "reasoning_tokens": 5
         }
@@ -151,10 +151,10 @@
     {
       "phase": "gemini_current",
       "cycle": 1,
-      "wall_seconds": 4.134,
-      "gen_latency_mean_s": 1.612,
-      "gen_latency_p50_s": 1.31,
-      "gen_latency_p95_s": 2.586,
+      "wall_seconds": 4.651,
+      "gen_latency_mean_s": 1.854,
+      "gen_latency_p50_s": 1.307,
+      "gen_latency_p95_s": 3.912,
       "usage": {
         "promptTokenCount": 16,
         "candidatesTokenCount": 508,
@@ -172,7 +172,7 @@
       "ok_runs": 10,
       "failed_runs": 0,
       "results": {
-        "timestamp": "2026-11-07T20:59:05.375119",
+        "timestamp": "2026-11-08T10:02:41.760185",
         "reference_size": 50,
         "current_size": 10,
         "ref_length_count": 50,
@@ -191,10 +191,12 @@
         "mmd_statistic": 0.0,
         "mmd_pvalue": 0.9780439121756487,
         "mmd_raw_pvalue": 0.9780439121756487,
-        "ref_mean_length": 829.8,
+        "reference_unique_responses": 12,
+        "current_unique_responses": 10,
+        "ref_mean_length": 828.4,
         "cur_mean_length": 989.3,
-        "length_shift_pct": 19.2,
-        "centroid_distance": 0.152187,
+        "length_shift_pct": 19.4,
+        "centroid_distance": 0.152853,
         "ref_refusal_rate": 0.0,
         "cur_refusal_rate": 0.0,
         "refusal_rate_change": 0.0,

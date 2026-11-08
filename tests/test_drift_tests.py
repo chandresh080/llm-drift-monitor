@@ -169,7 +169,10 @@ class TestUniqueCounts:
         vectors = [[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]]
         assert count_unique_embeddings(vectors) == 1
 
-    def test_category_reports_unique_counts(self):
+    def test_pseudoreplicated_category_skipped_with_counts(self):
+        # Eight nominal runs per side, but only two distinct answers on the
+        # reference side: the gate applies to distinct observations, so no
+        # p value is produced, and the counts still come through.
         base = [[1.0, 0.0], [0.0, 1.0], [2.0, 2.0], [3.0, 3.0],
                 [4.0, 4.0], [5.0, 5.0], [6.0, 6.0], [7.0, 7.0]]
         pseudorep = base[:2] * 4  # eight runs, two distinct answers
@@ -178,9 +181,25 @@ class TestUniqueCounts:
             {'cat_a': pseudorep}, {'cat_a': distinct},
             min_samples_per_category=8, n_permutations=50, random_seed=42)
         cat = results['cat_a']
+        assert cat['mmd_statistic'] is None and cat['pvalue'] is None
+        assert 'insufficient distinct responses' in cat['reason']
         assert cat['n_reference'] == 8 and cat['n_current'] == 8
-        assert cat['unique_reference'] == 2
-        assert cat['unique_current'] == 8
+        assert cat['unique_reference'] == 2 and cat['unique_current'] == 8
+        assert cat['pseudoreplicated'] == 1
+
+    def test_duplicates_within_gate_still_tested_and_flagged(self):
+        # Ten runs, eight of them distinct on both sides: the effective gate
+        # passes, the test runs, and the pseudoreplicated flag records that
+        # the nominal count overstates the evidence.
+        distinct = [[float(i), float(i)] for i in range(10)]
+        with_dupes = distinct[:8] + [distinct[0], distinct[1]]
+        results = category_mmd_tests(
+            {'cat_a': [v[:] for v in with_dupes]},
+            {'cat_a': [v[:] for v in with_dupes]},
+            min_samples_per_category=8, n_permutations=50, random_seed=42)
+        cat = results['cat_a']
+        assert cat['mmd_statistic'] is not None and cat['pvalue'] is not None
+        assert cat['unique_reference'] == 8 and cat['unique_current'] == 8
         assert cat['pseudoreplicated'] == 1
 
     def test_fully_distinct_not_flagged(self):

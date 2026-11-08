@@ -352,11 +352,14 @@ def category_mmd_tests(ref_by_category: Dict[str, List[List[float]]],
     localization actually validate the localization the monitor performs.
 
     Each category also reports the number of distinct embedding vectors on
-    each side next to the nominal counts. When a repeated cycle stores
-    identical answers, the nominal sample count overstates the evidence and
-    the adjusted p value does not carry its usual calibration; the
-    pseudoreplicated flag marks that case so the significance readout is not
-    mistaken for independent confirmation.
+    each side next to the nominal counts. The minimum sample gate applies to
+    the DISTINCT observations, not the nominal ones: a deterministic adapter
+    repeats the same answers, so ten stored runs can be as few as two
+    distinct observations, and a p value computed over those repeats would
+    look far more confident than its information content supports. Such
+    categories are skipped with the counts reported, and the
+    `pseudoreplicated` flag marks the narrower case where the nominal count
+    passes but the count of distinct observations is the binding constraint.
     """
     categories = sorted(set(ref_by_category) | set(cur_by_category))
     if not categories:
@@ -378,6 +381,15 @@ def category_mmd_tests(ref_by_category: Dict[str, List[List[float]]],
             entry[category] = {
                 'mmd_statistic': None, 'pvalue': None,
                 'reason': f'insufficient samples ({len(ref)}/{len(cur)})',
+                **counts}
+            continue
+        if (unique_ref < min_samples_per_category
+                or unique_cur < min_samples_per_category):
+            entry[category] = {
+                'mmd_statistic': None, 'pvalue': None,
+                'reason': (f'insufficient distinct responses '
+                           f'({unique_ref} of {len(ref)} reference, '
+                           f'{unique_cur} of {len(cur)} current)'),
                 **counts}
             continue
         stat, pval = mmd_test(ref, cur, n_permutations=n_permutations,

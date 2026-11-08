@@ -1,7 +1,7 @@
 phase,cycle,wall_seconds,ok_runs,failed_runs,gen_latency_mean_s,gen_latency_p50_s,gen_latency_p95_s,prompt_tokens,completion_tokens,total_tokens,error,tests_run
-groq_reference,1,8.912,10,0,0.8,0.686,1.154,87,290,377,,False
-groq_reference,2,1.634,10,0,0.606,0.493,1.009,87,301,388,,False
-groq_reference,3,1.776,10,0,0.679,0.56,0.985,87,290,377,,False
-groq_reference,4,1.769,10,0,0.758,0.729,0.981,87,302,389,,False
-groq_reference,5,1.72,10,0,0.601,0.494,0.999,87,301,388,,False
-gemini_current,1,4.134,10,0,1.612,1.31,2.586,16,508,524,,True
+groq_reference,1,8.738,10,0,0.733,0.623,1.001,87,303,390,,False
+groq_reference,2,1.83,10,0,0.687,0.615,1.019,87,303,390,,False
+groq_reference,3,1.554,10,0,0.67,0.558,1.037,90,512,602,,False
+groq_reference,4,1.362,10,0,0.428,0.466,0.57,90,463,553,,False
+groq_reference,5,1.921,10,0,0.676,0.628,0.947,87,303,390,,False
+gemini_current,1,4.651,10,0,1.854,1.307,3.912,16,508,524,,True

@@ -1,10 +1,14 @@
 # Real Hosted-Provider Comparison: Groq Reference versus Gemini Current
 
-Execution date: 2026-11-07 (start 20:57:05, final cycle 20:59:05, local time).
-This is a **real hosted-provider comparison**, not a synthetic benchmark and not a
-temporal drift study. All results below come from the committed output files
-`results/real_provider_cycles.csv` and `results/real_provider_results.json`, produced
-by `experiments/real_providers.py` using the production monitoring pipeline
+Execution date: 2026-11-08 (single cycle comparison start 10:00:41, extended run start
+10:02:49, local time). The experiment was first executed and recorded on 2026-11-07;
+both committed result artifacts were regenerated on 2026-11-08 after an effective
+sample size gate was added to the category family, so every number below describes
+the committed artifacts exactly. This is a **real hosted-provider comparison**, not a
+synthetic benchmark and not a temporal drift study. All results come from the output
+files `results/real_provider_cycles.csv`, `results/real_provider_results.json`,
+`results/real_provider_extended_cycles.csv` and `results/real_provider_extended_results.json`,
+produced by `experiments/real_providers.py` using the production monitoring pipeline
 unchanged: the standard adapters, storage, matched windows, detectors, and alert
 policy.
 
@@ -22,19 +26,19 @@ temporal drift within a single model.
 | Current provider | Google Gemini, `gemini-3.1-flash-lite`, native generateContent endpoint |
 | Prompt panel | canary_prompts.json version 2.1.0, 40 prompts, fixed 10 prompt panel (2 per category, identical text and order across providers) |
 | Reference collection | 5 Groq cycles x 10 probes = 50 runs, filling the configured 50 run reference window |
-| Current cycle | 1 Gemini cycle x 10 probes |
+| Current stage | 1 Gemini cycle in the comparison run, then 5 more Gemini cycles in the extended run |
 | Generation settings | temperature 0.0, max_tokens 512, timeout 60 s for both providers (not fully identical: only Groq exposes reasoning_effort, next row) |
 | Groq specific setting | reasoning_effort = low (gpt-oss-20b is a reasoning model; see failures below) |
-| Embedding model | sentence-transformers/all-MiniLM-L6-v2, CPU, identical preprocessing both phases |
-| Detectors | KS on lengths, proportion test on validity (Fisher dispatch), permutation MMD (500 permutations), Benjamini-Hochberg at alpha 0.05, plus effect-size diagnostics; category-wise family enabled but starved (see limitations) |
-| Windows | reference 50, current 10, matched prompt ids, complete cycles only |
-| Config override | alerts.min_consecutive_cycles = 1 for this run (a single current cycle cannot satisfy two-cycle persistence; detector flags are reported regardless) |
-| Database | data/real_providers.db, fresh on each run (gitignored) |
+| Embedding model | sentence-transformers/all-MiniLM-L6-v2, CPU, identical preprocessing both stages |
+| Detectors | KS on lengths, proportion test on validity (Fisher dispatch), permutation MMD (500 permutations), Benjamini-Hochberg at alpha 0.05, plus effect-size diagnostics; category-wise family gated by EFFECTIVE sample counts (see the gating section) |
+| Windows | reference 50, current 10, matched prompt ids, complete cycles only; the category current window spans the trailing five complete cycles |
+| Config override | alerts.min_consecutive_cycles = 1 for the single cycle run (a single current cycle cannot satisfy two-cycle persistence); the extended run uses the default value of 2 |
+| Database | data/real_providers.db, fresh on each full run (gitignored); `--resume` keeps the reference window |
 | API keys | read from environment / .env only; never printed or logged |
 
-## API execution results
+## Single cycle comparison: API execution results
 
-| Metric | Groq (reference phase) | Gemini (current cycle) |
+| Metric | Groq (reference stage) | Gemini (current cycle) |
 | --- | --- | --- |
 | API requests | 50 | 10 |
 | Successful | 50 | 10 |
@@ -48,20 +52,20 @@ existing instrumentation):
 
 | Provider | p50 (s) | p95 (s) |
 | --- | --- | --- |
-| Groq | 0.49 to 0.73 across cycles | 0.98 to 1.15 across cycles |
-| Gemini | 1.31 | 2.59 |
+| Groq | 0.47 to 0.63 across cycles | 0.57 to 1.04 across cycles |
+| Gemini | 1.31 | 3.91 |
 
 Token usage as returned by the providers:
 
 | Provider | Calls | Prompt tokens | Completion tokens | Total tokens |
 | --- | --- | --- | --- | --- |
-| Groq | 50 | 435 (87 per call) | 1,484 | 1,919 |
+| Groq | 50 | 441 | 1,884 | 2,325 |
 | Gemini | 10 | 16 | 508 | 524 |
 
-(The Gemini call repeats the system-free instruction context, so its prompt token
-count per call is lower; the two providers tokenize differently.)
+(The two providers tokenize differently and return different usage fields, so token
+totals are not directly comparable.)
 
-## Drift-monitoring results
+## Single cycle comparison: drift-monitoring results
 
 Pooled family, reference 50 versus current 10, both windows valid and complete:
 
@@ -71,138 +75,130 @@ Pooled family, reference 50 versus current 10, both windows valid and complete:
 | Proportion / Fisher (validity) | n/a (Fisher has no z statistic) | 1.000 | 1.0 | No |
 | MMD (embeddings, 500 perms) | 0.000 | 0.978 | 1.0 | No |
 
-Effect-size diagnostics: centroid distance 0.152, length shift +19.2% (mean 829.8 to
+Effect-size diagnostics: centroid distance 0.153, length shift +19.4% (mean 828.4 to
 989.3 characters), refusal rate 0.0 in both windows. Pooled verdict:
 `overall_drift_detected = 0`, `overall_quality_degradation = 0`, no alerts generated.
 
-Category-wise MMD: no categories were tested. This is the honest starvation case, not
-a failure: the category family needs a five-cycle current window (50 runs) and this
-design contributes a single 10 run cycle, so the procedure reported an empty tested
-family instead of junk p values, exactly as it is specified to behave.
+Effective sample sizes are now reported next to the nominal window size in the
+committed JSON: `reference_unique_responses` is 12 of a nominal 50, and
+`current_unique_responses` is 10 of a nominal 10. The reference window was collected
+at temperature 0 from the same ten prompts five times, so fifty stored runs carry
+only twelve distinct answers; any pooled p value over that window inherits the
+pseudoreplication caveat spelled out below. Single Gemini cycle pooled results: no
+drift detected, no alerts.
 
-Detection status: **no drift detected** in this comparison. With repeating the
-Gemini side over multiple cycles, the persistence rule and the category family would
-become exercisable; with a single current cycle the pooled family is the only family
-with data, which the result above reflects.
+Category-wise MMD: no categories were tested, reported as an empty tested family.
+Two reasons stack: the category current window needs five complete Gemini cycles
+(50 runs) and this run contributes one, and the gate below now requires enough
+DISTINCT observations even where the nominal count exists. The procedure reports the
+starvation rather than junk p values, exactly as it is specified to behave.
+
+## Effective sample size gating: what changed and why
+
+The first recording of this experiment (2026-11-07) ran with the category family
+gated on nominal sample counts. Five repeated Gemini cycles with identical answers
+reported `refusal_probe` as BH significant (MMD statistic 0.450, raw p 0.004,
+adjusted p 0.020). Recount shown at that time: the ten nominal runs per category
+were two to four distinct reference observations versus two distinct current
+observations. A permutation null that treats repeated identical values as
+independent inflates confidence, so that adjusted p value did not support the
+significance it displayed. The inference has been **withdrawn**.
+
+The fix keeps the category family's existing design ("a thin category cannot produce
+a junk p value") and applies it to the information that is actually present: the
+minimum `min_samples_per_category` gate now counts distinct embedding vectors per
+side. In the current committed extended artifact every category is therefore
+skipped, with counts reported in place of p values:
+
+| Category | Reference: distinct of nominal | Current: distinct of nominal | Decision |
+| --- | --- | --- | --- |
+| code | 3 of 10 | 2 of 10 | skipped, insufficient distinct responses |
+| factual | 3 of 10 | 2 of 10 | skipped, insufficient distinct responses |
+| formatting | 2 of 10 | 2 of 10 | skipped, insufficient distinct responses |
+| reasoning | 2 of 10 | 2 of 10 | skipped, insufficient distinct responses |
+| refusal_probe | 2 of 10 | 2 of 10 | skipped, insufficient distinct responses |
+
+The largest category distance observed before the gate existed (refusal_probe,
+0.450 on 2026-11-07 data) remains in the narrative as a descriptive observation, not
+an inferential one. Calendar concentration: the withdrawal applies to the recorded
+2026-11-07 flag, and no category p value is emitted by the current pipeline for the
+stored windows.
+
+The pooled family is unchanged by the gate: all three tests keep treating each
+stored run as an observation, because the pooled windows are the shared alerting
+path for every adapter including stochastic ones. Its pseudoreplication is exposed
+instead of hidden (`reference_unique_responses` / `current_unique_responses` in the
+JSON), and the qualification follows: with 12 distinct answers behind 50 reference
+runs, the pooled p values over deterministic windows are a description of the
+comparison between two fixed answer sets, not a calibrated test of generative
+distributions. The honest fix for the pooled side, as for categories, is more
+distinct prompts per sample or a prompt level dependence aware test, not the
+reported flag alone.
 
 ## Extended run: five Gemini cycles with the default persistence rule
 
-A second execution continued the same database on 2026-11-07 (start 21:32:38, final
-cycle 21:39, local time), adding five Gemini cycles on top of the completed single
-comparison, using the default configuration throughout: the two-cycle persistence
-rule was active and the category family was enabled. The reference window stayed the
-committed run's 50 Groq runs; no Groq calls were made. Command:
+A second execution continued the same database on 2026-11-08 (start 10:02:49),
+attempting five Gemini cycles on top of the completed single comparison, using the
+default configuration throughout: the two-cycle persistence rule active, and the
+category gate on distinct observations. The reference window stayed the rerun's
+50 Groq runs; no Groq calls were made. Command:
 
 ```
 DRIFT_MONITOR_TRACKING=0 python -m experiments.real_providers \
   --resume --current-cycles 5 --out-prefix real_provider_extended
 ```
 
-Outputs: `results/real_provider_extended_cycles.csv` and
-`results/real_provider_extended_results.json`.
+Execution was not clean end to end and is reported as it happened: cycle 1 failed
+with Gemini HTTP 429 RESOURCE_EXHAUSTED (the free tier's per model request counter
+was still carrying the single cycle run's ten Gemini calls from two minutes
+earlier), all ten calls of that cycle failed, and zero runs were stored for it. The
+remaining four cycles succeeded; this is recorded in the committed artifact rather
+than being cleaned up afterwards.
 
-An earlier attempt at this phase (21:28) paced its cycles 25 seconds apart, the Groq
-pacing, which put twenty or more requests into Gemini's rolling one-minute window on
-the free tier limit of 15 requests per minute per model; two of its five cycles failed
-with a 429 that surfaced cleanly through the adapter and the circuit breaker. The
-committed record covers only the corrected run. The fix spaces the Gemini phase at 70
-seconds per cycle, and the corrected run recorded zero errors and zero rate-limit
-events; this failure and fix are otherwise treated like the others (see failures
-below).
+API execution in the committed artifact:
 
-API execution: 50 Gemini calls, 50 successful, 0 failures, 0 timeouts, 0 rate-limit
-events. Per-call latency: p50 1.22 to 3.00 s across cycles; p95 3.24 to 48.51 s,
-where the fourth cycle contained one call that took about 48 seconds, apparently
-provider-side queueing or throttling (the call succeeded). Token usage: 2,617 tokens
-across the 50 calls.
-
-Drift-monitoring results, pooled family, identical in all five cycles (reference 50
-Groq runs versus the cycle's 10 Gemini runs):
-
-| Detector | Statistic | Raw p | BH adjusted p | Significant |
-| --- | --- | --- | --- | --- |
-| KS (response lengths) | 0.30 | 0.395 | 1.0 | No |
-| Proportion / Fisher (validity) | n/a | 1.000 | 1.0 | No |
-| MMD (embeddings, 500 perms) | 0.000 | 0.978 | 1.0 | No |
-
-`overall_drift_detected = 0` in every cycle, and no alert fired in any cycle. The
-default two-cycle persistence rule was in force throughout, so the policy was
-exercised exactly as configured: each cycle's pooled family was evaluated, no cycle
-flagged, and the streak never left zero.
-
-Category-wise MMD (reference 50 Groq runs versus a Gemini-only 50 run window spanning
-the trailing five cycles, ten samples per category per side, all five categories
-tested in every cycle, values identical across cycles):
-
-| Category | MMD statistic | Raw p | BH adjusted p | Significant |
-| --- | --- | --- | --- | --- |
-| code | 0.256 | 0.202 | 0.230 | No |
-| factual | 0.000 | 0.230 | 0.230 | No |
-| formatting | 0.111 | 0.230 | 0.230 | No |
-| reasoning | 0.091 | 0.212 | 0.230 | No |
-| refusal_probe | 0.450 | 0.004 | 0.020 | Yes |
-
-The `refusal_probe` category flags in the adjusted family at every recorded cycle.
-This is the diagnostic layer working as designed: it localizes a real distributional
-difference between the two models to one category, but category results do not set
-the drift verdict or fire alerts by themselves. `overall_drift_detected` is computed
-from the pooled family only, which never flagged, so no alert is generated; had the
-pooled family flagged, the alert message would name the affected categories.
-
-A property of the target surfaced by repetition is worth recording explicitly, and it
-applies to both providers. At temperature 0.0, gemini-3.1-flash-lite returned
-textually identical answers to the same prompts in every cycle: across all 90 stored
-Gemini responses (nine cycles including the single-cycle run and the discarded
-attempts), each of the ten prompts has exactly one distinct response text. The Groq
-reference side is deterministic as well at the pinned settings: the 50 reference runs
-share only 15 distinct response texts. Therefore the identical pooled and category
-values across cycles above are a faithful reflection of that determinism, not stale
-data: the windows are rebuilt each cycle and the p values are recomputed, but over
-identical samples they cannot change. Within a deterministic adapter, repeated cycles
-add no statistical evidence, and drift detection against such a target relies on the
-content actually changing, as it would in a provider model update.
-
-Determinism turns sample size into a statistical caveat that the results now surface
-quantitatively. Nominal counts count stored runs; effective counts count distinct
-embedding vectors, and the monitor reports both side by side: the pooled window
-fields `reference_unique_responses` and `current_unique_responses`, and per category
-the fields `n_reference`, `n_current`, `unique_reference`, `unique_current` and a
-`pseudoreplicated` flag inside `category_tests`. Recomputing the recorded category
-tests offline from the stored embeddings with the updated code reproduces the exact
-statistics above, and shows how much smaller the effective samples are:
-
-| Family | Nominal samples | Distinct observations |
+| Cycle | Stored runs | Outcome |
 | --- | --- | --- |
-| Pooled reference (Groq) | 50 | 15 |
-| Pooled current (trailing five Gemini cycles) | 50 | 10 |
-| Per category, reference side | 10 | 2 to 4 |
-| Per category, current side | 10 | 2 |
+| 1 | 0 | HTTP 429 RESOURCE_EXHAUSTED, all ten calls failed, no runs stored |
+| 2 to 5 | 10 each | eight of the value's tests run in each; 40 calls, all successful |
 
-Consequently the statistically significant refusal_probe category should be read as
-a consistent localization of a cross-model difference, not as calibrated inferential
-evidence: its adjusted p value of 0.020 rests on four distinct reference observations
-against two distinct current observations, and the permutation test's null
-distribution treats repeated identical values as independent, which inflates the
-confidence. The same qualification applies to the identical pooled p values across
-the five cycles: they are one comparison repeated over an identical sample, not five
-independent confirmations of anything.
+Per-call latency across the four stored cycles: p50 1.26 to 1.60 s, p95 3.05 to
+15.46 s (the third stored cycle contained one call that took about 15 seconds,
+presumably provider-side queueing). Token usage: 1,293 tokens across the 40
+successful calls.
 
-What the extended run adds to the single-cycle phase: the persistence rule was active
-and exercised under the default configuration with no override, and the category
-family, which was starved in the single-cycle phase, was fully tested in every cycle,
-flagging exactly one category on evidence stable across repeats.
+Pooled drift results are identical in all four stored cycles (KS statistic 0.30 raw
+p 0.395, Fisher p 1.000, MMD statistic 0.000 raw p 0.978, all adjusted p 1.0):
+`overall_drift_detected = 0` in every cycle and no alert fired. This identity is the
+pseudoreplication made visible: each cycle rebuilds its windows and recomputes its
+permutations, but the reference window and the per cycle current answers are the
+same fixed answer sets every time, so the numbers cannot change. Repeating cycles
+against a deterministic target adds no statistical evidence.
+
+## What the artifacts say about determinism
+
+Both providers behaved deterministically at the pinned settings in these runs, on
+top of the earlier direct measurement (2026-11-07, on the database that existed
+before the rerun: one distinct response text per panel prompt across 90 stored Gemini
+responses, and 50 Groq reference runs carrying 15 distinct texts). In the current
+artifacts, `current_unique_responses` is 10 in every stored cycle against an
+unchanging reference of 12 distinct answers in 50 runs, and the pooled p values are
+identical to the sixteen digit precision in every tested cycle. Groq's fresh
+reference window carried 12 distinct texts this time rather than 15, which shows the
+reference side is not perfectly frozen across reruns, in a small way that the
+reported unique counts make visible.
 
 ## Timing, kept separate by design
 
 | Quantity | Value | Meaning |
 | --- | --- | --- |
-| Provider per-call latency | Groq p95 0.98 to 1.15 s, Gemini p95 2.59 s | Provider generation time per model call |
-| End-to-end cycle wall time (current cycle) | 4.13 s | Full Gemini cycle including generation, features, tests, storage |
+| Provider per-call latency | Groq p95 0.57 to 1.04 s, Gemini p95 3.05 to 15.46 s across stored cycles | Provider generation time per model call |
+| End-to-end cycle wall time (last single cycle Gemini cycle) | 4.65 s | Full Gemini cycle including generation, features, tests, storage |
 | Monitoring overhead p95 | 0.388 s per cycle | Machinery cost without model calls (`experiments/overhead.py` benchmark, from `overhead_latency.csv`) |
 
 ## Failures encountered during development, and their fixes
 
-These are real events from earlier runs in this session, recorded because they shaped
+These are real events from the runs in this session, recorded because they shaped
 the final configuration:
 
 1. HTTP 403 (Cloudflare error 1010) on every Groq request from Python: the hosting
@@ -218,41 +214,54 @@ the final configuration:
    At 512 tokens with low effort, all 10 panel prompts returned content; two hit the
    length cap mid-answer (finish reason length with non-empty text, recorded as
    truncated but valid responses).
-3. HTTP 429 rate limiting on Groq's on-demand tier (30 requests per minute) when five
-   10-call cycles ran back to back with retries: earlier fix attempts observed the
-   provider's own message and opened the circuit breaker, which is the intended
-   protective behavior. Fix: the experiment spaces reference cycles 25 seconds apart.
-   The final run recorded zero rate-limit events.
+3. HTTP 429 rate limiting on Groq's on-demand tier (30 requests per minute) when
+   five 10-call cycles ran back to back with retries: the provider's own message
+   surfaced through the adapter and the circuit breaker opened, which is the intended
+   protective behavior. Fix: the experiment spaces reference cycles 25 seconds
+   apart. The final run recorded zero rate-limit events.
 4. HTTP 429 resource exhaustion on Gemini's free tier (15 requests per minute per
-   model) during the first extended attempt: two of five cycles at Groq's pacing
-   failed with RESOURCE_EXHAUSTED errors surfaced verbatim through the adapter. Fix:
-   the Gemini phase spaces cycles 70 seconds apart; the corrected phase recorded zero
-   rate-limit events.
+   model) during the first extended attempt on 2026-11-07: two of five cycles at
+   Groq's 25 second pacing failed with RESOURCE_EXHAUSTED errors surfaced verbatim
+   through the adapter. Fix: the Gemini stage spaces cycles 70 seconds apart; the
+   corrected recording completed five of five cycles with zero errors.
+5. HTTP 429 again on extended cycle 1 on 2026-11-08 after the artifact
+   regeneration: the rerun of the single cycle comparison completed two minutes
+   earlier and its ten Gemini calls still counted against the per model window, so
+   the extended run's first burst was rejected. Left in the record as-is: one failed
+   cycle with zero stored runs, four clean cycles after it. The general lesson stands
+   for consecutive experiment invocations as well as for cycles inside one
+   invocation: Gemini's free tier needs at least a minute of spacing after any
+   burst.
 
 ## Limitations
 
 - Cross-provider confounding: models differ, so the comparison validates that the
   pipeline runs end to end against real providers and measures a cross-provider
   difference, not provider behavior in isolation and not within-model drift.
-- One comparison, no repetitions of an independent event: the five extended cycles
-  add persistence-rule coverage and category coverage, but because both adapters are
-  deterministic at temperature 0, they are repeats of the same statistical sample,
-  not independent trials. Effective sample sizes are far below the nominal ones
-  (pooled reference 15 distinct answers behind 50 runs, category windows two distinct
-  answers behind ten runs on each side), which is now reported next to the nominal
-  counts, and the flagged refusal_probe category is a consistent localization of a
-  cross-model difference rather than calibrated inference. No detection-rate or
-  false-alarm claims follow; the synthetic benchmarks remain the source for those
-  metrics.
-- Category flags are diagnostic: a significant category (refusal_probe here) does not
-  change the drift verdict or fire an alert, because the verdict comes from the
-  pooled family. A deployment wanting per-category paging would need a policy change
-  beyond this experiment.
-- A 48 second tail latency appeared in one extended cycle, presumably provider-side
-  queueing; calls succeeded and no timeout was hit at the 60 second limit, but slow
-  tails exist on the free tier.
+- Determinism bounds the statistics: both adapters ran at temperature 0, so the
+  pooled windows describe two fixed answer sets rather than sampling from
+  generative distributions. The pooled family keeps counting every stored run as an
+  observation (it is the shared alerting path for all adapters), its unique counts
+  are reported so the gap between nominal and effective samples is visible
+  (12 distinct of 50 reference runs in these artifacts), and every identical p value
+  across cycles in these artifacts is one comparison, not independent confirmation.
+  The category family no longer emits p values at all for these windows.
+- The flagged category was withdrawn: the 2026-11-07 recording marked refusal_probe
+  BH significant at 0.020; recounted effective samples (four distinct reference
+  observations versus two distinct current observations) showed the confidence was
+  inflated by pseudoreplication, so the inference is retracted here and the gate now
+  prevents it structurally. The descriptive distance (MMD statistic 0.450, the
+  largest of the five) stays in the narrative only.
+- No detection-rate or false-alarm claims follow from any of this; the synthetic
+  benchmarks remain the source for those metrics, and a within-model temporal
+  comparison (one model, two versions) remains the missing demonstration for
+  production drift claims.
+- Slow tail latencies exist on the free tier: one 48 second call (2026-11-07) and
+  one 15 second call (2026-11-08) succeeded without hitting the 60 second limit.
 - Different token accounting: the two providers return different token fields and
   count differently, so token totals are not directly comparable.
+- Extended cycle 1's recorded 429 leaves the extended run at four stored cycles, not
+  five: the persistence rule ran unmodified over the cycles that stored results.
 
 ## Reproducing
 
@@ -263,10 +272,11 @@ DRIFT_MONITOR_TRACKING=0 python -m experiments.real_providers
 ```
 
 Optional flags: `--reference-cycles N` (default 5), `--current-cycles N` (a value
-above 1 keeps the default two-cycle persistence rule and lets the category family
-accumulate its five-cycle window), `--resume` (extend an existing
-data/real_providers.db by skipping the Groq reference collection), `--out-prefix`
-(default `real_provider`), and `--out-dir`. The run deletes and rebuilds
-`data/real_providers.db` unless resuming, so every fresh execution starts from an
-empty history. Without the needed keys the script exits before any API call; it never
-falls back to the fake provider.
+above 1 keeps the default two-cycle persistence rule and lets the category window
+accumulate five cycles; the effective sample gate still applies inside it),
+`--resume` (extend an existing data/real_providers.db by skipping the Groq
+reference collection; wait for the provider's rate window to clear first),
+`--out-prefix` (default `real_provider`), and `--out-dir`. The run deletes and
+rebuilds `data/real_providers.db` unless resuming, so every fresh execution starts
+from an empty history. Without the needed keys the script exits before any API
+call; it never falls back to the fake provider.
