@@ -1,9 +1,11 @@
 import numpy as np
 from drift_tests import (
-    ks_test, 
-    two_proportion_z_test, 
-    mmd_test, 
-    benjamini_hochberg_correction
+    ks_test,
+    two_proportion_z_test,
+    mmd_test,
+    benjamini_hochberg_correction,
+    category_mmd_tests,
+    count_unique_embeddings
 )
 
 class TestKSTest:
@@ -153,6 +155,56 @@ class TestMMD:
         stat_shifted, pval_shifted = mmd_test(X, Y_shifted, n_permutations=100, random_seed=42)
         assert not np.isnan(pval_shifted)
         assert pval_shifted < 0.05  # Detected under shift
+
+class TestUniqueCounts:
+    """Effective (unique) sample counts expose pseudoreplication in results.
+    A deterministic adapter repeats the same answers, so nominal run counts
+    must not be mistaken for independent observations."""
+
+    def test_all_distinct(self):
+        vectors = [[1.0, 0.0], [0.0, 1.0], [2.0, 2.0]]
+        assert count_unique_embeddings(vectors) == 3
+
+    def test_duplicates_collapsed(self):
+        vectors = [[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]]
+        assert count_unique_embeddings(vectors) == 1
+
+    def test_category_reports_unique_counts(self):
+        base = [[1.0, 0.0], [0.0, 1.0], [2.0, 2.0], [3.0, 3.0],
+                [4.0, 4.0], [5.0, 5.0], [6.0, 6.0], [7.0, 7.0]]
+        pseudorep = base[:2] * 4  # eight runs, two distinct answers
+        distinct = [v[:] for v in base]  # eight runs, eight distinct answers
+        results = category_mmd_tests(
+            {'cat_a': pseudorep}, {'cat_a': distinct},
+            min_samples_per_category=8, n_permutations=50, random_seed=42)
+        cat = results['cat_a']
+        assert cat['n_reference'] == 8 and cat['n_current'] == 8
+        assert cat['unique_reference'] == 2
+        assert cat['unique_current'] == 8
+        assert cat['pseudoreplicated'] == 1
+
+    def test_fully_distinct_not_flagged(self):
+        vectors = [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0],
+                   [4.0, 0.0], [5.0, 0.0], [6.0, 0.0], [7.0, 0.0]]
+        results = category_mmd_tests(
+            {'cat_a': [v[:] for v in vectors]}, {'cat_a': [v[:] for v in vectors]},
+            min_samples_per_category=8, n_permutations=50, random_seed=42)
+        cat = results['cat_a']
+        assert cat['unique_reference'] == 8
+        assert cat['unique_current'] == 8
+        assert cat['pseudoreplicated'] == 0
+
+    def test_skipped_category_still_reports_counts(self):
+        results = category_mmd_tests(
+            {'thin': [[1.0, 0.0], [1.0, 0.0]]},
+            {'thin': [[1.0, 0.0]]},
+            min_samples_per_category=8)
+        cat = results['thin']
+        assert cat['mmd_statistic'] is None
+        assert cat['n_reference'] == 2 and cat['n_current'] == 1
+        assert cat['unique_reference'] == 1
+        assert cat['pseudoreplicated'] == 1
+
 
 class TestPipelineIntegration:
     def test_fake_adapter_pipeline(self):

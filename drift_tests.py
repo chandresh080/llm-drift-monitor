@@ -324,6 +324,18 @@ def holm_correction(pvalues: List[float], alpha: float = 0.05) -> Tuple[List[flo
     return list(adjusted), [a <= alpha for a in adjusted]
 
 
+def count_unique_embeddings(vectors: List[List[float]]) -> int:
+    """How many distinct embedding vectors are in a window.
+
+    A deterministic adapter (temperature 0 with identical prompts) can repeat
+    the same response many times, so the nominal count of stored runs
+    overstates the effective sample size. Reported alongside the nominal
+    counts so pseudoreplication is visible in the results instead of only in
+    prose.
+    """
+    return len({tuple(float(x) for x in v) for v in vectors})
+
+
 def category_mmd_tests(ref_by_category: Dict[str, List[List[float]]],
                        cur_by_category: Dict[str, List[List[float]]],
                        min_samples_per_category: int = 8,
@@ -338,6 +350,13 @@ def category_mmd_tests(ref_by_category: Dict[str, List[List[float]]],
     reported as skipped rather than tested, and the tested family corrected
     as one family. Keeping it in one place is what makes an experiment about
     localization actually validate the localization the monitor performs.
+
+    Each category also reports the number of distinct embedding vectors on
+    each side next to the nominal counts. When a repeated cycle stores
+    identical answers, the nominal sample count overstates the evidence and
+    the adjusted p value does not carry its usual calibration; the
+    pseudoreplicated flag marks that case so the significance readout is not
+    mistaken for independent confirmation.
     """
     categories = sorted(set(ref_by_category) | set(cur_by_category))
     if not categories:
@@ -348,15 +367,23 @@ def category_mmd_tests(ref_by_category: Dict[str, List[List[float]]],
     for category in categories:
         ref = ref_by_category.get(category, [])
         cur = cur_by_category.get(category, [])
+        unique_ref = count_unique_embeddings(ref)
+        unique_cur = count_unique_embeddings(cur)
+        counts = {
+            'n_reference': len(ref), 'n_current': len(cur),
+            'unique_reference': unique_ref, 'unique_current': unique_cur,
+            'pseudoreplicated': int(unique_ref < len(ref) or unique_cur < len(cur)),
+        }
         if len(ref) < min_samples_per_category or len(cur) < min_samples_per_category:
             entry[category] = {
                 'mmd_statistic': None, 'pvalue': None,
-                'reason': f'insufficient samples ({len(ref)}/{len(cur)})'}
+                'reason': f'insufficient samples ({len(ref)}/{len(cur)})',
+                **counts}
             continue
         stat, pval = mmd_test(ref, cur, n_permutations=n_permutations,
                               random_seed=random_seed)
         entry[category] = {'mmd_statistic': round(float(stat), 6),
-                           'pvalue': round(float(pval), 6)}
+                           'pvalue': round(float(pval), 6), **counts}
         tested.append(category)
         raw_pvalues.append(float(pval))
     if raw_pvalues:

@@ -321,9 +321,12 @@ no test ever calls a real API or consumes quota.
   different models from two different providers. The pooled family never flagged, in
   the single cycle or the five-cycle extension, and no alert fired even with the
   default persistence rule; a category-level diagnostic did flag one category, but
-  category results do not change the verdict or page anyone. Nothing there says
-  anything about within-model temporal drift, provider behavior in isolation, or
-  detection rates: the extended cycles are repeats of one deterministic answer set,
-  not independent trials. Those claims rest on the simulations.
+  that flag is pseudoreplicated (both adapters proved deterministic at temperature
+  0, so ten nominal runs per category are two to four distinct answers per side) and
+  category results do not change the verdict or page anyone. The monitor now reports
+  effective unique sample counts alongside nominal ones so this is visible in any
+  future run's output. Nothing there says anything about within-model temporal
+  drift, provider behavior in isolation, or detection rates. Those claims rest on
+  the simulations.
 - The free hosting tier has a small memory budget and a database that resets on
   redeploys; locally, persistence and MLflow logging are unrestricted.

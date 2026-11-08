@@ -149,17 +149,43 @@ the drift verdict or fire alerts by themselves. `overall_drift_detected` is comp
 from the pooled family only, which never flagged, so no alert is generated; had the
 pooled family flagged, the alert message would name the affected categories.
 
-A property of the target surfaced by repetition is worth recording explicitly. At
-temperature 0.0, gemini-3.1-flash-lite returned textually identical answers to the
-same prompts in every cycle: across all 90 stored Gemini responses (nine cycles
-including the single-cycle run and the discarded attempts), each of the ten prompts
-has exactly one distinct response text. The detector inputs are therefore constant,
-and the identical pooled and category values across cycles above are a faithful
-reflection of that determinism, not stale data: the windows are rebuilt each cycle
-and the p values are recomputed, but over identical samples they cannot change.
-Within a deterministic adapter, repeated cycles add no statistical evidence, and
-drift detection against such a target relies on the content actually changing, as it
-would in a provider model update.
+A property of the target surfaced by repetition is worth recording explicitly, and it
+applies to both providers. At temperature 0.0, gemini-3.1-flash-lite returned
+textually identical answers to the same prompts in every cycle: across all 90 stored
+Gemini responses (nine cycles including the single-cycle run and the discarded
+attempts), each of the ten prompts has exactly one distinct response text. The Groq
+reference side is deterministic as well at the pinned settings: the 50 reference runs
+share only 15 distinct response texts. Therefore the identical pooled and category
+values across cycles above are a faithful reflection of that determinism, not stale
+data: the windows are rebuilt each cycle and the p values are recomputed, but over
+identical samples they cannot change. Within a deterministic adapter, repeated cycles
+add no statistical evidence, and drift detection against such a target relies on the
+content actually changing, as it would in a provider model update.
+
+Determinism turns sample size into a statistical caveat that the results now surface
+quantitatively. Nominal counts count stored runs; effective counts count distinct
+embedding vectors, and the monitor reports both side by side: the pooled window
+fields `reference_unique_responses` and `current_unique_responses`, and per category
+the fields `n_reference`, `n_current`, `unique_reference`, `unique_current` and a
+`pseudoreplicated` flag inside `category_tests`. Recomputing the recorded category
+tests offline from the stored embeddings with the updated code reproduces the exact
+statistics above, and shows how much smaller the effective samples are:
+
+| Family | Nominal samples | Distinct observations |
+| --- | --- | --- |
+| Pooled reference (Groq) | 50 | 15 |
+| Pooled current (trailing five Gemini cycles) | 50 | 10 |
+| Per category, reference side | 10 | 2 to 4 |
+| Per category, current side | 10 | 2 |
+
+Consequently the statistically significant refusal_probe category should be read as
+a consistent localization of a cross-model difference, not as calibrated inferential
+evidence: its adjusted p value of 0.020 rests on four distinct reference observations
+against two distinct current observations, and the permutation test's null
+distribution treats repeated identical values as independent, which inflates the
+confidence. The same qualification applies to the identical pooled p values across
+the five cycles: they are one comparison repeated over an identical sample, not five
+independent confirmations of anything.
 
 What the extended run adds to the single-cycle phase: the persistence rule was active
 and exercised under the default configuration with no override, and the category
@@ -209,11 +235,15 @@ the final configuration:
   pipeline runs end to end against real providers and measures a cross-provider
   difference, not provider behavior in isolation and not within-model drift.
 - One comparison, no repetitions of an independent event: the five extended cycles
-  add persistence-rule coverage and category coverage, but because the adapter is
-  deterministic at temperature 0 (one distinct answer per prompt across all nine
-  cycles), they are repeats of the same statistical sample, not independent trials.
-  No detection-rate or false-alarm claims follow; the synthetic benchmarks remain the
-  source for those metrics.
+  add persistence-rule coverage and category coverage, but because both adapters are
+  deterministic at temperature 0, they are repeats of the same statistical sample,
+  not independent trials. Effective sample sizes are far below the nominal ones
+  (pooled reference 15 distinct answers behind 50 runs, category windows two distinct
+  answers behind ten runs on each side), which is now reported next to the nominal
+  counts, and the flagged refusal_probe category is a consistent localization of a
+  cross-model difference rather than calibrated inference. No detection-rate or
+  false-alarm claims follow; the synthetic benchmarks remain the source for those
+  metrics.
 - Category flags are diagnostic: a significant category (refusal_probe here) does not
   change the drift verdict or fire an alert, because the verdict comes from the
   pooled family. A deployment wanting per-category paging would need a policy change

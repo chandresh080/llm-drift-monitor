@@ -393,10 +393,23 @@ tested in every cycle on Gemini only current windows versus the Groq reference, 
 one category is stable across repeats: refusal_probe, MMD statistic 0.450, raw p
 0.004, BH adjusted p 0.020, marked significant; the other four categories are not
 significant in the adjusted family. Category flags are diagnostic and do not set the
-drift verdict or fire alerts, so the pooled verdict of no drift stands. A repetition
-property limits what this phase adds: at temperature 0 the Gemini adapter returned
-textually identical answers to every prompt in all nine cycles, so the five cycles
-are repeats of the same statistical sample, not independent evidence.
+drift verdict or fire alerts, so the pooled verdict of no drift stands.
+
+Two qualifications make that category flag statistically honest rather than a
+headline. First, both adapters proved deterministic at temperature 0: every Gemini
+response to a given prompt is identical across all nine cycles, and the 50 Groq
+reference runs share 15 distinct texts. The monitor now reports effective sample
+sizes next to the nominal ones (pooled windows carry `reference_unique_responses`
+and `current_unique_responses`; each category carries `unique_reference`,
+`unique_current` and a `pseudoreplicated` flag). In this recorded run the
+pseudoreplicated flag is set for every category and both pooled windows: nominal ten
+samples per category are two to four distinct observations per side, the pooled
+reference window's 50 runs are 15 distinct answers. The refusal_probe significance
+of 0.020 therefore means a consistent localization of a cross-model difference, not
+calibrated inference, because the permutation null treats repeated identical values
+as independent. Second, the same determinism means the five extended cycles repeat
+one identical sample: identical p values across cycles are one comparison, not five
+independent confirmations.
 
 ## What these numbers do not claim
 

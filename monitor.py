@@ -15,7 +15,8 @@ from storage import DriftMonitorStorage
 from embeddings import EmbeddingExtractor
 from drift_tests import (ks_test, proportion_test, mmd_test,
                          benjamini_hochberg_correction, centroid_distance,
-                         holm_correction, category_mmd_tests)
+                         count_unique_embeddings, holm_correction,
+                         category_mmd_tests)
 from behavior_features import extract_behavior_features, refusal_rate
 from sequential_testing import (spent_alpha, consecutive_flagged_history,
                                 consecutive_streak)
@@ -887,6 +888,14 @@ class LLMDriftMonitor:
         results['mmd_statistic'] = mmd_stat
         results['mmd_pvalue'] = mmd_pval
         results['mmd_raw_pvalue'] = mmd_pval
+        # Distinct embedding vectors next to the nominal window sizes: a
+        # deterministic adapter repeats the same answers, so identical p
+        # values across cycles over identical samples are repeats, not
+        # independent confirmations.
+        results['reference_unique_responses'] = count_unique_embeddings(
+            ref_embeddings)
+        results['current_unique_responses'] = count_unique_embeddings(
+            cur_embeddings)
 
         # Effect sizes, kept separate from significance: with enough samples a
         # trivial change becomes significant, so alerts report magnitude too.
