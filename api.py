@@ -236,6 +236,9 @@ class DriftLatestResponse(BaseModel):
     refusal_rate_current: Optional[float] = None
     unique_reference: Optional[int] = None
     unique_current: Optional[int] = None
+    paired_cluster_mmd_statistic: Optional[float] = None
+    paired_cluster_mmd_pvalue: Optional[float] = None
+    paired_cluster_prompt_pairs: Optional[int] = None
 
 
 class ProbeRunResponse(BaseModel):
@@ -343,47 +346,79 @@ def get_latest_drift() -> DriftLatestResponse:
     return cached_read("drift_latest", _compute_latest_drift)
 
 
+def compute_latest_fields(latest: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Map one stored test_results row onto the /drift/latest response fields.
+
+    A note on names: a cycle's results dict uses results oriented keys
+    (ref_refusal_rate, reference_unique_responses), storage stores them in
+    display oriented columns (refusal_rate_reference, unique_reference) and
+    this endpoint returns the columns. The mapping lives in exactly one
+    place, storage.insert_test_results writes the columns, and this function
+    reads them back, so a rename in one layer shows up as a test failure
+    rather than an empty dashboard field.
+    """
+    if not latest:
+        return {
+            'drift_detected': None, 'flagged_tests': [],
+            'timestamp': None, 'reference_size': None, 'current_size': None,
+            'ks_statistic': None, 'ks_pvalue': None, 'ks_adjusted_pvalue': None,
+            'ks_significant': None,
+            'proportion_z_statistic': None, 'proportion_z_pvalue': None,
+            'proportion_z_adjusted_pvalue': None, 'proportion_z_significant': None,
+            'mmd_statistic': None, 'mmd_pvalue': None, 'mmd_adjusted_pvalue': None,
+            'mmd_significant': None,
+            'length_shift_pct': None, 'centroid_distance': None,
+            'refusal_rate_reference': None, 'refusal_rate_current': None,
+            'unique_reference': None, 'unique_current': None,
+            'paired_cluster_mmd_statistic': None, 'paired_cluster_mmd_pvalue': None,
+            'paired_cluster_prompt_pairs': None,
+        }
+    raw = latest.get('bh_significant_tests')
+    if isinstance(raw, str):
+        try:
+            flagged = json.loads(raw)
+        except Exception:
+            flagged = []
+    elif raw is None:
+        flagged = []
+    else:
+        flagged = raw
+    return {
+        'drift_detected': None if latest.get('overall_drift_detected') is None
+            else int(latest['overall_drift_detected']),
+        'flagged_tests': flagged,
+        'timestamp': latest.get('timestamp'),
+        'reference_size': latest.get('reference_size'),
+        'current_size': latest.get('current_size'),
+        'ks_statistic': latest.get('ks_statistic'),
+        'ks_pvalue': latest.get('ks_pvalue'),
+        'ks_adjusted_pvalue': latest.get('ks_adjusted_pvalue'),
+        'ks_significant': latest.get('ks_significant'),
+        'proportion_z_statistic': latest.get('proportion_z_stat'),
+        'proportion_z_pvalue': latest.get('proportion_z_pvalue'),
+        'proportion_z_adjusted_pvalue': latest.get('proportion_z_adjusted_pvalue'),
+        'proportion_z_significant': latest.get('proportion_z_significant'),
+        'mmd_statistic': latest.get('mmd_statistic'),
+        'mmd_pvalue': latest.get('mmd_pvalue'),
+        'mmd_adjusted_pvalue': latest.get('mmd_adjusted_pvalue'),
+        'mmd_significant': latest.get('mmd_significant'),
+        'length_shift_pct': latest.get('length_shift_pct'),
+        'centroid_distance': latest.get('centroid_distance'),
+        'refusal_rate_reference': latest.get('refusal_rate_reference'),
+        'refusal_rate_current': latest.get('refusal_rate_current'),
+        'unique_reference': latest.get('unique_reference'),
+        'unique_current': latest.get('unique_current'),
+        'paired_cluster_mmd_statistic': latest.get('paired_cluster_mmd_statistic'),
+        'paired_cluster_mmd_pvalue': latest.get('paired_cluster_mmd_pvalue'),
+        'paired_cluster_prompt_pairs': latest.get('paired_cluster_prompt_pairs'),
+    }
+
+
 def _compute_latest_drift() -> DriftLatestResponse:
     storage = _get_storage()
     results = storage.get_all_test_results(limit=1)
     latest = results[0] if results else None
-    flagged = []
-    if latest:
-        raw = latest.get('bh_significant_tests')
-        if isinstance(raw, str):
-            try:
-                flagged = json.loads(raw)
-            except Exception:
-                flagged = []
-        elif raw is None:
-            flagged = []
-        else:
-            flagged = raw
-    return DriftLatestResponse(
-        drift_detected=latest.get('overall_drift_detected') if latest else None,
-        flagged_tests=flagged,
-        timestamp=latest.get('timestamp') if latest else None,
-        reference_size=latest.get('reference_size') if latest else None,
-        current_size=latest.get('current_size') if latest else None,
-        ks_statistic=latest.get('ks_statistic') if latest else None,
-        ks_pvalue=latest.get('ks_pvalue') if latest else None,
-        ks_adjusted_pvalue=latest.get('ks_adjusted_pvalue') if latest else None,
-        ks_significant=latest.get('ks_significant') if latest else None,
-        proportion_z_statistic=latest.get('proportion_z_stat') if latest else None,
-        proportion_z_pvalue=latest.get('proportion_z_pvalue') if latest else None,
-        proportion_z_adjusted_pvalue=latest.get('proportion_z_adjusted_pvalue') if latest else None,
-        proportion_z_significant=latest.get('proportion_z_significant') if latest else None,
-        mmd_statistic=latest.get('mmd_statistic') if latest else None,
-        mmd_pvalue=latest.get('mmd_pvalue') if latest else None,
-        mmd_adjusted_pvalue=latest.get('mmd_adjusted_pvalue') if latest else None,
-        mmd_significant=latest.get('mmd_significant') if latest else None,
-        length_shift_pct=latest.get('length_shift_pct') if latest else None,
-        centroid_distance=latest.get('centroid_distance') if latest else None,
-        refusal_rate_reference=latest.get('refusal_rate_reference') if latest else None,
-        refusal_rate_current=latest.get('refusal_rate_current') if latest else None,
-        unique_reference=latest.get('unique_reference') if latest else None,
-        unique_current=latest.get('unique_current') if latest else None,
-    )
+    return DriftLatestResponse(**compute_latest_fields(latest))
 
 
 @app.get("/drift/results")

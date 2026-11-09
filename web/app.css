@@ -628,6 +628,24 @@ html, body {
 
 .eval-card .kpi-sub { min-height: 38px; }
 
+.chart-wrap {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  padding: 10px 8px 4px;
+  margin-bottom: 14px;
+  background: var(--surface);
+}
+
+.chart {
+  display: block;
+  width: 100%;
+  max-width: 720px;
+  height: auto;
+}
+
+#eval-power + .plain-table,
+#eval-tradeoff + .plain-table { margin-bottom: 4px; }
+
 .plain-table {
   width: 100%;
   border-collapse: collapse;

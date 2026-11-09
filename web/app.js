@@ -411,9 +411,129 @@ function renderAll() {
   renderCategories();
   renderActivity();
   renderAlerts();
+  /* The paired diagnostic reads /drift/latest, available on every load,
+     so it renders whether or not the evaluation tab has been opened. */
+  renderPairedDiagnostic();
 }
 
 /* ---------- evaluation tab ---------- */
+
+/* Hand-rolled SVG charts: no chart library, consistent with the design
+   system, and the numbers plotted are exactly the committed CSV rows.
+   Axes are linear; only two small data families are ever plotted. */
+
+function svgScatter(points, opts) {
+  if (!points.length) return '<p class="muted">Chart data unavailable.</p>';
+  const w = 520, h = 260, m = { top: 16, right: 24, bottom: 40, left: 52 };
+  const iw = w - m.left - m.right, ih = h - m.top - m.bottom;
+  const xMax = (Math.max(...points.map((p) => p.x)) * 1.15) || 1;
+  const yMax = (Math.max(...points.map((p) => p.y)) * 1.15) || 1;
+  const sx = (v) => m.left + (v / xMax) * iw;
+  const sy = (v) => m.top + ih - (v / yMax) * ih;
+  const parts = [];
+  for (let gy = 0; gy <= 4; gy++) {
+    const y = m.top + (ih * gy) / 4;
+    parts.push(`<line x1="${m.left}" y1="${y}" x2="${m.left + iw}" y2="${y}" stroke="#E4E4DD" stroke-width="1"/>`);
+  }
+  for (let gx = 0; gx <= 4; gx++) {
+    const x = m.left + (iw * gx) / 4;
+    parts.push(`<line x1="${x}" y1="${m.top}" x2="${x}" y2="${m.top + ih}" stroke="#E4E4DD" stroke-width="1"/>`);
+  }
+  parts.push(`<line x1="${m.left}" y1="${m.top + ih}" x2="${m.left + iw}" y2="${m.top + ih}" stroke="#D2D2C9" stroke-width="1"/>`);
+  parts.push(`<line x1="${m.left}" y1="${m.top}" x2="${m.left}" y2="${m.top + ih}" stroke="#D2D2C9" stroke-width="1"/>`);
+  for (const p of points) {
+    const color = p.shipped ? "#B34A1E" : "#40453F";
+    const r = p.shipped ? 6 : 4.5;
+    parts.push(`<circle cx="${sx(p.x).toFixed(1)}" cy="${sy(p.y).toFixed(1)}" r="${r}" fill="${color}"/>`);
+    const anchor = sx(p.x) > m.left + iw - 80 ? "end" : "start";
+    parts.push(`<text x="${(sx(p.x) + (anchor === "end" ? -9 : 9)).toFixed(1)}" y="${(sy(p.y) + 4).toFixed(1)}" font-size="11" font-family="ui-monospace, monospace" fill="${color}" text-anchor="${anchor}">${p.label}${p.shipped ? " (shipped)" : ""}</text>`);
+  }
+  parts.push(`<text x="${m.left + iw / 2}" y="${h - 8}" font-size="11" fill="#6C726B" text-anchor="middle">${opts.xLabel}</text>`);
+  parts.push(`<text x="14" y="${m.top + ih / 2}" font-size="11" fill="#6C726B" text-anchor="middle" transform="rotate(-90 14 ${m.top + ih / 2})">${opts.yLabel}</text>`);
+  parts.push(`<text x="${m.left}" y="${h - 8}" font-size="10" fill="#6C726B" text-anchor="start">0</text>`);
+  return `<svg viewBox="0 0 ${w} ${h}" class="chart" role="img">${parts.join("")}</svg>`;
+}
+
+function svgLines(xs, series, opts) {
+  if (!xs.length) return '<p class="muted">Chart data unavailable.</p>';
+  const w = 520, h = 260, m = { top: 16, right: 24, bottom: 40, left: 52 };
+  const iw = w - m.left - m.right, ih = h - m.top - m.bottom;
+  const xMax = Math.max(...xs) || 1;
+  const yMax = opts.yMax || 1;
+  const sx = (v) => m.left + (v / xMax) * iw;
+  const sy = (v) => m.top + ih - (v / yMax) * ih;
+  const parts = [];
+  for (let gy = 0; gy <= 4; gy++) {
+    const y = m.top + (ih * gy) / 4;
+    const label = ((1 - gy / 4) * yMax).toFixed(yMax === 1 && gy % 2 === 0 ? 0 : 1);
+    parts.push(`<line x1="${m.left}" y1="${y}" x2="${m.left + iw}" y2="${y}" stroke="#E4E4DD" stroke-width="1"/>`);
+    parts.push(`<text x="${m.left - 6}" y="${y + 3}" font-size="10" fill="#6C726B" text-anchor="end">${label}</text>`);
+  }
+  for (const x of xs) {
+    parts.push(`<line x1="${sx(x)}" y1="${m.top}" x2="${sx(x)}" y2="${m.top + ih}" stroke="#E4E4DD" stroke-width="1"/>`);
+    parts.push(`<text x="${sx(x)}" y="${h - 18}" font-size="10" fill="#6C726B" text-anchor="middle">${x.toFixed(1)}</text>`);
+  }
+  parts.push(`<line x1="${m.left}" y1="${m.top + ih}" x2="${m.left + iw}" y2="${m.top + ih}" stroke="#D2D2C9" stroke-width="1"/>`);
+  parts.push(`<line x1="${m.left}" y1="${m.top}" x2="${m.left}" y2="${m.top + ih}" stroke="#D2D2C9" stroke-width="1"/>`);
+  for (const s of series) {
+    const segs = [];
+    let open = false;
+    xs.forEach((x, i) => {
+      const v = s.values[i];
+      if (v == null) { open = false; return; }
+      segs.push(`${open ? "L" : "M"}${sx(x).toFixed(1)} ${sy(v).toFixed(1)}`);
+      open = true;
+    });
+    if (segs.length) {
+      parts.push(`<path d="${segs.join(" ")}" fill="none" stroke="${s.color}" stroke-width="2"/>`);
+    }
+    xs.forEach((x, i) => {
+      const v = s.values[i];
+      if (v == null) return;
+      parts.push(`<circle cx="${sx(x).toFixed(1)}" cy="${sy(v).toFixed(1)}" r="2.6" fill="${s.color}"/>`);
+    });
+    const labelIdx = s.values.reduce((best, v, i) => (v != null ? i : best), 0);
+    const ly = sy(s.values[labelIdx] == null ? 0 : s.values[labelIdx]);
+    parts.push(`<text x="${(sx(xs[labelIdx]) + 8).toFixed(1)}" y="${(ly + 4).toFixed(1)}" font-size="11" font-family="ui-monospace, monospace" fill="${s.color}">${s.name}</text>`);
+  }
+  parts.push(`<text x="${m.left + iw / 2}" y="${h - 4}" font-size="11" fill="#6C726B" text-anchor="middle">${opts.xLabel}</text>`);
+  parts.push(`<text x="14" y="${m.top + ih / 2}" font-size="11" fill="#6C726B" text-anchor="middle" transform="rotate(-90 14 ${m.top + ih / 2})">${opts.yLabel}</text>`);
+  return `<svg viewBox="0 0 ${w} ${h}" class="chart" role="img">${parts.join("")}</svg>`;
+}
+
+function renderPairedDiagnostic() {
+  /* Sourced from /drift/latest: the same row the Console detector cards
+     read. The swap pattern count is derived the same way
+     paired_cluster_mmd_test derives it: exhaustive enumeration when there
+     are at most 12 pairs (2^12 = 4096 patterns), seeded sampling above. */
+  const l = state.latest || {};
+  const set = (id, value) => {
+    const el = $(id);
+    if (value == null) {
+      el.textContent = "not recorded";
+      el.className = "effect-value effect-missing";
+    } else {
+      el.textContent = value;
+      el.className = "effect-value";
+    }
+  };
+  set("paired-stat",
+    l.paired_cluster_mmd_statistic == null ? null :
+      Number(l.paired_cluster_mmd_statistic).toFixed(3));
+  set("paired-p",
+    l.paired_cluster_mmd_pvalue == null ? null : fmtP(l.paired_cluster_mmd_pvalue));
+  set("paired-pairs", l.paired_cluster_prompt_pairs);
+  const pairs = l.paired_cluster_prompt_pairs;
+  if (pairs != null && pairs > 0) {
+    const patterns = pairs <= 12 ? Math.pow(2, pairs) : null;
+    set("paired-patterns",
+      patterns == null ? "sampled (above the 4096 cap)" : `${patterns} (exhaustive)`);
+  } else if (pairs === 0) {
+    set("paired-patterns", "0: unmatched window");
+  } else {
+    set("paired-patterns", null);
+  }
+}
 
 async function loadEvaluation() {
   try {
@@ -450,6 +570,22 @@ function renderEvaluation() {
       ${rows.map((r) => `<tr>${r.map((x) => `<td>${x}</td>`).join("")}</tr>`).join("")}
     </tbody></table>`;
 
+  /* Delay vs false-alarm plane: one point per alert policy. Speed of
+     detection improves toward the left, quiet-day safety improves toward
+     the bottom, so the best policies sit in the lower left corner. */
+  const tradeoffPts = ev.tradeoff
+    .filter((r) => r.mean_detection_delay_days != null
+      && r.false_alarms_per_100_days != null)
+    .map((r) => ({
+      x: Number(r.mean_detection_delay_days),
+      y: Number(r.false_alarms_per_100_days),
+      label: r.rule,
+      shipped: r.rule === h.default_rule,
+    }));
+  $("eval-tradeoff-chart").innerHTML = svgScatter(tradeoffPts, {
+    xLabel: "Mean detection delay (days)",
+    yLabel: "False alarms per 100 quiet days",
+  });
   $("eval-tradeoff").innerHTML = table(
     ["Alert policy", "Mean detection delay (days)", "Detection rate", "False alarms per 100 quiet days"],
     ev.tradeoff.map((r) => [
@@ -459,11 +595,26 @@ function renderEvaluation() {
       Number(r.false_alarms_per_100_days).toFixed(2),
     ]));
 
-  const powerRows = ev.power_curves.mmd_n10.map((r) => [Number(r.delta).toFixed(1)]);
   const mmdLookup = Object.fromEntries(ev.power_curves.mmd_n10.map((r) => [r.delta, r.power]));
   const ksLookup = Object.fromEntries(ev.power_curves.ks_n10.map((r) => [r.delta, r.power]));
   const deltas = Array.from(new Set([...Object.keys(mmdLookup), ...Object.keys(ksLookup)]
     .map(Number).sort((a, b) => a - b)));
+  $("eval-power-chart").innerHTML = svgLines(deltas, [
+    {
+      name: "MMD (n=10)",
+      color: "#B34A1E",
+      values: deltas.map((d) => (mmdLookup[d] == null ? null : Number(mmdLookup[d]))),
+    },
+    {
+      name: "KS (n=10)",
+      color: "#6C726B",
+      values: deltas.map((d) => (ksLookup[d] == null ? null : Number(ksLookup[d]))),
+    },
+  ], {
+    xLabel: "Shift magnitude (sigma)",
+    yLabel: "Power",
+    yMax: 1,
+  });
   $("eval-power").innerHTML = table(
     ["Shift magnitude (sigma)", "MMD power (n=10)", "KS power (n=10)"],
     deltas.map((d) => [

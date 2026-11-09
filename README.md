@@ -299,7 +299,7 @@ dashboard is a thin page over it.
 
 ## Testing
 
-`pytest` (99 tests) and `ruff check .` run in CI on every push. The tests cover the BH
+`pytest` (101 tests) and `ruff check .` run in CI on every push. The tests cover the BH
 correction against a hand-checked example, the reference window logic, the behavioral
 features, the sequential alert policy (streaks and the alpha spending schedule), the
 centroid baseline, alert storage, and the retry behaviour of the network adapters with

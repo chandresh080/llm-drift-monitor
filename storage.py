@@ -32,7 +32,10 @@ class DriftMonitorStorage:
         existing = {row[1] for row in conn.execute("PRAGMA table_info(test_results)")}
         for column in ("length_shift_pct REAL", "centroid_distance REAL",
                        "refusal_rate_reference REAL", "refusal_rate_current REAL",
-                       "unique_reference INTEGER", "unique_current INTEGER"):
+                       "unique_reference INTEGER", "unique_current INTEGER",
+                       "paired_cluster_mmd_statistic REAL",
+                       "paired_cluster_mmd_pvalue REAL",
+                       "paired_cluster_prompt_pairs INTEGER"):
             name = column.split()[0]
             if name not in existing:
                 conn.execute(f"ALTER TABLE test_results ADD COLUMN {column}")
@@ -100,6 +103,9 @@ class DriftMonitorStorage:
                     refusal_rate_current REAL,
                     unique_reference INTEGER,
                     unique_current INTEGER,
+                    paired_cluster_mmd_statistic REAL,
+                    paired_cluster_mmd_pvalue REAL,
+                    paired_cluster_prompt_pairs INTEGER,
                     bh_significant_tests TEXT,  -- JSON list
                     overall_drift_detected INTEGER,
                     overall_quality_degradation INTEGER
@@ -210,8 +216,10 @@ class DriftMonitorStorage:
                     length_shift_pct, centroid_distance,
                     refusal_rate_reference, refusal_rate_current,
                     unique_reference, unique_current,
+                    paired_cluster_mmd_statistic, paired_cluster_mmd_pvalue,
+                    paired_cluster_prompt_pairs,
                     bh_significant_tests, overall_drift_detected, overall_quality_degradation
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 results['timestamp'], results['reference_size'], results['current_size'],
                 results.get('ks_statistic'), results.get('ks_pvalue'), results.get('ks_raw_pvalue'),
@@ -224,6 +232,8 @@ class DriftMonitorStorage:
                 results.get('length_shift_pct'), results.get('centroid_distance'),
                 results.get('ref_refusal_rate'), results.get('cur_refusal_rate'),
                 results.get('reference_unique_responses'), results.get('current_unique_responses'),
+                results.get('paired_cluster_mmd_statistic'), results.get('paired_cluster_mmd_pvalue'),
+                results.get('paired_cluster_prompt_pairs'),
                 json.dumps(results.get('bh_significant_tests', [])),
                 results.get('overall_drift_detected', 0),
                 results.get('overall_quality_degradation', 0)

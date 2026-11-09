@@ -225,6 +225,7 @@
       <p class="panel-note">The same simulated shift, four alert policies. Merging evidence
         across cycles (the k-of-n and persistence rules) trades a little speed for a large
         reduction in noise. The shipped policy is persist2, the two-cycle persistence rule.</p>
+      <div id="eval-tradeoff-chart" class="chart-wrap"></div>
       <div id="eval-tradeoff"></div>
     </section>
 
@@ -234,7 +235,36 @@
         increasing simulated shift magnitude, at the production current window of 10 responses.
         Even a real but small shift can be invisible at this sample size, which is exactly the
         limitation stated elsewhere.</p>
+      <div id="eval-power-chart" class="chart-wrap"></div>
       <div id="eval-power"></div>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">Matched prompt diagnostic</h2>
+      <p class="panel-note">
+        A methodological companion to the semantic detector on the Console tab. The standard
+        MMD permutation test exchanges individual responses; this diagnostic instead exchanges
+        complete response sets belonging to the same matched prompt, which respects the fact
+        that repeated probes to one prompt are not independent observations. Same data as the
+        pooled test, so the two numbers are expected to agree in these runs; the diagnostic is
+        the one that stays valid when prompt effects are large. Ten matched prompts still
+        provide limited evidence, and this diagnostic is not wired into production alerts.
+      </p>
+      <div class="effect-row" id="paired-row">
+        <div class="effect"><span class="effect-label">Paired MMD statistic</span>
+          <span id="paired-stat" class="effect-value">...</span></div>
+        <div class="effect"><span class="effect-label">Raw permutation p-value</span>
+          <span id="paired-p" class="effect-value">...</span></div>
+        <div class="effect"><span class="effect-label">Matched prompts</span>
+          <span id="paired-pairs" class="effect-value">...</span></div>
+        <div class="effect"><span class="effect-label">Swap patterns evaluated</span>
+          <span id="paired-patterns" class="effect-value">...</span></div>
+      </div>
+      <p id="paired-note" class="panel-note">
+        Reported values come from the latest stored cycle; the p-value is exhaustive over all
+        swap patterns when their count is at most 4096, seeded sampling otherwise. Legacy
+        cycles predating this diagnostic show no values.
+      </p>
     </section>
 
     <section class="panel">

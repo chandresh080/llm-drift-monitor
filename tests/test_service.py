@@ -197,3 +197,74 @@ class TestStorageMigration:
             "SELECT prompt_id, category, cycle_id FROM probe_runs WHERE id=?", (run_id,)
         ).fetchone()
         assert row == ("fact_001", "factual", "abc123")
+
+
+class TestResultFieldMapping:
+    """The results produced by a monitoring cycle use one set of field
+    names; the database stores them under display oriented column names;
+    the API returns the column names. This test pins the whole mapping so
+    the dashboard can never silently lose a field to a rename."""
+
+    @staticmethod
+    def representative_results():
+        """Field names exactly as run_monitoring_cycle assembles them."""
+        return {
+            'timestamp': '2026-01-01T00:00:00',
+            'reference_size': 50, 'current_size': 10,
+            'ks_statistic': 0.3, 'ks_pvalue': 0.395, 'ks_raw_pvalue': 0.395,
+            'ks_adjusted_pvalue': 1.0, 'ks_significant': 0,
+            'proportion_z_stat': None, 'proportion_z_pvalue': 1.0,
+            'proportion_z_raw_pvalue': 1.0, 'proportion_z_adjusted_pvalue': 1.0,
+            'proportion_z_significant': 0,
+            'mmd_statistic': 0.0, 'mmd_pvalue': 0.98,
+            'mmd_raw_pvalue': 0.98, 'mmd_adjusted_pvalue': 1.0,
+            'mmd_significant': 0,
+            # effect sizes: note the results dict uses ref_/cur_ prefixes
+            'ref_refusal_rate': 0.0, 'cur_refusal_rate': 0.05,
+            'reference_unique_responses': 12, 'current_unique_responses': 10,
+            'length_shift_pct': 19.5, 'centroid_distance': 0.153,
+            # paired prompt level diagnostic
+            'paired_cluster_mmd_statistic': -0.027,
+            'paired_cluster_mmd_pvalue': 1.0,
+            'paired_cluster_prompt_pairs': 10,
+            'bh_significant_tests': [], 'overall_drift_detected': 0,
+            'overall_quality_degradation': 0,
+        }
+
+    def test_effect_sizes_survive_results_to_storage_to_api(self, tmp_path):
+        storage = DriftMonitorStorage(str(tmp_path / "fresh.db"))
+        storage.insert_test_results(self.representative_results())
+        stored = storage.get_all_test_results(limit=1)[0]
+        # Prefixed results keys land in display named columns...
+        assert stored['refusal_rate_reference'] == 0.0
+        assert stored['refusal_rate_current'] == 0.05
+        assert stored['unique_reference'] == 12
+        assert stored['unique_current'] == 10
+        assert stored['length_shift_pct'] == 19.5
+        assert stored['centroid_distance'] == 0.153
+        assert stored['paired_cluster_prompt_pairs'] == 10
+        # ... and the API field list reads exactly those columns.
+        from api import compute_latest_fields
+        payload = compute_latest_fields(stored)
+        assert payload['refusal_rate_reference'] == 0.0
+        assert payload['refusal_rate_current'] == 0.05
+        assert payload['unique_reference'] == 12
+        assert payload['unique_current'] == 10
+        assert payload['paired_cluster_mmd_pvalue'] == 1.0
+        # A refusal rate change card computed from these fields is real data,
+        # not a missing read.
+        assert payload['refusal_rate_current'] - payload['refusal_rate_reference'] == pytest.approx(0.05)
+
+    def test_legacy_rows_without_effect_sizes_read_as_null(self, tmp_path):
+        storage = DriftMonitorStorage(str(tmp_path / "legacy.db"))
+        # Insert a row with only the pre effect size fields.
+        with storage._db() as conn:
+            conn.execute(
+                "INSERT INTO test_results (timestamp, reference_size, current_size, "
+                "ks_statistic, ks_pvalue, bh_significant_tests, overall_drift_detected) "
+                "VALUES ('2025-01-01T00:00:00', 50, 10, 0.4, 0.11, '[]', 0)")
+        stored = storage.get_all_test_results(limit=1)[0]
+        assert stored['length_shift_pct'] is None
+        assert stored['refusal_rate_reference'] is None
+        assert stored['unique_reference'] is None
+        assert stored['paired_cluster_mmd_statistic'] is None
