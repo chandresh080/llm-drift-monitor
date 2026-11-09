@@ -44,8 +44,18 @@ logger = logging.getLogger("llm_drift_monitor.api")
 
 # ---------- process level service object ----------
 
+# One build at a time: on a cold start several dashboard endpoints can miss
+# the (un populated) cache simultaneously, and without a lock each request
+# would construct its own monitor instance, each paying the config parse and
+# adapter setup cost. The lock turns the race into a queue.
+_monitor_lock = threading.Lock()
+
 
 @lru_cache(maxsize=1)
+def _build_monitor() -> LLMDriftMonitor:
+    return LLMDriftMonitor(config_path=os.environ.get("DRIFT_MONITOR_CONFIG", "config/config.yaml"))
+
+
 def _get_monitor() -> LLMDriftMonitor:
     """One monitor instance per process.
 
@@ -54,7 +64,8 @@ def _get_monitor() -> LLMDriftMonitor:
     keeps read endpoints and run polling cheap and repeat cycles skip the
     model load entirely.
     """
-    return LLMDriftMonitor(config_path=os.environ.get("DRIFT_MONITOR_CONFIG", "config/config.yaml"))
+    with _monitor_lock:
+        return _build_monitor()
 
 
 def _get_storage() -> DriftMonitorStorage:
@@ -214,6 +225,7 @@ class RunResponse(BaseModel):
 class DriftLatestResponse(BaseModel):
     drift_detected: Optional[int] = None
     flagged_tests: Optional[list] = None
+    quality_degradation: Optional[int] = None
     timestamp: Optional[str] = None
     reference_size: Optional[int] = None
     current_size: Optional[int] = None
@@ -359,7 +371,8 @@ def compute_latest_fields(latest: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """
     if not latest:
         return {
-            'drift_detected': None, 'flagged_tests': [],
+            'drift_detected': None, 'flagged_tests': [], 'quality_degradation': None,
+            'bh_significant_tests': [],
             'timestamp': None, 'reference_size': None, 'current_size': None,
             'ks_statistic': None, 'ks_pvalue': None, 'ks_adjusted_pvalue': None,
             'ks_significant': None,
@@ -387,6 +400,12 @@ def compute_latest_fields(latest: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         'drift_detected': None if latest.get('overall_drift_detected') is None
             else int(latest['overall_drift_detected']),
         'flagged_tests': flagged,
+        # Served under both names: flagged_tests is the canonical field the
+        # dashboard reads; bh_significant_tests stays for API consumers of
+        # the original schema.
+        'bh_significant_tests': flagged,
+        'quality_degradation': None if latest.get('overall_quality_degradation') is None
+            else int(latest['overall_quality_degradation']),
         'timestamp': latest.get('timestamp'),
         'reference_size': latest.get('reference_size'),
         'current_size': latest.get('current_size'),
@@ -514,13 +533,21 @@ def get_evaluation() -> Dict[str, Any]:
 
     overhead = read_rows("overhead_latency.csv")
     overhead_p95 = None
+    overhead_samples = 0
     if overhead:
+        # Timing samples only. The benchmark's SUMMARY row restates the p95
+        # statistic, not an independent observation, so it is excluded here
+        # and the p95 is recomputed from the raw cycles with the same
+        # round(0.95 * (n - 1)) index rule experiments/overhead.py used to
+        # produce it. The sample count is reported next to the number
+        # because a percentile over a dozen cycles is an order of magnitude
+        # hint, not a latency guarantee.
         seconds = sorted(float(r['cycle_seconds']) for r in overhead
-                         if r.get('cycle_seconds'))
+                         if r.get('cycle_seconds')
+                         and r.get('cycle', '').upper() != 'SUMMARY')
+        overhead_samples = len(seconds)
         if seconds:
-            # p95 by nearest rank over the recorded benchmark cycles
-            overhead_p95 = seconds[min(len(seconds) - 1,
-                                       max(0, int(0.95 * len(seconds) + 0.9999) - 1))]
+            overhead_p95 = seconds[round(0.95 * (overhead_samples - 1))]
 
     tradeoff = []
     for rule in ("single", "kofn", "persist2", "cusum"):
@@ -539,6 +566,12 @@ def get_evaluation() -> Dict[str, Any]:
     power = [r for r in read_rows("power_curves.csv") if r.get('power')]
     power_mmd = [r for r in power if r.get('test') == 'mmd' and r.get('n') == '10']
     power_ks = [r for r in power if r.get('test') == 'ks' and r.get('n') == '10']
+    # Every power point is estimated from a fixed number of simulation
+    # trials; report it so a 100% detection rate can be read as "100 out of
+    # these evaluated trials", not as a guarantee.
+    power_trials = None
+    if power_mmd and power_mmd[0].get('n_sims'):
+        power_trials = int(power_mmd[0]['n_sims'])
 
     reliability = [r for r in read_rows("reliability_results.csv")
                    if r.get('row_type') == 'condition']
@@ -554,12 +587,14 @@ def get_evaluation() -> Dict[str, Any]:
                 'false_alarms_per_100_days'),
             "overhead_p95_seconds": (
                 round(overhead_p95, 3) if overhead_p95 is not None else None),
+            "overhead_samples": overhead_samples,
             "default_rule": default,
         },
         "tradeoff": tradeoff,
         "power_curves": {
             "mmd_n10": power_mmd,
             "ks_n10": power_ks,
+            "trials_per_point": power_trials,
         },
         "reliability_conditions": reliability,
         "source": "Simulation runs committed under results/; experiments: "
@@ -570,9 +605,25 @@ def get_evaluation() -> Dict[str, Any]:
     }
 
 
+@app.get("/health/live")
+def liveness() -> Dict[str, str]:
+    """Liveness: is this process serving. Returns without touching the
+    monitor, storage or any model; a healthy process answers in
+    milliseconds even while the target model is still loading. Platform
+    health checks and dashboards use this; dependency readiness is
+    reported separately by /health."""
+    return {"status": "ok"}
+
+
 @app.get("/health")
 def health() -> Dict[str, Any]:
-    """Check DB and target provider health."""
+    """Readiness: DB and target provider status.
+
+    Deliberately heavier than liveness: it initializes the monitor so the
+    first /runs call does not pay the whole cost, and it asks the adapter
+    for a real ping. Dashboard panels do not wait on this; they read stored
+    data first and treat this as status context.
+    """
     db_ok = True
     try:
         storage = _get_storage()

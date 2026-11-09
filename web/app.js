@@ -1,9 +1,13 @@
 /* Drift Monitor live console.
    Vanilla JS, no dependencies; all numbers come from the REST API on the
-   same origin. Nothing is computed client side except formatting. */
+   same origin. Nothing is computed client side except formatting.
+
+   Loading contract: every panel renders from whatever its own endpoint
+   returned, as soon as it arrives. No single endpoint, health included,
+   can block another panel. Health is status context, not a gate. */
 
 const state = {
-  health: null,       // {status, provider, provider_status, db}
+  health: null,       // /health payload (readiness; may be slow or absent)
   config: null,       // /config payload
   stats: null,        // {probe_runs, test_results, alerts}
   latest: null,       // /drift/latest payload
@@ -12,11 +16,12 @@ const state = {
   comparison: null,   // /drift/comparison
   categories: null,   // /drift/categories
   evaluation: null,   // /evaluation
-  awake: false,
+  awake: false,       // at least one data endpoint has answered
   wakeStartedAt: null,
 };
 
 const WAKE_WAIT_MS = 5000;
+const REQUEST_TIMEOUT_MS = 15000;
 const NUM_TESTS = 3;      // pooled family: KS, validity, MMD
 const ALPHA = 0.05;       // only for display fallback; the API reports decisions
 
@@ -48,20 +53,25 @@ function banner(text) {
   el.hidden = false;
   el.textContent = text;
   clearTimeout(banner._t);
-  banner._t = setTimeout(() => { el.hidden = true; }, 10000);
+  banner._t = setTimeout(() => { el.hidden = true; }, 12000);
 }
 
+/* Real abortable timeout: the fetch itself is cancelled when the timer
+   fires, so a stalled request cannot linger and stack up behind the next
+   attempt. */
 async function fetchJson(url, opts = {}) {
-  const timer = new Promise((_, reject) =>
-    setTimeout(() => reject(new Error("timeout")), 20000));
-  const res = Promise.race([fetch(url, opts), timer]).then(async (resp) => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    const resp = await fetch(url, { ...opts, signal: controller.signal });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    return resp.json();
-  });
-  return await res;
+    return await resp.json();
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-/* ---------- health pill and banner ---------- */
+/* ---------- status pill ---------- */
 
 function setPill(cls, text) {
   const pill = $("health-pill");
@@ -71,20 +81,28 @@ function setPill(cls, text) {
   pill.innerHTML = `<span class="dot"></span>${escapeHtml(text)}`;
 }
 
-function renderHeadlineHealth() {
-  if (!state.health) return;
-  const allOk = state.health.status === "ok";
-  const providerOk = state.health.provider_status === "ok";
-  const dbOk = state.health.db === "ok";
-  setPill("pill-ok",
-    allOk ? "Service online" :
-      (providerOk && dbOk ? "Service online" : "Service degraded"));
-  if (!allOk) {
-    banner(`Service is reachable but degraded: provider ${state.health.provider_status}, database ${state.health.db}. Results below reflect the stored history.`);
+/* The pill reflects two independent things: whether stored data could be
+   read at all, and whether the readiness check reports problems. Data
+   availability wins the slot; readiness only downgrades the wording. */
+function renderHealthPill() {
+  if (!state.awake) {
+    setPill("pill-wake",
+      `connecting · ${fmtWait(Date.now() - (state.wakeStartedAt || Date.now()))}`);
+    return;
+  }
+  if (state.health == null) {
+    setPill("pill-wake", "Data loaded · status check pending");
+    return;
+  }
+  const okAll = state.health.status === "ok";
+  setPill(okAll ? "pill-ok" : "pill-bad",
+    okAll ? "Service online" : "Service degraded");
+  if (!okAll) {
+    banner(`The service is reachable but a dependency reported a problem: `
+      + `provider ${state.health.provider_status}, database ${state.health.db}. `
+      + `Panels show the stored history either way.`);
   }
 }
-
-/* ---------- tabs ---------- */
 
 function initTabs() {
   const show = (view) => {
@@ -103,35 +121,93 @@ function initTabs() {
 function renderKpis() {
   const latest = state.latest;
   const driftEl = $("kpi-drift"), driftSub = $("kpi-drift-sub");
+  const qualityStrip = $("quality-strip");
   if (!latest || latest.drift_detected == null) {
     driftEl.textContent = "No evaluation yet";
-    driftSub.textContent = "run a check, or wait until tests have data";
-  } else if (Number(latest.drift_detected) === 1) {
-    driftEl.textContent = "Drift flagged";
-    driftEl.className = "kpi-value kpi-alert";
-    driftSub.textContent = `latest cycle (${fmtTime(latest.timestamp)}) differs statistically from the reference window`;
+    driftEl.className = "kpi-value";
+    driftSub.textContent = "statistical evaluation starts once a full reference window and one current cycle are stored";
+    qualityStrip.hidden = true;
   } else {
-    driftEl.textContent = "Stable";
-    driftEl.className = "kpi-value kpi-ok";
-    driftSub.textContent = `latest cycle (${fmtTime(latest.timestamp)}) matches the reference window statistically`;
-    driftSub.title = "Stable means: no statistically significant difference was found between the latest cycle and the reference window. It does not mean the model is good.";
+    const drifted = Number(latest.drift_detected) === 1;
+    const degraded = Number(latest.quality_degradation) === 1;
+    if (drifted) {
+      driftEl.textContent = "Shift flagged";
+      driftEl.className = "kpi-value kpi-alert";
+    } else {
+      driftEl.textContent = "Stable";
+      driftEl.className = "kpi-value kpi-ok";
+    }
+    driftSub.textContent =
+      `distribution shift status for the latest cycle (${fmtTime(latest.timestamp)}) vs the reference window`;
+    driftSub.title = detectedWithoutQualityCopy(drifted);
+    /* Separate quality status. The guardrail is an absolute threshold on
+       the current window, not a test against the reference, so it is
+       reported as its own line rather than folded into the verdict. */
+    qualityStrip.hidden = false;
+    if (degraded) {
+      qualityStrip.innerHTML =
+        `<span class="chip chip-alert">Quality guardrail tripped</span>
+         <span class="muted">the invalid response share reached the configured `
+        + `30% threshold in the current window. This is an absolute guardrail on `
+        + `one window, not a statistical comparison with the reference window.</span>`;
+      banner("Quality guardrail tripped: the current window's invalid response rate "
+        + "crossed the configured threshold. Check the per prompt comparison panel.");
+    } else {
+      qualityStrip.innerHTML =
+        `<span class="chip chip-ok">Quality guardrail: ok</span>
+         <span class="muted">invalid response share under the configured `
+        + `threshold in the current window (absolute guardrail, statistical `
+        + `comparison lives in the detectors below).</span>`;
+    }
   }
 
-  const fired = (latest && Array.isArray(latest.bh_significant_tests))
-    ? latest.bh_significant_tests.length : 0;
-  $("kpi-flagged").textContent = latest ? `${fired} / ${NUM_TESTS}` : "...";
-  $("kpi-flagged").className = "kpi-value" + (fired > 0 ? " kpi-alert" : "");
+  /* Canonical field: flagged_tests (the API also serves the legacy name
+     bh_significant_tests with the same array). */
+  const fired = (latest && Array.isArray(latest.flagged_tests))
+    ? latest.flagged_tests.length : 0;
+  const flaggedEl = $("kpi-flagged");
+  flaggedEl.textContent = latest ? `${fired} / ${NUM_TESTS}` : "...";
+  flaggedEl.className = "kpi-value" + (fired > 0 ? " kpi-alert" : "");
 
-  $("kpi-runs").textContent = state.stats ? Number(state.stats.probe_runs).toLocaleString() : "...";
-  $("kpi-runs").className = "kpi-value";
+  const runsEl = $("kpi-runs");
+  if (state.stats && state.stats.probe_runs != null) {
+    runsEl.textContent = Number(state.stats.probe_runs).toLocaleString();
+    runsEl.className = "kpi-value";
+  } else {
+    runsEl.textContent = "unavailable";
+    runsEl.className = "kpi-value effect-missing";
+  }
 
-  const provider = state.health ? state.health.provider : "...";
-  $("kpi-provider").textContent = provider;
+  /* Monitoring backend label describes what generated the stored answers:
+     the demo adapter here, a local model under other configurations. */
+  const backendEl = $("kpi-provider");
+  if (state.health && state.health.provider) {
+    backendEl.textContent = state.health.provider;
+    backendEl.className = "kpi-value";
+  } else if (state.config && state.config.target_model) {
+    backendEl.textContent = state.config.target_model;
+    backendEl.className = "kpi-value";
+  } else {
+    backendEl.textContent = "unavailable";
+    backendEl.className = "kpi-value effect-missing";
+  }
+}
+
+function detectedWithoutQualityCopy(drifted) {
+  return drifted
+    ? "At least one detector flagged after Benjamini-Hochberg correction. "
+      + "An alert requires the flag to persist across consecutive cycles."
+    : "Stable means no statistically significant distributional difference "
+      + "was found in the latest cycle. It does not mean the model is good, "
+      + "and it says nothing about behaviour outside the probed prompts.";
 }
 
 function renderConfig() {
   const c = state.config;
-  if (!c) return;
+  if (!c) {
+    $("cfg-model").closest(".config-details").classList.add("effect-missing");
+    return;
+  }
   $("cfg-model").textContent = `${c.target_model} (${c.adapter_type})`;
   $("cfg-embedding").textContent = c.embedding_model;
   $("cfg-ref").textContent = `${c.reference_window} responses (5 complete cycles)`;
@@ -139,35 +215,47 @@ function renderConfig() {
   $("cfg-panel").textContent =
     `v${c.prompt_panel_version}, ${c.prompt_panel_probes} prompts, ${c.probes_per_cycle} per cycle`;
   $("cfg-alpha").textContent = Number(c.alpha).toFixed(2)
-    + " after Benjamini-Hochberg correction";
+    + " after Benjamini-Hochberg correction across the test family";
   $("cfg-persist").textContent =
-    `${c.min_consecutive_cycles} consecutive flagged cycles before an alert fires`;
+    `${c.min_consecutive_cycles} consecutive flagged cycles before an alert fires `
+    + `(practical noise reduction, not a formal sequential error control guarantee)`;
   const ts = state.latest && state.latest.timestamp;
-  $("cfg-last-run").textContent = ts ? `${fmtTime(ts)} (${Number(state.latest.current_size)} responses vs ${Number(state.latest.reference_size)})` : "no cycle recorded yet";
-
-  /* Keep the buttons note accurate for this deployment. */
-  $("run-note").textContent = `Each run records ${c.current_window} responses. Statistical tests begin once ${c.tests_start_at_responses} responses are stored (one full reference window plus one current cycle).`;
+  $("cfg-last-run").textContent = ts
+    ? `${fmtTime(ts)} (${Number(state.latest.current_size)} responses vs ${Number(state.latest.reference_size)})`
+    : "no cycle recorded yet";
+  $("run-note").textContent =
+    `Each run records ${c.current_window} responses. Statistical evaluation `
+    + `starts once ${c.tests_start_at_responses} responses are stored (one `
+    + `reference window plus one current cycle).`;
 }
 
 /* ---------- detector cards and effect sizes ---------- */
 
-function detectorCard(prefix, row, extra) {
-  const flagged = row && row.significant === 1;
-  $(prefix + "-decision").textContent =
-    row == null ? "no data" : (flagged ? "Flagged" : "No flag");
-  $(prefix + "-decision").className = "chip " + (flagged ? "chip-alert" : "chip-ok");
-  $(prefix + "-p").textContent = row ? fmtP(row.p) : "n/a";
+function detectorCard(prefix, p, significant) {
+  const decision = $(prefix + "-decision");
+  if (p == null && significant == null) {
+    decision.textContent = "Not evaluated";
+    decision.className = "chip chip-warn";
+  } else {
+    decision.textContent = Number(significant) === 1 ? "Flagged" : "No flag";
+    decision.className = "chip " + (Number(significant) === 1 ? "chip-alert" : "chip-ok");
+  }
+  $(prefix + "-p").textContent = p == null ? "not recorded" : fmtP(p);
 }
 
 function renderDetectors() {
   const l = state.latest;
-  if (!l) return;
-  detectorCard("det-ks",
-    { significant: l.ks_significant, p: l.ks_adjusted_pvalue });
-  detectorCard("det-prop",
-    { significant: l.proportion_z_significant, p: l.proportion_z_adjusted_pvalue });
-  detectorCard("det-mmd",
-    { significant: l.mmd_significant, p: l.mmd_adjusted_pvalue });
+  if (!l) {
+    ["ks", "prop", "mmd"].forEach((prefix) => {
+      $(prefix + "-decision").textContent = "Data unavailable";
+      $(prefix + "-decision").className = "chip chip-warn";
+      $(prefix + "-p").textContent = "unavailable";
+    });
+    return;
+  }
+  detectorCard("det-ks", l.ks_adjusted_pvalue, l.ks_significant);
+  detectorCard("det-prop", l.proportion_z_adjusted_pvalue, l.proportion_z_significant);
+  detectorCard("det-mmd", l.mmd_adjusted_pvalue, l.mmd_significant);
 }
 
 function renderEffects() {
@@ -187,10 +275,12 @@ function renderEffects() {
       `${l.length_shift_pct > 0 ? "+" : ""}${l.length_shift_pct}%`);
   set("eff-centroid",
     l.centroid_distance == null ? null : Number(l.centroid_distance).toFixed(3));
+  /* Sign comes from the change itself, never from the reference level:
+     a negative delta must show as negative whatever the reference was. */
+  const delta = (l.refusal_rate_current == null || l.refusal_rate_reference == null)
+    ? null : (l.refusal_rate_current - l.refusal_rate_reference);
   set("eff-refusal",
-    (l.refusal_rate_reference != null && l.refusal_rate_current != null)
-      ? `${l.refusal_rate_reference > 0 ? "+" : ""}${(100 * (l.refusal_rate_current - l.refusal_rate_reference)).toFixed(1)} pp`
-      : null);
+    delta == null ? null : `${delta > 0 ? "+" : ""}${(100 * delta).toFixed(1)} pp`);
 }
 
 /* ---------- reference vs current comparison ---------- */
@@ -218,21 +308,20 @@ function renderComparison() {
   const wrap = $("comparison-wrap");
   const c = state.comparison;
   if (c == null) {
-    wrap.innerHTML = '<p class="muted">Comparison unavailable.</p>';
+    wrap.innerHTML = '<p class="muted">Comparison panel unavailable in this deployment.</p>';
     return;
   }
   if (!c.ready) {
     wrap.innerHTML = `
       <div class="empty-state">
-        <strong>Tests have not started yet.</strong><br>
-        The monitor stores two kinds of windows: a reference window of
-        ${c.reference_required} responses (the baseline) and a current window of
-        ${c.current_required} (what is compared against it). Right now the service holds
-        ${c.reference_stored} of ${c.reference_required} reference responses and
-        ${c.current_stored} of ${c.current_required} current responses.
-        Once ${c.tests_start_at_responses} responses are stored, the first cycle runs all
-        three detectors and this panel shows the answers side by side. This is expected
-        behaviour on a fresh deployment, not a fault.
+        <strong>Evaluation has not started yet.</strong><br>
+        The monitor maintains a reference window of ${c.reference_required} responses
+        (the baseline) and a current window of ${c.current_required} (what is compared
+        against it). Right now the service holds ${c.reference_stored} of
+        ${c.reference_required} reference responses and ${c.current_stored} of
+        ${c.current_required} current responses. Once ${c.tests_start_at_responses}
+        responses are stored, each cycle runs all three tests and this panel shows the
+        answers side by side. This is expected behaviour until then, not a fault.
       </div>`;
     return;
   }
@@ -255,9 +344,9 @@ function renderComparison() {
       <tbody>${rows}</tbody>
     </table>
     <div id="cmp-detail"></div>
-    <p class="panel-note">Click a row to read the complete responses. Reference shows
-      the newest answer to each prompt that is still inside the baseline window; current
-      shows the newest answer from the latest cycle.</p>`;
+    <p class="panel-note">Click a row to read the complete responses. Reference shows the
+      newest answer to each prompt still inside the baseline window; current shows the
+      newest answer from the latest cycle.</p>`;
 
   const detail = wrap.querySelector("#cmp-detail");
   wrap.querySelectorAll(".cmp-row").forEach((tr) => {
@@ -276,7 +365,7 @@ function renderComparison() {
   });
 }
 
-/* ---------- category localization ---------- */
+/* ---------- category level analysis ---------- */
 
 function renderCategories() {
   const wrap = $("categories-wrap");
@@ -305,9 +394,11 @@ function renderCategories() {
   }).join("");
   wrap.innerHTML = `
     <div class="cat-grid">${rows}</div>
-    <p class="panel-note">Category windows span ${c.category_window_cycles} cycles per
-      side. Counts are evidence, not scores: a skipped category received no test, so no
-      category p value exists anywhere on this page.</p>`;
+    <p class="panel-note">Category tests examine whether pooled distributional changes
+      concentrate in particular prompt groups; windows span ${c.category_window_cycles}
+      cycles per side. Results are reported only when the distinct sample count supports
+      inference; otherwise the available evidence and the skip reason are shown. These
+      rows are evidence, not category scores.</p>`;
 }
 
 /* ---------- recent activity and alerts ---------- */
@@ -325,10 +416,10 @@ function renderActivity() {
     let label, cls;
     if (insufficient) { label = "Insufficient data"; cls = "chip-warn"; }
     else if (Number(r.overall_drift_detected) === 1) {
-      label = "Drift flagged"; cls = "chip-alert";
+      label = "Shift flagged"; cls = "chip-alert";
     } else if (Number(r.overall_quality_degradation) === 1) {
-      label = "Quality flagged"; cls = "chip-alert";
-    } else { label = "No drift"; cls = "chip-ok"; }
+      label = "Quality guardrail tripped"; cls = "chip-alert";
+    } else { label = "No shift"; cls = "chip-ok"; }
     let fired = [];
     const raw = r.bh_significant_tests;
     try { fired = typeof raw === "string" ? JSON.parse(raw) : (raw || []); } catch (e) { fired = []; }
@@ -345,15 +436,16 @@ function renderAlerts() {
   const el = $("alerts-list");
   const rows = (state.alerts || []).slice(0, 8);
   if (!rows.length) {
-    el.innerHTML = '<p class="muted">No alerts have been raised. With the persistence rule active, a single flagged cycle stays silent.</p>';
+    el.innerHTML = '<p class="muted">No alerts raised yet. An alert requires the same '
+      + 'verdict on consecutive cycles; a single flagged cycle is recorded but stays silent.</p>';
     return;
   }
   el.innerHTML = rows.map((a) => {
     const type = a.alert_type === "drift" ? "Distribution change" : "Quality regression";
     const parts = [];
     parts.push(a.alert_type === "drift"
-      ? "The distributional family flagged for consecutive cycles"
-      : "The quality family flagged for consecutive cycles");
+      ? "The distributional family flagged on consecutive cycles"
+      : "The quality family flagged on consecutive cycles");
     if (a.mmd_pvalue != null) parts.push(`semantic p ${fmtP(a.mmd_pvalue)}`);
     if (a.ks_pvalue != null) parts.push(`length p ${fmtP(a.ks_pvalue)}`);
     if (a.proportion_z_pvalue != null) parts.push(`validity p ${fmtP(a.proportion_z_pvalue)}`);
@@ -366,43 +458,62 @@ function renderAlerts() {
         <div class="alert-body">
           <p>${escapeHtml(a.message)}</p>
           <p class="muted">${parts.join(" &middot; ")}</p>
-          <p class="muted">What an operator should look at: the per prompt comparison above,
-            which detector fired, and the effect sizes for the flagged cycle.</p>
+          <p class="muted">Operator starting points: the per prompt comparison above,
+            which detectors fired, and the behavioural effect sizes of the flagged cycle.</p>
         </div>
       </details>`;
   }).join("");
 }
 
-/* ---------- load all ---------- */
+/* ---------- data loading ---------- */
 
-async function loadAll() {
-  const [health, config, stats, latest, results, alerts,
-    comparison, categories] = await Promise.all([
-      fetchJson("/health"),
-      fetchJson("/config").catch(() => null),
-      fetchJson("/stats").catch(() => null),
-      fetchJson("/drift/latest").catch(() => null),
-      fetchJson("/drift/results?limit=12").catch(() => []),
-      fetchJson("/alerts?limit=10").catch(() => []),
-      fetchJson("/drift/comparison").catch(() => null),
-      fetchJson("/drift/categories").catch(() => null),
-    ]);
+let wakePromise = null;
 
-  state.health = health;
-  state.config = config;
-  state.stats = stats;
-  state.latest = latest;
-  state.results = results || [];
-  state.alerts = alerts || [];
-  state.comparison = comparison;
-  state.categories = categories;
-  state.awake = true;
-  renderAll();
-  return true;
+function fmtWait(ms) {
+  const s = Math.round(ms / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
 }
 
+async function loadAll() {
+  /* Every request has its own error path; /health is the slow readiness
+     check and must never hold up the stored monitoring snapshot, which is
+     what a first time visitor is here to see. */
+  const [health, config, stats, latest, results, alerts,
+    comparison, categories] = await Promise.allSettled([
+      fetchJson("/health"),
+      fetchJson("/config"),
+      fetchJson("/stats"),
+      fetchJson("/drift/latest"),
+      fetchJson("/drift/results?limit=12"),
+      fetchJson("/alerts?limit=10"),
+      fetchJson("/drift/comparison"),
+      fetchJson("/drift/categories"),
+    ]);
+  const val = (r, fallback) => (r.status === "fulfilled" ? r.value : fallback);
+
+  state.health = val(health, null);
+  state.config = val(config, null);
+  state.stats = val(stats, null);
+  state.latest = val(latest, null);
+  state.results = val(results, []) || [];
+  state.alerts = val(alerts, []) || [];
+  state.comparison = val(comparison, null);
+  state.categories = val(categories, null);
+
+  /* Success signal: any of the data endpoints answered. Panels that failed
+     render their own explicit unavailable state. */
+  const anyData = state.latest != null || state.stats != null
+    || state.results.length > 0 || state.comparison != null;
+  if (anyData) state.awake = true;
+  renderAll();
+  return anyData;
+}
+
+/* Snapshot-reload map: after one loadAll, re-run only the renderers whose
+   inputs may have changed; renderHealthPill is separate so a slow readiness
+   check updating later only touches the pill. */
 function renderAll() {
-  renderHeadlineHealth();
+  renderHealthPill();
   renderKpis();
   renderConfig();
   renderDetectors();
@@ -411,95 +522,45 @@ function renderAll() {
   renderCategories();
   renderActivity();
   renderAlerts();
-  /* The paired diagnostic reads /drift/latest, available on every load,
-     so it renders whether or not the evaluation tab has been opened. */
   renderPairedDiagnostic();
 }
 
-/* ---------- evaluation tab ---------- */
-
-/* Hand-rolled SVG charts: no chart library, consistent with the design
-   system, and the numbers plotted are exactly the committed CSV rows.
-   Axes are linear; only two small data families are ever plotted. */
-
-function svgScatter(points, opts) {
-  if (!points.length) return '<p class="muted">Chart data unavailable.</p>';
-  const w = 520, h = 260, m = { top: 16, right: 24, bottom: 40, left: 52 };
-  const iw = w - m.left - m.right, ih = h - m.top - m.bottom;
-  const xMax = (Math.max(...points.map((p) => p.x)) * 1.15) || 1;
-  const yMax = (Math.max(...points.map((p) => p.y)) * 1.15) || 1;
-  const sx = (v) => m.left + (v / xMax) * iw;
-  const sy = (v) => m.top + ih - (v / yMax) * ih;
-  const parts = [];
-  for (let gy = 0; gy <= 4; gy++) {
-    const y = m.top + (ih * gy) / 4;
-    parts.push(`<line x1="${m.left}" y1="${y}" x2="${m.left + iw}" y2="${y}" stroke="#E4E4DD" stroke-width="1"/>`);
-  }
-  for (let gx = 0; gx <= 4; gx++) {
-    const x = m.left + (iw * gx) / 4;
-    parts.push(`<line x1="${x}" y1="${m.top}" x2="${x}" y2="${m.top + ih}" stroke="#E4E4DD" stroke-width="1"/>`);
-  }
-  parts.push(`<line x1="${m.left}" y1="${m.top + ih}" x2="${m.left + iw}" y2="${m.top + ih}" stroke="#D2D2C9" stroke-width="1"/>`);
-  parts.push(`<line x1="${m.left}" y1="${m.top}" x2="${m.left}" y2="${m.top + ih}" stroke="#D2D2C9" stroke-width="1"/>`);
-  for (const p of points) {
-    const color = p.shipped ? "#B34A1E" : "#40453F";
-    const r = p.shipped ? 6 : 4.5;
-    parts.push(`<circle cx="${sx(p.x).toFixed(1)}" cy="${sy(p.y).toFixed(1)}" r="${r}" fill="${color}"/>`);
-    const anchor = sx(p.x) > m.left + iw - 80 ? "end" : "start";
-    parts.push(`<text x="${(sx(p.x) + (anchor === "end" ? -9 : 9)).toFixed(1)}" y="${(sy(p.y) + 4).toFixed(1)}" font-size="11" font-family="ui-monospace, monospace" fill="${color}" text-anchor="${anchor}">${p.label}${p.shipped ? " (shipped)" : ""}</text>`);
-  }
-  parts.push(`<text x="${m.left + iw / 2}" y="${h - 8}" font-size="11" fill="#6C726B" text-anchor="middle">${opts.xLabel}</text>`);
-  parts.push(`<text x="14" y="${m.top + ih / 2}" font-size="11" fill="#6C726B" text-anchor="middle" transform="rotate(-90 14 ${m.top + ih / 2})">${opts.yLabel}</text>`);
-  parts.push(`<text x="${m.left}" y="${h - 8}" font-size="10" fill="#6C726B" text-anchor="start">0</text>`);
-  return `<svg viewBox="0 0 ${w} ${h}" class="chart" role="img">${parts.join("")}</svg>`;
-}
-
-function svgLines(xs, series, opts) {
-  if (!xs.length) return '<p class="muted">Chart data unavailable.</p>';
-  const w = 520, h = 260, m = { top: 16, right: 24, bottom: 40, left: 52 };
-  const iw = w - m.left - m.right, ih = h - m.top - m.bottom;
-  const xMax = Math.max(...xs) || 1;
-  const yMax = opts.yMax || 1;
-  const sx = (v) => m.left + (v / xMax) * iw;
-  const sy = (v) => m.top + ih - (v / yMax) * ih;
-  const parts = [];
-  for (let gy = 0; gy <= 4; gy++) {
-    const y = m.top + (ih * gy) / 4;
-    const label = ((1 - gy / 4) * yMax).toFixed(yMax === 1 && gy % 2 === 0 ? 0 : 1);
-    parts.push(`<line x1="${m.left}" y1="${y}" x2="${m.left + iw}" y2="${y}" stroke="#E4E4DD" stroke-width="1"/>`);
-    parts.push(`<text x="${m.left - 6}" y="${y + 3}" font-size="10" fill="#6C726B" text-anchor="end">${label}</text>`);
-  }
-  for (const x of xs) {
-    parts.push(`<line x1="${sx(x)}" y1="${m.top}" x2="${sx(x)}" y2="${m.top + ih}" stroke="#E4E4DD" stroke-width="1"/>`);
-    parts.push(`<text x="${sx(x)}" y="${h - 18}" font-size="10" fill="#6C726B" text-anchor="middle">${x.toFixed(1)}</text>`);
-  }
-  parts.push(`<line x1="${m.left}" y1="${m.top + ih}" x2="${m.left + iw}" y2="${m.top + ih}" stroke="#D2D2C9" stroke-width="1"/>`);
-  parts.push(`<line x1="${m.left}" y1="${m.top}" x2="${m.left}" y2="${m.top + ih}" stroke="#D2D2C9" stroke-width="1"/>`);
-  for (const s of series) {
-    const segs = [];
-    let open = false;
-    xs.forEach((x, i) => {
-      const v = s.values[i];
-      if (v == null) { open = false; return; }
-      segs.push(`${open ? "L" : "M"}${sx(x).toFixed(1)} ${sy(v).toFixed(1)}`);
-      open = true;
-    });
-    if (segs.length) {
-      parts.push(`<path d="${segs.join(" ")}" fill="none" stroke="${s.color}" stroke-width="2"/>`);
+function ensureAwake() {
+  if (state.awake) return Promise.resolve(true);
+  if (wakePromise) return wakePromise;
+  wakeStarted();
+  wakePromise = (async () => {
+    const startedAt = state.wakeStartedAt;
+    let explained = false;
+    for (;;) {
+      try {
+        if (await loadAll()) {
+          banner("Connected. Panels show the stored monitoring history; the status "
+            + "pill confirms dependency readiness separately.");
+          return true;
+        }
+      } catch (err) {
+        state.awake = false;
+      }
+      const waited = Date.now() - startedAt;
+      if (!explained && waited > 75000) {
+        explained = true;
+        banner("Still connecting: the free hosting plan pauses this service between "
+          + "visits and after deploys. The page keeps trying; nothing here samples "
+          + "the target model until you press Run a check.");
+      }
+      await new Promise((r) => setTimeout(r, WAKE_WAIT_MS));
     }
-    xs.forEach((x, i) => {
-      const v = s.values[i];
-      if (v == null) return;
-      parts.push(`<circle cx="${sx(x).toFixed(1)}" cy="${sy(v).toFixed(1)}" r="2.6" fill="${s.color}"/>`);
-    });
-    const labelIdx = s.values.reduce((best, v, i) => (v != null ? i : best), 0);
-    const ly = sy(s.values[labelIdx] == null ? 0 : s.values[labelIdx]);
-    parts.push(`<text x="${(sx(xs[labelIdx]) + 8).toFixed(1)}" y="${(ly + 4).toFixed(1)}" font-size="11" font-family="ui-monospace, monospace" fill="${s.color}">${s.name}</text>`);
-  }
-  parts.push(`<text x="${m.left + iw / 2}" y="${h - 4}" font-size="11" fill="#6C726B" text-anchor="middle">${opts.xLabel}</text>`);
-  parts.push(`<text x="14" y="${m.top + ih / 2}" font-size="11" fill="#6C726B" text-anchor="middle" transform="rotate(-90 14 ${m.top + ih / 2})">${opts.yLabel}</text>`);
-  return `<svg viewBox="0 0 ${w} ${h}" class="chart" role="img">${parts.join("")}</svg>`;
+  })();
+  wakePromise.finally(() => { wakePromise = null; });
+  return wakePromise;
 }
+
+function wakeStarted() {
+  if (!state.wakeStartedAt) state.wakeStartedAt = Date.now();
+}
+
+/* ---------- evaluation tab ---------- */
 
 function renderPairedDiagnostic() {
   /* Sourced from /drift/latest: the same row the Console detector cards
@@ -539,11 +600,23 @@ async function loadEvaluation() {
   try {
     state.evaluation = await fetchJson("/evaluation");
   } catch (err) {
-    $("eval-headline").innerHTML =
+    $("evaluation-body").innerHTML =
       '<p class="muted">Evaluation results unavailable in this deployment.</p>';
     return;
   }
   renderEvaluation();
+}
+
+/* Numeric keys everywhere: the CSV reader returns delta values as strings
+   such as "0.0", and looking those up with the number 1 would miss the key
+   "1.0" entirely and render n/a. Rounds to one decimal, the resolution the
+   source data itself uses. */
+function powerLookup(rows) {
+  const map = new Map();
+  for (const r of rows) {
+    map.set(Number(Number(r.delta).toFixed(1)), Number(r.power));
+  }
+  return map;
 }
 
 function renderEvaluation() {
@@ -553,15 +626,14 @@ function renderEvaluation() {
   $("ev-delay").textContent =
     h.mean_detection_delay_days == null ? "n/a" : `${Number(h.mean_detection_delay_days).toFixed(2)} d`;
   $("ev-delay-sub").textContent =
-    `under the evaluated simulation, shift magnitude ${sigma} sigma, with the shipped alert policy (${h.default_rule})`;
+    `under the evaluated simulated shift (${sigma} sigma), with the shipped alert policy (${h.default_rule})`;
   $("ev-fa").textContent =
     h.false_alarms_per_100_days == null ? "n/a" : Number(h.false_alarms_per_100_days).toFixed(2);
   $("ev-detect").textContent =
     h.detection_rate_pct == null ? "n/a" : `${Number(h.detection_rate_pct).toFixed(0)}%`;
   $("ev-detect-sub").textContent =
-    `detection rate for that particular simulated shift (${sigma} sigma) not a detection rate over all possible shifts`;
-  $("ev-overhead").textContent =
-    h.overhead_p95_seconds == null ? "n/a" : `${Math.round(h.overhead_p95_seconds * 1000)} ms`;
+    `for that particular evaluated shift (${sigma} sigma), estimated from a limited `
+    + `number of simulation trials, not a guarantee across all shifts`;
 
   const table = (headers, rows) => `
     <table class="plain-table"><thead><tr>
@@ -570,9 +642,9 @@ function renderEvaluation() {
       ${rows.map((r) => `<tr>${r.map((x) => `<td>${x}</td>`).join("")}</tr>`).join("")}
     </tbody></table>`;
 
-  /* Delay vs false-alarm plane: one point per alert policy. Speed of
-     detection improves toward the left, quiet-day safety improves toward
-     the bottom, so the best policies sit in the lower left corner. */
+  /* Delay vs false-alarm plane: one point per alert policy. Faster
+     detection is left, fewer false alarms is down, so the better
+     policies sit toward the lower left. */
   const tradeoffPts = ev.tradeoff
     .filter((r) => r.mean_detection_delay_days != null
       && r.false_alarms_per_100_days != null)
@@ -585,6 +657,7 @@ function renderEvaluation() {
   $("eval-tradeoff-chart").innerHTML = svgScatter(tradeoffPts, {
     xLabel: "Mean detection delay (days)",
     yLabel: "False alarms per 100 quiet days",
+    yUnit: "count",
   });
   $("eval-tradeoff").innerHTML = table(
     ["Alert policy", "Mean detection delay (days)", "Detection rate", "False alarms per 100 quiet days"],
@@ -595,41 +668,35 @@ function renderEvaluation() {
       Number(r.false_alarms_per_100_days).toFixed(2),
     ]));
 
-  const mmdLookup = Object.fromEntries(ev.power_curves.mmd_n10.map((r) => [r.delta, r.power]));
-  const ksLookup = Object.fromEntries(ev.power_curves.ks_n10.map((r) => [r.delta, r.power]));
-  const deltas = Array.from(new Set([...Object.keys(mmdLookup), ...Object.keys(ksLookup)]
-    .map(Number).sort((a, b) => a - b)));
+  const mmd = powerLookup(ev.power_curves.mmd_n10);
+  const ks = powerLookup(ev.power_curves.ks_n10);
+  const deltas = Array.from(new Set([...mmd.keys(), ...ks.keys()])).sort((a, b) => a - b);
   $("eval-power-chart").innerHTML = svgLines(deltas, [
-    {
-      name: "MMD (n=10)",
-      color: "#B34A1E",
-      values: deltas.map((d) => (mmdLookup[d] == null ? null : Number(mmdLookup[d]))),
-    },
-    {
-      name: "KS (n=10)",
-      color: "#6C726B",
-      values: deltas.map((d) => (ksLookup[d] == null ? null : Number(ksLookup[d]))),
-    },
+    { name: "MMD", color: "#B34A1E", values: deltas.map((d) => (mmd.has(d) ? mmd.get(d) : null)) },
+    { name: "KS", color: "#6C726B", values: deltas.map((d) => (ks.has(d) ? ks.get(d) : null)) },
   ], {
     xLabel: "Shift magnitude (sigma)",
-    yLabel: "Power",
+    yLabel: "Detection power",
     yMax: 1,
   });
+  const trials = ev.power_curves.trials_per_point;
   $("eval-power").innerHTML = table(
     ["Shift magnitude (sigma)", "MMD power (n=10)", "KS power (n=10)"],
     deltas.map((d) => [
       d.toFixed(1),
-      mmdLookup[d] == null ? "n/a" : (100 * Number(mmdLookup[d])).toFixed(0) + "%",
-      ksLookup[d] == null ? "n/a" : (100 * Number(ksLookup[d])).toFixed(0) + "%",
+      mmd.has(d) ? Math.round(100 * mmd.get(d)) + "%" : "n/a",
+      ks.has(d) ? Math.round(100 * ks.get(d)) + "%" : "n/a",
     ]));
+  if (trials) {
+    $("eval-power").insertAdjacentHTML("afterend",
+      `<p class="panel-note">Each point is estimated from ${trials} simulation trials. `
+      + `Even a real but small shift can remain undetected at a current window of ten `
+      + `responses; the low end of both curves shows exactly that limitation.</p>`);
+  }
 
   const condNames = {
     null: "Quiet (nothing changed)", drift_only: "Distribution shift only",
     invalid_only: "Quality regression only", both: "Shift and regression",
-  };
-  const signals = {
-    pooled_bh: "Pooled BH family", dist_bh: "Distributional BH family",
-    mmd: "MMD", ks: "KS", validity: "Validity test",
   };
   const relRows = ev.reliability_conditions
     .filter((r) => ["drift_only", "invalid_only", "both"].includes(r.condition)
@@ -647,10 +714,15 @@ function renderEvaluation() {
       pct(grouped[cond].validity),
     ]));
 
-  $("eval-power").insertAdjacentHTML("afterend",
-    `<p class="panel-note">Detection rate is a family of per-condition results; the
-      headline numbers above belong to one evaluated shift, and none of them apply to this
-      demo service's runtime behaviour.</p>`);
+  $("ev-overhead").textContent =
+    h.overhead_p95_seconds == null ? "n/a" : `${Math.round(h.overhead_p95_seconds * 1000)} ms`;
+  const overheadNote = h.overhead_samples
+    ? `over ${h.overhead_samples} recorded benchmark cycles, `
+    : `over the recorded benchmark cycles, `;
+  $("ev-overhead-sub").textContent = overheadNote
+    + `recomputed from the raw cycle timings, excluding provider inference. `
+    + `A percentile over this many samples indicates an order of magnitude, `
+    + `not a latency guarantee.`;
 }
 
 function pct(row) {
@@ -658,42 +730,98 @@ function pct(row) {
   return (100 * Number(row.detection_rate)).toFixed(0) + "%";
 }
 
-/* ---------- wake loop, shared by every load ---------- */
+/* ---------- hand-rolled SVG charts ----------
 
-let wakePromise = null;
+   No chart library; consistent with the design system; the plotted values
+   are exactly the committed CSV rows. Both charts get numeric tick labels
+   on both axes and a legend, so nothing is named only next to a data
+   point where labels can collide. */
 
-function fmtWait(ms) {
-  const s = Math.round(ms / 1000);
-  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+function chartChrome(w, h, m, opts, xTicks, yTicks, sx, sy, xMax, yMax) {
+  const parts = [];
+  for (const [v, label] of yTicks) {
+    const y = sy(v);
+    parts.push(`<line x1="${m.left}" y1="${y}" x2="${m.left + (w - m.left - m.right)}" y2="${y}" stroke="#E4E4DD" stroke-width="1"/>`);
+    parts.push(`<text x="${m.left - 6}" y="${y + 3}" font-size="10" fill="#6C726B" text-anchor="end">${label}</text>`);
+  }
+  for (const [v, label] of xTicks) {
+    const x = sx(v);
+    parts.push(`<line x1="${x}" y1="${m.top}" x2="${x}" y2="${h - m.bottom}" stroke="#E4E4DD" stroke-width="1"/>`);
+    parts.push(`<text x="${x}" y="${h - m.bottom + 12}" font-size="10" fill="#6C726B" text-anchor="middle">${label}</text>`);
+  }
+  parts.push(`<line x1="${m.left}" y1="${h - m.bottom}" x2="${w - m.right}" y2="${h - m.bottom}" stroke="#D2D2C9" stroke-width="1"/>`);
+  parts.push(`<line x1="${m.left}" y1="${m.top}" x2="${m.left}" y2="${h - m.bottom}" stroke="#D2D2C9" stroke-width="1"/>`);
+  parts.push(`<text x="${m.left + (w - m.left - m.right) / 2}" y="${h - 4}" font-size="11" fill="#6C726B" text-anchor="middle">${opts.xLabel}</text>`);
+  parts.push(`<text x="13" y="${m.top + (h - m.top - m.bottom) / 2}" font-size="11" fill="#6C726B" text-anchor="middle" transform="rotate(-90 13 ${m.top + (h - m.top - m.bottom) / 2})">${opts.yLabel}</text>`);
+  return parts;
 }
 
-function ensureAwake() {
-  if (state.awake) return Promise.resolve(true);
-  if (wakePromise) return wakePromise;
-  wakePromise = (async () => {
-    const startedAt = Date.now();
-    state.wakeStartedAt = startedAt;
-    let explained = false;
-    for (;;) {
-      setPill("pill-wake", `connecting · ${fmtWait(Date.now() - startedAt)}`);
-      try {
-        if (await loadAll()) {
-          banner("Connected. All panels reflect the stored monitoring history.");
-          return true;
-        }
-      } catch (err) {
-        state.awake = false; /* sleeping instance; keep placeholders, never fake numbers */
-      }
-      const waited = Date.now() - startedAt;
-      if (!explained && waited > 75000) {
-        explained = true;
-        banner("Still connecting: the free hosting plan pauses this service between visits, and deploys restart it too. The page keeps trying; the first connection is the slow one.");
-      }
-      await new Promise((r) => setTimeout(r, WAKE_WAIT_MS));
+function legendHtml(series) {
+  return `<div class="chart-legend">${series.map((s) => `
+    <span class="legend-item"><span class="legend-swatch" style="background:${s.color}"></span>${escapeHtml(s.name)}</span>`).join("")}</div>`;
+}
+
+function svgScatter(points, opts) {
+  if (!points.length) return '<p class="muted">Chart data unavailable.</p>';
+  const w = 520, h = 250, m = { top: 14, right: 20, bottom: 42, left: 56 };
+  const iw = w - m.left - m.right, ih = h - m.top - m.bottom;
+  const xMax = Math.max(1, Math.max(...points.map((p) => p.x)) * 1.12);
+  const yMax = Math.max(1, Math.max(...points.map((p) => p.y)) * 1.12);
+  const sx = (v) => m.left + (v / xMax) * iw;
+  const sy = (v) => m.top + ih - (v / yMax) * ih;
+  const yTicks = [0, 1, 2, 3, 4].map((g) => {
+    const v = (g / 4) * yMax;
+    return [v, Number.isInteger(v) ? String(v) : v.toFixed(1)];
+  });
+  const xTicks = [0, 0.5, 1, 1.5, 2].filter((v) => v <= xMax + 1e-9)
+    .map((v) => [v, v === 0 ? "0" : v.toFixed(1)]);
+  const parts = chartChrome(w, h, m, opts, xTicks, yTicks, sx, sy, xMax, yMax);
+  for (const p of points) {
+    const color = p.shipped ? "#B34A1E" : "#40453F";
+    parts.push(`<circle cx="${sx(p.x).toFixed(1)}" cy="${sy(p.y).toFixed(1)}" r="${p.shipped ? 6 : 4.5}" fill="${color}"/>`);
+  }
+  /* Point names live in the legend, plus a small label on the shipped
+     point only, which is the one the reader is meant to find. */
+  const shipped = points.find((p) => p.shipped) || points[0];
+  parts.push(`<text x="${sx(shipped.x).toFixed(1)}" y="${(sy(shipped.y) + 18).toFixed(1)}" font-size="11" font-family="ui-monospace, monospace" fill="#B34A1E" text-anchor="middle">${shipped.label}</text>`);
+  return `<svg viewBox="0 0 ${w} ${h}" class="chart" role="img">${parts.join("")}</svg>`
+    + legendHtml(points.map((p) => ({
+        name: p.label + (p.shipped ? " (shipped)" : ""),
+        color: p.shipped ? "#B34A1E" : "#40453F",
+      })));
+}
+
+function svgLines(xs, series, opts) {
+  if (!xs.length) return '<p class="muted">Chart data unavailable.</p>';
+  const w = 520, h = 250, m = { top: 14, right: 20, bottom: 42, left: 56 };
+  const iw = w - m.left - m.right, ih = h - m.top - m.bottom;
+  const xMax = Math.max(...xs, 0.5);
+  const yMax = opts.yMax || 1;
+  const sx = (v) => m.left + (v / xMax) * iw;
+  const sy = (v) => m.top + ih - (v / yMax) * ih;
+  const yTicks = [0, 0.25, 0.5, 0.75, 1].map((v) => [v, String(Math.round(v * 100)) + "%"]);
+  const xTicks = xs.map((v) => [v, v.toFixed(1)]);
+  const parts = chartChrome(w, h, m, opts, xTicks, yTicks, sx, sy, xMax, yMax);
+  for (const s of series) {
+    const segs = [];
+    let open = false;
+    xs.forEach((x, i) => {
+      const v = s.values[i];
+      if (v == null) { open = false; return; }
+      segs.push(`${open ? "L" : "M"}${sx(x).toFixed(1)} ${sy(v).toFixed(1)}`);
+      open = true;
+    });
+    if (segs.length) {
+      parts.push(`<path d="${segs.join(" ")}" fill="none" stroke="${s.color}" stroke-width="2"/>`);
     }
-  })();
-  wakePromise.finally(() => { wakePromise = null; });
-  return wakePromise;
+    xs.forEach((x, i) => {
+      const v = s.values[i];
+      if (v == null) return;
+      parts.push(`<circle cx="${sx(x).toFixed(1)}" cy="${sy(v).toFixed(1)}" r="2.6" fill="${s.color}"/>`);
+    });
+  }
+  return `<svg viewBox="0 0 ${w} ${h}" class="chart" role="img">${parts.join("")}</svg>`
+    + legendHtml(series);
 }
 
 /* ---------- run a check ---------- */
@@ -707,12 +835,16 @@ async function runCheck() {
   btn.disabled = true;
   btn.textContent = "Running...";
   try {
+    /* Bounded wait for connectivity: if the service is still waking, say
+       so and let the loop below poll rather than silently hanging. */
     const up = await Promise.race([
       ensureAwake(),
-      new Promise((r) => setTimeout(() => r(false), 180000)),
+      new Promise((r) => setTimeout(() => r(false), 45000)),
     ]);
     if (!up) {
-      note.textContent = "Still connecting in the background. Keep this tab open; the panels fill in when the service responds.";
+      note.textContent = "The service has not answered yet (free tier cold start can "
+        + "take a few minutes). This page keeps trying in the background; the message "
+        + "here updates as soon as a check can start.";
       return;
     }
 
@@ -724,7 +856,8 @@ async function runCheck() {
       });
     } catch (err) {
       if (err.message && err.message.includes("429")) {
-        note.textContent = "A check was just started. It takes one to two minutes; the panels update when it finishes.";
+        note.textContent = "A check was started a moment ago. It takes one to two "
+          + "minutes; panels update when it finishes.";
         await loadAll();
         return;
       }
@@ -732,7 +865,8 @@ async function runCheck() {
     }
     const runId = started.run_id;
     const cfg = state.config || {};
-    note.textContent = `Running: ${cfg.probes_per_cycle || 10} responses are collected and scored, which takes one to two minutes.`;
+    note.textContent = `Running: ${cfg.probes_per_cycle || 10} responses are collected `
+      + `and evaluated, which takes one to two minutes.`;
 
     for (let i = 0; i < 120; i++) {
       await new Promise((r) => setTimeout(r, 2000));
@@ -742,30 +876,37 @@ async function runCheck() {
       if (st.status === "completed") {
         const r = st.result || {};
         if (r.tests_run) {
-          const latest = await fetchJson("/drift/latest").catch(() => null);
-          if (latest) { state.latest = latest; renderKpis(); renderDetectors(); renderEffects(); }
-          const drifted = latest ? Number(latest.drift_detected) === 1 : false;
-          const fired = Array.isArray((r.results || {}).bh_significant_tests)
-            ? (r.results || {}).bh_significant_tests : [];
+          await loadAll();
+          const latest = state.latest || {};
+          const drifted = Number(latest.drift_detected) === 1;
           note.textContent = drifted
-            ? "Drift flagged in this cycle. Consult the detector cards and the alert panel for the evidence."
-            : "Cycle complete. No statistically significant difference from the reference window.";
+            ? "Shift flagged in this cycle. The detector cards and alert panel show "
+              + "the evidence; an alert fires only if this repeats next cycle."
+            : "Cycle complete. No statistically significant distributional difference "
+              + "from the reference window.";
+          const fired = Array.isArray(latest.flagged_tests) ? latest.flagged_tests : [];
           if (drifted && fired.length) {
-            banner("Drift flagged: " + fired.join(", ") + " fired after multiple testing correction. Note: an alert reaches history only when the verdict repeats for consecutive cycles.");
+            banner("Shift flagged: " + fired.join(", ") + " after Benjamini-Hochberg "
+              + "correction. Alerts fire only when the verdict repeats on consecutive "
+              + "cycles; this cycle is recorded either way.");
           }
         } else {
-          note.textContent = "Cycle complete: " + (cfg.current_window || 10) + " responses stored. Tests begin once " + (cfg.tests_start_at_responses || 60) + " responses are stored. Run more checks to fill the reference window.";
+          note.textContent = "Cycle complete: " + (cfg.current_window || 10)
+            + " responses stored. Evaluation starts once "
+            + (cfg.tests_start_at_responses || 60) + " responses are stored.";
         }
         await loadAll();
         return;
       }
       if (st.status === "failed") {
-        note.textContent = "That run failed. Wait a moment and try again.";
+        note.textContent = "That run failed. Nothing was committed for it; wait a "
+          + "moment and try again.";
         banner("The last run did not finish: " + (st.error || "unknown issue"));
         return;
       }
     }
-    note.textContent = "The run is still going in the background. Panels update when it finishes.";
+    note.textContent = "The run is still going in the background; panels update when "
+      + "it finishes.";
   } catch (err) {
     banner("Could not start a check: " + err.message);
     note.textContent = "No new responses were recorded.";
@@ -781,6 +922,14 @@ async function runCheck() {
 $("run-btn").addEventListener("click", runCheck);
 initTabs();
 ensureAwake();
+/* The pill keeps counting while connecting, without touching panels. */
+setInterval(() => {
+  if (!state.awake && state.wakeStartedAt) {
+    setPill("pill-wake", `connecting · ${fmtWait(Date.now() - state.wakeStartedAt)}`);
+  }
+}, 1000);
+/* Periodic refresh only when connected and visible; on failure, resume the
+   wake loop (which retries with its own messaging). */
 setInterval(() => {
   if (!runInFlight && document.visibilityState === "visible" && state.awake) {
     loadAll().catch(() => {
@@ -789,8 +938,3 @@ setInterval(() => {
     });
   }
 }, 60000);
-setInterval(() => {
-  if (!state.awake && state.wakeStartedAt) {
-    setPill("pill-wake", `connecting · ${fmtWait(Date.now() - state.wakeStartedAt)}`);
-  }
-}, 1000);

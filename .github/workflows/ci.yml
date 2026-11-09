@@ -30,5 +30,8 @@ jobs:
       - name: Run tests
         run: pytest
 
-      - name: Fake adapter smoke run
+      - name: Dashboard integration smoke test
+        run: node web/smoke.test.js
+
+      - name: Demo adapter integration test
         run: python -m pytest tests/test_drift_tests.py::TestPipelineIntegration -q

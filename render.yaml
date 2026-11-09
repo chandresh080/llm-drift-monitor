@@ -4,7 +4,9 @@ services:
     name: llm-drift-monitor-api
     runtime: docker
     plan: free
-    healthCheckPath: /health
+    # Liveness, not readiness: this endpoint answers without initializing
+    # the monitor, so platform restarts do not gate on model loading.
+    healthCheckPath: /health/live
     envVars:
       - key: DRIFT_MONITOR_CONFIG
         value: /app/config/config.cloud.yaml

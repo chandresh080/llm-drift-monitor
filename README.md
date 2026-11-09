@@ -280,7 +280,8 @@ substitutes for the other.
   the default alert policy. Full results, an extended five-cycle phase, and the
   cross-provider caveats are in `REAL_PROVIDER_EXPERIMENT.md`.
 
-The service is also a plain JSON API: `GET /health`, `GET /drift/latest`,
+The service is also a plain JSON API: `GET /health/live` (liveness), `GET /health`
+(readiness), `GET /drift/latest`,
 `GET /drift/results`, `GET /alerts`, `GET /runs`, `GET /stats`, `POST /runs`. The
 dashboard is a thin page over it.
 
@@ -299,7 +300,9 @@ dashboard is a thin page over it.
 
 ## Testing
 
-`pytest` (101 tests) and `ruff check .` run in CI on every push. The tests cover the BH
+`pytest` (101 tests), `ruff check .`, and a Node dashboard integration smoke test
+(`web/smoke.test.js`, covers panel independence from health checks and the evaluation
+chart data fidelity) run in CI on every push. The tests cover the BH
 correction against a hand-checked example, the reference window logic, the behavioral
 features, the sequential alert policy (streaks and the alpha spending schedule), the
 centroid baseline, alert storage, and the retry behaviour of the network adapters with

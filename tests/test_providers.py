@@ -255,10 +255,24 @@ class TestExistingAdaptersUnchanged:
         adapter = FakeLLMAdapter(seed=42)
         text = adapter.generate("What is drift?")
         assert isinstance(text, str) and len(text) > 0
-        # Deterministic per seed: a fresh adapter with the same seed produces
-        # the same stream (the truncation branch advances RNG state, so
-        # consecutive calls on one instance may differ by design).
+        # Deterministic per seed and completely order independent: generation
+        # derives from hashes of the seed and prompt only, with no shared
+        # generator whose state the concurrent probe pool would race over.
         assert FakeLLMAdapter(seed=42).generate("What is drift?") == text
+        # The same prompt produces the same answer no matter what other
+        # prompts were generated before it, on the same or a fresh adapter,
+        # so interleaved calls cannot change any prompt's answer.
+        for _ in range(3):
+            adapter.generate("Completely different prompt")
+        assert adapter.generate("What is drift?") == text
+        # Seeded variation: different seeds must differ for some prompts,
+        # proving the variation branch is exercised by construction rather
+        # than by scheduling luck.
+        seeds_disagree = any(
+            FakeLLMAdapter(seed=42).generate(f"probe {probe}")
+            != FakeLLMAdapter(seed=7).generate(f"probe {probe}")
+            for probe in range(200))
+        assert seeds_disagree, "seeded variation should differ for some prompts"
 
     def test_local_adapter_payload_shape(self, monkeypatch):
         captured = {}

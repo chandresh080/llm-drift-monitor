@@ -167,32 +167,39 @@ def _post_json_with_retry(
 
 
 class FakeLLMAdapter:
-    """Fake LLM adapter for testing. Completely offline, no paid APIs."""
-    
+    """Demo LLM adapter for testing. Completely offline, no paid APIs."""
+
     def __init__(self, model_id: str = "fake-llm-v1", seed: int = 42):
         self.model_id = model_id
         self.seed = seed
-        self.rng = random.Random(seed)
-    
+
     def generate(self, prompt: str) -> str:
-        """Generate a fake response. Consistent but slightly varied based on prompt."""
-        # Create a deterministic but varied response
+        """Generate a demo response for a prompt, with no shared state.
+
+        Every choice, both the base response selection and the occasional
+        truncation, is derived from hashes of the seed and prompt alone.
+        This keeps generation deterministic under the concurrent probe pool:
+        with a shared random generator, which call consumed which draw would
+        depend on thread scheduling, and the same prompt could produce a
+        different answer run to run.
+        """
+        import hashlib
+        h = hashlib.md5(f"{self.seed}:{prompt}".encode()).hexdigest()
         base_responses = [
             f"Response to: {prompt[:50]}... This is a generated answer.",
             f"Here's an explanation: {prompt}",
             "Based on the input, the answer involves considering multiple factors.",
             "This is a simulated response for testing purposes.",
         ]
-        # Pick response based on deterministic hash (stable across processes)
-        import hashlib
-        h = hashlib.md5(f"{self.seed}:{prompt}".encode()).hexdigest()
-        idx = int(h, 16) % len(base_responses)
-        response = base_responses[idx]
-        
-        # Add slight variation
-        if self.rng.random() < 0.1:  # 10% chance of truncation/variation
-            response = response[:len(response)//2] + "..."
-        
+        response = base_responses[int(h, 16) % len(base_responses)]
+        # About 10% of prompts show the truncated variant. The trigger is a
+        # second independent hash slice, deliberately not correlated with the
+        # response selection above.
+        variation = int(
+            hashlib.md5(f"{self.seed}:variation:{prompt}".encode()).hexdigest()[:12],
+            16) % 100
+        if variation < 10 and len(response) > 8:
+            response = response[:len(response) // 2] + "..."
         return response
     
     def generate_batch(self, prompts: List[str]) -> List[str]:
