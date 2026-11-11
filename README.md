@@ -19,7 +19,7 @@ tier. When the provider key is missing the service states "provider
 not_configured" explicitly and keeps serving stored history; it never falls back
 to a synthetic adapter while presenting it as the provider.
 
-[![CI](https://github.com/chandresh-pandey-ml/llm-drift-monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/chandresh-pandey-ml/llm-drift-monitor/actions/workflows/ci.yml)
+[![CI](https://github.com/chandresh080/llm-drift-monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/chandresh080/llm-drift-monitor/actions/workflows/ci.yml)
 
 ## The problem
 
