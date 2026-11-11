@@ -9,8 +9,11 @@ class DriftMonitorStorage:
     
     def __init__(self, db_path: str = "data/drift_monitor.db"):
         self.db_path = db_path
-        # Ensure data directory exists
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        # Ensure data directory exists. In memory databases have no path to
+        # create, and an empty dirname must not become a makedirs call.
+        parent = os.path.dirname(self.db_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         self._init_db()
     
     def _migrate_columns(self, conn: sqlite3.Connection) -> None:
@@ -35,7 +38,13 @@ class DriftMonitorStorage:
                        "unique_reference INTEGER", "unique_current INTEGER",
                        "paired_cluster_mmd_statistic REAL",
                        "paired_cluster_mmd_pvalue REAL",
-                       "paired_cluster_prompt_pairs INTEGER"):
+                       "paired_cluster_prompt_pairs INTEGER",
+                       "provider_latency_mean_seconds REAL",
+                       "provider_latency_p50_seconds REAL",
+                       "provider_latency_p95_seconds REAL",
+                       "probe_tokens_total INTEGER",
+                       "paired_cluster_method TEXT",
+                       "mmd_permutation_unit TEXT"):
             name = column.split()[0]
             if name not in existing:
                 conn.execute(f"ALTER TABLE test_results ADD COLUMN {column}")
@@ -43,6 +52,16 @@ class DriftMonitorStorage:
     def _init_db(self):
         """Initialize database schema."""
         with self._db() as conn:
+            # Baseline manifest: which provider, model, panel version and
+            # decoding settings produced the reference window, plus when.
+            # Reference windows are only comparable to runs made with the
+            # same manifest, so it is stored with the data it describes.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS baseline_manifest (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+            """)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS probe_runs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -106,6 +125,12 @@ class DriftMonitorStorage:
                     paired_cluster_mmd_statistic REAL,
                     paired_cluster_mmd_pvalue REAL,
                     paired_cluster_prompt_pairs INTEGER,
+                    provider_latency_mean_seconds REAL,
+                    provider_latency_p50_seconds REAL,
+                    provider_latency_p95_seconds REAL,
+                    probe_tokens_total INTEGER,
+                    paired_cluster_method TEXT,
+                    mmd_permutation_unit TEXT,
                     bh_significant_tests TEXT,  -- JSON list
                     overall_drift_detected INTEGER,
                     overall_quality_degradation INTEGER
@@ -203,6 +228,23 @@ class DriftMonitorStorage:
             """, (run_id, json.dumps(embedding)))
             conn.commit()
     
+    def insert_manifest(self, items: Dict[str, str]) -> None:
+        """Write or update the baseline manifest for this database."""
+        with self._db() as conn:
+            for key, value in items.items():
+                conn.execute(
+                    "INSERT INTO baseline_manifest (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (key, str(value)))
+            conn.commit()
+
+    def get_manifest(self) -> Dict[str, str]:
+        """The manifest describing this database's reference window."""
+        with self._db() as conn:
+            cursor = conn.execute(
+                "SELECT key, value FROM baseline_manifest ORDER BY key ASC")
+            return {r[0]: r[1] for r in cursor.fetchall()}
+
     def insert_test_results(self, results: Dict[str, Any]):
         """Insert test results."""
         with self._db() as conn:
@@ -218,8 +260,11 @@ class DriftMonitorStorage:
                     unique_reference, unique_current,
                     paired_cluster_mmd_statistic, paired_cluster_mmd_pvalue,
                     paired_cluster_prompt_pairs,
+                    provider_latency_mean_seconds, provider_latency_p50_seconds,
+                    provider_latency_p95_seconds, probe_tokens_total,
+                    paired_cluster_method, mmd_permutation_unit,
                     bh_significant_tests, overall_drift_detected, overall_quality_degradation
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 results['timestamp'], results['reference_size'], results['current_size'],
                 results.get('ks_statistic'), results.get('ks_pvalue'), results.get('ks_raw_pvalue'),
@@ -234,6 +279,12 @@ class DriftMonitorStorage:
                 results.get('reference_unique_responses'), results.get('current_unique_responses'),
                 results.get('paired_cluster_mmd_statistic'), results.get('paired_cluster_mmd_pvalue'),
                 results.get('paired_cluster_prompt_pairs'),
+                results.get('provider_latency_mean_seconds'),
+                results.get('provider_latency_p50_seconds'),
+                results.get('provider_latency_p95_seconds'),
+                results.get('probe_tokens_total'),
+                results.get('paired_cluster_method'),
+                results.get('mmd_permutation_unit'),
                 json.dumps(results.get('bh_significant_tests', [])),
                 results.get('overall_drift_detected', 0),
                 results.get('overall_quality_degradation', 0)

@@ -1,11 +1,22 @@
 /* Dashboard smoke test, no dependencies, runs in plain Node.
    Loads web/app.js together with a minimal DOM stub and API fixtures, and
-   asserts the integration contracts that Python tests cannot see:
-   - a failing /health does not block any other panel
-   - the flagged count reads the field the API actually returns
+   asserts the integration contracts that Python tests cannot see.
+   This is a JavaScript contract test, not a browser test: it verifies what
+   the code does with the API responses, not rendering, timing or layout.
+
+   Contract list:
+   - each data endpoint renders the panel it feeds, independent of the
+     other endpoints (a hanging /health in particular changes nothing)
+   - the split signal families render separately: a response availability
+     flag can never flip the distribution shift headline
+   - redacted safety boundary prompts show their public label and a
+     withheld chip, never raw wording
+   - flagged counts read the field the API actually returns
    - missing test values render as an explicit state, never as "No flag"
    - product CSV string keys ("0.0") resolve against numeric lookups
    - the refusal rate change takes its sign from the delta itself
+   - rate limit rejections surface the server's Retry-After message
+
    Used by CI; run locally with: node web/smoke.test.js */
 
 const fs = require("node:fs");
@@ -60,9 +71,9 @@ const documentStub = {
   visibilityState: "visible",
 };
 
-/* setInterval is stubbed before app.js loads: the script installs two
-   periodic loops and a test must not keep the event loop alive. The real
-   behavior of those loops is tested by deployment, not here. */
+/* setInterval is stubbed before app.js loads: the script installs periodic
+   loops and a test must not keep the event loop alive. The real behavior of
+   those loops is verified by the per endpoint scenarios below instead. */
 const timers = [];
 global.setInterval = (fn, ms) => { timers.push({ fn, ms }); return timers.length; };
 global.clearInterval = () => {};
@@ -71,24 +82,37 @@ global.document = documentStub;
 global.window = global;
 global.AbortController = AbortController;
 
+/* app.js declared bindings (const state ...) live in the global lexical
+   scope; run small snippets in the same context to reach them. */
+function vmEval(code) {
+  vm.runInThisContext(code, { filename: "smoke-inline" });
+}
+
 /* ---------- API fixtures ---------- */
 
 const latestFull = {
   drift_detected: 1,
+  distribution_shift_detected: 1,
+  quality_change_detected: 0,
   flagged_tests: ["mmd"],           /* canonical field the API returns */
   bh_significant_tests: ["mmd"],
   quality_degradation: 1,
   timestamp: "2026-11-08T12:00:00",
-  reference_size: 50, current_size: 10,
+  reference_size: 120, current_size: 40,
   ks_statistic: 0.3, ks_pvalue: 0.4, ks_adjusted_pvalue: 1.0, ks_significant: 0,
   proportion_z_statistic: null, proportion_z_pvalue: 1.0,
   proportion_z_adjusted_pvalue: 1.0, proportion_z_significant: 0,
   mmd_statistic: 0.2, mmd_pvalue: 0.01, mmd_adjusted_pvalue: 0.03, mmd_significant: 1,
+  mmd_permutation_unit: "prompt_cluster", paired_cluster_method: "sampled",
   length_shift_pct: 19.5, centroid_distance: 0.153,
   refusal_rate_reference: 0.0, refusal_rate_current: -0.05,
   unique_reference: 12, unique_current: 10,
   paired_cluster_mmd_statistic: -0.027, paired_cluster_mmd_pvalue: 1.0,
   paired_cluster_prompt_pairs: 10,
+  provider_latency_mean_seconds: 4.2,
+  provider_latency_p50_seconds: 4.0,
+  provider_latency_p95_seconds: 5.1,
+  probe_tokens_total: 960,
 };
 
 const csvRows = (rows) => rows.map(([delta, power]) =>
@@ -117,6 +141,12 @@ const evaluation = {
 
 let routeOverrides = {};
 
+function resp(json, opts = {}) {
+  return { ok: opts.ok !== false, status: opts.status || 200,
+           headers: { get: () => opts.retryAfter == null ? null : opts.retryAfter },
+           json: async () => json };
+}
+
 function fixtureResponse(url) {
   const fn = routeOverrides[url] || getFixture(url);
   if (fn == null) throw new Error("app requested unplanned endpoint " + url);
@@ -124,26 +154,40 @@ function fixtureResponse(url) {
 }
 
 const fixtures = {
-  "/health": () => ({ ok: true, status: 200, json: async () =>
-    ({ status: "ok", db: "ok", provider: "fake-llm-v1", provider_status: "ok" }) }),
-  "/config": () => ({ ok: true, status: 200, json: async () => ({
-    target_model: "fake-llm-v1", adapter_type: "DemoLLMAdapter",
-    embedding_model: "all-MiniLM-L6-v2", reference_window: 50, current_window: 10,
-    tests_start_at_responses: 60, prompt_panel_version: "2.1.0",
-    prompt_panel_probes: 40, probes_per_cycle: 10, alpha: 0.05,
-    min_consecutive_cycles: 2, category_window_cycles: 5,
-    min_samples_per_category: 8 }) }),
-  "/stats": () => ({ ok: true, status: 200, json: async () =>
-    ({ probe_runs: 320, test_results: 12, alerts: 2 }) }),
-  "/drift/latest": () => ({ ok: true, status: 200, json: async () => latestFull }),
-  "/drift/results?limit=12": () => ({ ok: true, status: 200, json: async () => [] }),
-  "/alerts?limit=10": () => ({ ok: true, status: 200, json: async () => [] }),
-  "/drift/comparison": () => ({ ok: true, status: 200, json: async () =>
-    ({ ready: false, reference_stored: 50, reference_required: 50,
-       current_stored: 10, current_required: 10, tests_start_at: 60, rows: [] }) }),
-  "/drift/categories": () => ({ ok: true, status: 200, json: async () =>
-    ({ category_window_cycles: 5, min_samples_per_category: 8, rows: [] }) }),
-  "/evaluation": () => ({ ok: true, status: 200, json: async () => evaluation }),
+  /* Readiness answers. The delay scenario overrides /health with a
+     response that never resolves, which is strictly worse than a 15 s
+     slow answer for this contract. */
+  "/health": () => resp({ status: "ok", db: "ok", provider: "gemini-3.1-flash-lite",
+                          provider_status: "ok" }),
+  "/health/live": () => resp({ status: "ok" }),
+  "/config": () => resp({
+    target_model: "gemini-3.1-flash-lite", adapter_type: "GeminiAdapter",
+    provider_available: true, provider_error: null,
+    embedding_model: "all-MiniLM-L6-v2", reference_window: 120, current_window: 40,
+    tests_start_at_responses: 160, prompt_panel_version: "3.0.0",
+    prompt_panel_probes: 40, probes_per_cycle: 40, alpha: 0.05,
+    min_consecutive_cycles: 2, category_window_cycles: 3,
+    min_samples_per_category: 8,
+    baseline_manifest: {
+      provider: "gemini", model_id: "gemini-3.1-flash-lite",
+      panel_version: "3.0.0", temperature: "0.0",
+      collected_at: "2026-11-09T06:00:00+00:00",
+    },
+    run_policy: {
+      per_visitor_interval_seconds: 600, daily_cycle_budget: 15,
+      daily_cycles_used_today: 4,
+    },
+  }),
+  "/stats": () => resp({ probe_runs: 320, test_results: 12, alerts: 2 }),
+  "/drift/latest": () => resp(latestFull),
+  "/drift/results?limit=12": () => resp([]),
+  "/alerts?limit=10": () => resp([]),
+  "/drift/comparison": () => resp({
+    ready: false, reference_stored: 120, reference_required: 120,
+    current_stored: 40, current_required: 40, tests_start_at: 160, rows: [] }),
+  "/drift/categories": () => resp({
+    category_window_cycles: 3, min_samples_per_category: 8, rows: [] }),
+  "/evaluation": () => resp(evaluation),
 };
 
 function getFixture(url) {
@@ -169,15 +213,16 @@ function check(name, cond, detail) {
   }
 }
 
+const settle = () => new Promise((r) => setImmediate(r));
+
 /* The page loads at mount time via ensureAwake(); give the promise chain a
-   tick to settle, then inspect what rendered. */
+   few ticks, then inspect what rendered. */
 (async () => {
-  await new Promise((r) => setImmediate(r));
-  await new Promise((r) => setImmediate(r));
+  await settle(); await settle(); await settle();
 
   console.log("scenario 1: healthy endpoints, full data");
 
-  /* Run button waits only on data endpoints; health answers fine. */
+  /* Readiness check ran via loadHealth and answered ok. */
   check("status pill shows service online",
     getById("health-pill").innerHTML.includes("Service online"),
     getById("health-pill").innerHTML);
@@ -186,14 +231,13 @@ function check(name, cond, detail) {
     getById("kpi-flagged").textContent.trim() === "1 / 3",
     getById("kpi-flagged").textContent);
 
-  check("distribution verdict reflects the latest cycle",
+  check("distribution headline follows the distribution family field",
     getById("kpi-drift").textContent === "Shift flagged",
     getById("kpi-drift").textContent);
 
   check("quality guardrail reported separately and not conflated with shift",
-    getById("quality-strip").innerHTML.includes("Quality guardrail tripped")
-      && !getById("kpi-drift").textContent.toLowerCase().includes("quality"),
-    getById("quality-strip").innerHTML.slice(0, 60));
+    getById("quality-strip").innerHTML.includes("Quality guardrail tripped"),
+    getById("quality-strip").innerHTML.slice(0, 80));
 
   check("refusal rate change takes its sign from the delta, not the reference",
     getById("eff-refusal").textContent.startsWith("-5.0"),
@@ -212,10 +256,35 @@ function check(name, cond, detail) {
     getById("paired-patterns").textContent.includes("1024"),
     getById("paired-patterns").textContent);
 
+  check("config shows reference manifest provenance",
+    getById("cfg-manifest").textContent.includes("gemini")
+      && getById("cfg-manifest").textContent.includes("panel v3.0.0"),
+    getById("cfg-manifest").textContent);
+
+  check("config shows provider latency percentiles of the latest cycle",
+    getById("cfg-latency").textContent.includes("4.2 s mean")
+      && getById("cfg-latency").textContent.includes("5.1 s p95"),
+    getById("cfg-latency").textContent);
+
+  check("config shows provider token usage of the latest cycle",
+    getById("cfg-tokens").textContent.includes("960"),
+    getById("cfg-tokens").textContent);
+
+  check("config shows the run policy the throttle enforces",
+    getById("cfg-runpolicy").textContent.includes("10 min")
+      && getById("cfg-runpolicy").textContent.includes("15 checks")
+      && getById("cfg-runpolicy").textContent.includes("4 used today"),
+    getById("cfg-runpolicy").textContent);
+
+  check("run note no longer hardcodes the old 10 response cycle",
+    getById("run-note").textContent.includes("40 responses"),
+    getById("run-note").textContent);
+
   console.log("scenario 2: evaluation tab data fidelity");
 
+  /* Evaluation loads lazily via the tab; the fixture answers directly. */
   await loadEvaluation();
-  await new Promise((r) => setImmediate(r));
+  await settle();
 
   /* The core regression: CSV string keys must resolve through the numeric
      lookup, and zero power rows must be visible. */
@@ -235,7 +304,7 @@ function check(name, cond, detail) {
   check("persist2 marked shipped in the trade-off table",
     tradeoffHtml.includes("shipped"), "");
 
-  /* p95 and the delay/falsely-flagged headline line stay faithful. */
+  /* p95 and the delay/false-alarm headline line stay faithful. */
   check("overhead renders with sample count",
     getById("ev-overhead").textContent === "388 ms"
       && getById("ev-overhead-sub").textContent.includes("12 recorded benchmark cycles"),
@@ -245,37 +314,135 @@ function check(name, cond, detail) {
     getById("ev-detect-sub").textContent.includes("limited"),
     getById("ev-detect-sub").textContent);
 
-  console.log("scenario 3: /health failing must not block panels");
+  console.log("scenario 3: a hanging /health must not stop any panel");
 
-  routeOverrides = { "/health": () => ({ ok: false, status: 500, json: async () => ({}) }) };
+  /* Acceptance scenario from the review: /health never answers at all.
+     Data endpoints answer and every dependent panel renders. */
+  routeOverrides = { "/health": () => new Promise(() => {/* hangs forever */}) };
+  vmEval("state.health = null; renderHealthPill();");
   await loadAll();
-  await new Promise((r) => setImmediate(r));
+  await settle();
 
-  check("stored responses still render with /health down",
+  check("stored responses still render with /health hanging",
     getById("kpi-runs").textContent === "320",
     getById("kpi-runs").textContent);
 
-  check("pill says data is loaded while status pending",
+  check("detectors still render with /health hanging",
+    getById("det-mmd-decision").textContent === "Flagged",
+    getById("det-mmd-decision").textContent);
+
+  check("comparison still renders with /health hanging",
+    getById("comparison-wrap").innerHTML.includes("Evaluation has not started yet"),
+    "");
+
+  check("pill says data is loaded while the status check is pending",
     getById("health-pill").innerHTML.includes("Data loaded"),
     getById("health-pill").innerHTML);
 
   routeOverrides = {};
 
-  console.log("scenario 4: absent test values");
+  console.log("scenario 4: /health/live answers before readiness");
+
+  /* New early state: process alive (fast endpoint), data still loading. */
+  vmEval("loadLive(); state.awake = false; renderHealthPill();");
+  await settle();
+
+  check("pill shows the alive state before readiness answers",
+    getById("health-pill").innerHTML.includes("Service alive"),
+    getById("health-pill").innerHTML);
+
+  console.log("scenario 5: split signals, redacted prompts, rate limits");
+
+  /* availability fires, distribution does not: the headline must stay
+     Stable and the quality line must name the real source. */
+  routeOverrides = { "/drift/latest": () => resp({
+    ...latestFull,
+    drift_detected: 0, distribution_shift_detected: 0,
+    ks_significant: 0, mmd_significant: 0,
+    quality_change_detected: 1, proportion_z_significant: 1,
+    quality_degradation: 0,
+  }) };
+  await loadAll();
+  await settle();
+
+  check("availability flag cannot flip the distribution headline",
+    getById("kpi-drift").textContent === "Stable",
+    getById("kpi-drift").textContent);
+
+  check("availability change is reported as its own quality signal",
+    getById("quality-strip").innerHTML.includes("Response availability changed"),
+    getById("quality-strip").innerHTML.slice(0, 120));
+
+  routeOverrides = {};
+
+  /* Redacted comparison: the safety boundary row shows only the public
+     label plus the withheld marker. */
+  routeOverrides = { "/drift/comparison": () => resp({
+    ready: true, reference_size: 120, current_size: 40,
+    rows: [
+      { prompt_id: "code_017", category: "code",
+        label: "Palindrome check function",
+        prompt_text: "Write a function that checks whether a string is a palindrome.",
+        prompt_redacted: false,
+        reference: { text: "def is_palindrome(s): ...", length: 60, is_valid: 1, is_refusal: 0 },
+        current: { text: "def is_palindrome(s): ...", length: 58, is_valid: 1, is_refusal: 0 } },
+      { prompt_id: "refu_025", category: "safety_boundary",
+        label: "Disallowed synthesis request, details withheld",
+        prompt_text: "(withheld: safety boundary prompt)",
+        prompt_redacted: true,
+        reference: { text: "(withheld: safety boundary prompt)", length: 90,
+                     is_valid: 1, is_refusal: 1 },
+        current: { text: "(withheld: safety boundary prompt)", length: 88,
+                   is_valid: 1, is_refusal: 1 } },
+    ] }) };
+  await loadAll();
+  await settle();
+
+  const cmpHtml = getById("comparison-wrap").innerHTML;
+  check("redacted row shows the public label and the withheld chip",
+    cmpHtml.includes("Disallowed synthesis request, details withheld")
+      && cmpHtml.includes("withheld"),
+    cmpHtml.slice(0, 200));
+  check("normal row keeps its readable prompt",
+    cmpHtml.includes("palindrome"), cmpHtml.slice(0, 200));
+  routeOverrides = {};
+
+  /* 429 on the run endpoint: the server's message and Retry-After land in
+     the run note instead of disappearing into a console error. */
+  routeOverrides = {
+    "/runs": () => ({ ok: false, status: 429,
+      headers: { get: () => "420" },
+      json: async () => ({
+        detail: "The demo's daily cycle budget (15 for 2026-11-09) is used up.",
+      }) }) };
+  vmEval(`runInFlight = false; runCheck();`);
+  await settle();
+
+  check("429 detail is surfaced in the run note",
+    getById("run-note").textContent.includes("daily cycle budget"),
+    getById("run-note").textContent);
+
+  routeOverrides = {};
+
+  console.log("scenario 6: absent test values");
 
   routeOverrides = {
-    "/drift/latest": () => ({ ok: true, status: 200, json: async () => ({
+    "/drift/latest": () => resp({
       ...latestFull, ks_significant: null, ks_adjusted_pvalue: null,
       proportion_z_significant: null, proportion_z_adjusted_pvalue: null,
-      flagged_tests: [], bh_significant_tests: [], quality_degradation: 0,
-      drift_detected: 0, length_shift_pct: null, centroid_distance: null,
+      distribution_shift_detected: null, quality_change_detected: null,
+      flagged_tests: "", bh_significant_tests: [],
+      quality_degradation: 0, drift_detected: 0,
+      mmd_significant: null, mmd_adjusted_pvalue: null, mmd_pvalue: null,
+      length_shift_pct: null, centroid_distance: null,
       refusal_rate_reference: null, refusal_rate_current: null,
       paired_cluster_mmd_statistic: null, paired_cluster_mmd_pvalue: null,
       paired_cluster_prompt_pairs: null,
-    }) }),
-  };
+      provider_latency_mean_seconds: null, provider_latency_p50_seconds: null,
+      provider_latency_p95_seconds: null, probe_tokens_total: null,
+    }) };
   await loadAll();
-  await new Promise((r) => setImmediate(r));
+  await settle();
 
   check("missing detector decides as Not evaluated, never No flag",
     getById("det-ks-decision").textContent === "Not evaluated",
@@ -286,6 +453,9 @@ function check(name, cond, detail) {
   check("paired section degrades to not recorded",
     getById("paired-stat").textContent === "not recorded",
     getById("paired-stat").textContent);
+  check("missing latency degrades to an explicit not recorded",
+    getById("cfg-latency").textContent === "not recorded for the latest cycle",
+    getById("cfg-latency").textContent);
   routeOverrides = {};
 
   if (failures) {

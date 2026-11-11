@@ -401,3 +401,57 @@ class TestPipelineIntegration:
             run_ids = monitor.run_canary_probes(num_prompts=5)
             assert len(run_ids) == 5
             assert monitor.storage.count_successful_runs() == 5
+
+    def test_paired_inferential_mmd_is_what_the_pipeline_records(self):
+        """Full pipeline on a matched window: the stored MMD entry is the
+        prompt cluster permutation, with its unit and method reported, and
+        the split signal fields are present. This is the reviewer point that
+        the production alert path must respect the repeated prompt
+        structure, not a pooled response level approximation."""
+        from monitor import LLMDriftMonitor
+        import os
+        import tempfile
+        import yaml
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test.db")
+            with open("config/config.yaml", "r") as config_file:
+                config = yaml.safe_load(config_file)
+            config["target"] = {"type": "fake", "model_id": "fake-test",
+                                "temperature": 0.0}
+            config["reference"] = {"window_size": 10, "auto_create": True,
+                                   "min_runs": 10}
+            config["monitoring"] = {"batch_size": 5, "random_seed": 42,
+                                    "run_category_tests": False,
+                                    "min_samples_per_category": 3}
+            config["data"]["db_path"] = db_path
+            config_path = os.path.join(tmpdir, "test-config.yaml")
+            with open(config_path, "w") as config_file:
+                yaml.safe_dump(config, config_file)
+
+            monitor = LLMDriftMonitor(config_path=config_path)
+            monitor.embedder.extract_embedding = lambda text: [float(len(text)), 1.0]
+            results = None
+            for _ in range(3):
+                results = monitor.run_monitoring_cycle(num_probes=5)
+            assert results["tests_run"] is True
+            # The cycle return wraps the statistical payload: read it so the
+            # assertions follow what storage actually persisted.
+            payload = results["results"]
+            # The paired prompt level test is the inferential MMD entry.
+            assert payload["mmd_permutation_unit"] == "prompt_cluster"
+            assert payload["paired_cluster_prompt_pairs"] == 5
+            assert payload["paired_cluster_method"] == "exhaustive"
+            # The pooled statistic is retained as exploratory only.
+            assert payload["mmd_statistic_pooled"] is not None
+            assert payload["mmd_pvalue_pooled"] is not None
+            # Split signal groups exist and are independent booleans.
+            assert payload["distribution_shift_detected"] in (0, 1)
+            assert payload["quality_change_detected"] in (0, 1)
+            # Latency visibility is recorded even in the synthetic backend.
+            assert payload["provider_latency_mean_seconds"] is not None
+
+            stored = monitor.storage.get_all_test_results(limit=1)[0]
+            assert stored["mmd_permutation_unit"] == "prompt_cluster"
+            assert stored["paired_cluster_prompt_pairs"] == 5
+            assert stored["provider_latency_mean_seconds"] is not None

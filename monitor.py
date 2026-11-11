@@ -1,5 +1,8 @@
 import json
 import uuid
+import re
+import logging
+
 import yaml
 import os
 import time
@@ -21,6 +24,8 @@ from behavior_features import extract_behavior_features, refusal_rate
 from sequential_testing import (spent_alpha, consecutive_flagged_history,
                                 consecutive_streak)
 
+logger = logging.getLogger("llm_drift_monitor.monitor")
+
 
 def _generate_batch_concurrent(generate, prompts: List[str],
                                max_workers: int = 8) -> List[str]:
@@ -34,6 +39,33 @@ def _generate_batch_concurrent(generate, prompts: List[str],
         return [generate(p) for p in prompts]
     with ThreadPoolExecutor(max_workers=min(max_workers, len(prompts))) as pool:
         return list(pool.map(generate, prompts))
+
+
+class RateGate:
+    """Minimum wall clock spacing between provider calls, thread safe.
+
+    Free tier quotas cap calls per minute, a wall clock allowance, so
+    concurrency does not buy throughput: call starts must be spaced apart
+    no matter how many workers exist. Each caller reserves the next open
+    slot up front under the lock, then sleeps the residual, so slots are
+    handed out in order even if some callers lag on sleep scheduling.
+    """
+
+    def __init__(self, min_interval: float):
+        self.min_interval = max(0.0, float(min_interval))
+        self._lock = threading.Lock()
+        self._next_slot = 0.0
+
+    def wait(self) -> None:
+        if self.min_interval <= 0:
+            return
+        with self._lock:
+            now = time.monotonic()
+            slot = max(now, self._next_slot)
+            self._next_slot = slot + self.min_interval
+        delay = slot - now
+        if delay > 0:
+            time.sleep(delay)
 
 
 def complete_cycles_only(all_runs: List[Dict[str, Any]],
@@ -152,7 +184,23 @@ def _post_json_with_retry(
             detail = exc.read().decode("utf-8", errors="replace")
             last_error = RuntimeError(f"{label} returned HTTP {status}: {detail}")
             if attempt < max_retries and (status == 429 or status >= 500):
-                time.sleep(backoff * (0.5 + random.random()))
+                delay = backoff * (0.5 + random.random())
+                if status == 429:
+                    # Honor whatever wait the provider recommended: a header
+                    # when present (most hosts), otherwise the google.rpc
+                    # RetryInfo delay Google embeds in the 429 body. Backing
+                    # off less than that just guarantees another 429.
+                    told = (exc.headers.get("Retry-After")
+                            if exc.headers else None)
+                    if not told:
+                        match = re.search(
+                            r'"retryDelay":\s*"(\d+(?:\.\d+)?)s"', detail)
+                        told = match.group(1) if match else None
+                    try:
+                        delay = max(delay, min(float(told), 90.0))
+                    except (TypeError, ValueError):
+                        pass
+                time.sleep(delay)
                 backoff *= 2.0
                 continue
             raise last_error from exc
@@ -377,7 +425,7 @@ class GeminiAdapter:
                  timeout: float = 60.0,
                  temperature: float = 0.0,
                  max_tokens: int = 128,
-                 max_retries: int = 3):
+                 max_retries: int = 6):
         self.model_id = model_id
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY") or ""
         self.base_url = base_url.rstrip("/")
@@ -498,9 +546,31 @@ class LLMDriftMonitor:
         self.random_seed = self.config['monitoring']['random_seed']
         random.seed(self.random_seed)
         
-        # Initialize target adapter
-        self.adapter = self._create_adapter()
-        
+        # Initialize target adapter.
+        # Missing provider configuration is an explicit startup state, not a
+        # silent fallback to the synthetic adapter: the monitor builds without
+        # an adapter, every read endpoint keeps serving stored data, and any
+        # probe attempt fails with a provider unavailable error naming the
+        # problem. A run against a synthetic stand in while Gemini was meant
+        # would be the one thing worse than a stopped demo.
+        try:
+            self.adapter = self._create_adapter()
+            self.adapter_error = None
+        except RuntimeError as exc:
+            if 'API key is required' not in str(exc):
+                raise
+            self.adapter = None
+            self.adapter_error = str(exc)
+
+        # Concurrency for the probe pool: bounded so a free tier rate limit
+        # is a backoff, not a storm. Config surfaced under target.max_workers.
+        self.max_workers = int(self.config['target'].get('max_workers', 8))
+        # Minimum spacing between provider call starts. Free tier per minute
+        # quotas are a wall clock allowance, so this gate matters more than
+        # the worker count when the quota is small (5/min on some models).
+        self.call_spacing_seconds = float(
+            self.config['target'].get('call_spacing_seconds', 0.0))
+
         # Load canary prompts
         self.canary_prompts = self._load_canary_prompts()
     
@@ -528,6 +598,12 @@ class LLMDriftMonitor:
                     'id': entry['id'],
                     'category': entry.get('category', 'general'),
                     'text': entry['text'] if 'text' in entry else entry['prompt'],
+                    # Display fields: the public label replaces the raw text
+                    # wherever the panel is shown, and prompts marked for
+                    # redaction never expose their raw wording on the API.
+                    'public_label': entry.get('public_label')
+                        or (entry['text'] if 'text' in entry else entry['prompt']),
+                    'redact_prompt': bool(entry.get('redact_prompt', False)),
                 })
         return {'version': raw['version'], 'prompts': items}
     
@@ -554,7 +630,14 @@ class LLMDriftMonitor:
             # verified path (the hosted OpenAI-compatible layer has been
             # observed to 404 for some models).
             return GeminiAdapter(
-                model_id=os.environ.get('GEMINI_MODEL') or 'gemini-3.1-flash-lite',
+                # Config is the source of truth for the model id; the
+                # environment variable is a fallback, not an override, so a
+                # stale GEMINI_MODEL in an .env cannot silently point the
+                # hosted demo at a different quota tier than the one the
+                # baseline was collected with.
+                model_id=(target_cfg.get('model_id')
+                          or os.environ.get('GEMINI_MODEL')
+                          or 'gemini-3.1-flash-lite'),
                 api_key=os.environ.get('GEMINI_API_KEY') or '',
                 base_url=target_cfg.get(
                     'base_url', 'https://generativelanguage.googleapis.com/v1beta'),
@@ -566,7 +649,9 @@ class LLMDriftMonitor:
             if os.environ.get('GEMINI_API_KEY'):
                 # Gemini (Google AI) via the OpenAI-compatible endpoint
                 return OpenAICompatibleAdapter(
-                    model_id=os.environ.get('GEMINI_MODEL') or 'gemini-3.8-flash',
+                    model_id=(target_cfg.get('model_id')
+                              or os.environ.get('GEMINI_MODEL')
+                              or 'gemini-3.8-flash'),
                     api_key=os.environ.get('GEMINI_API_KEY') or os.environ.get('OPENAI_API_KEY') or '',
                     base_url=os.environ.get('GEMINI_BASE_URL') or 'https://generativelanguage.googleapis.com/v1beta/openai/',
                 )
@@ -592,6 +677,9 @@ class LLMDriftMonitor:
         Run canary probes through target adapter.
         Returns list of run IDs created.
         """
+        if self.adapter is None:
+            raise RuntimeError(
+                f'Provider unavailable: {self.adapter_error}')
         items = self.canary_prompts['prompts']
         items = balanced_category_subset(items, num_prompts)
 
@@ -605,16 +693,42 @@ class LLMDriftMonitor:
         # concurrently, so wall clock divided by probe count would understate
         # latency by the concurrency factor; only per call timings are honest.
         latencies: List[float] = []
+        token_totals: List[int] = []
 
-        def timed_generate(prompt: str) -> str:
+        gate = RateGate(self.call_spacing_seconds)
+
+        def timed_generate(prompt: str):
+            gate.wait()
             call_started = time.perf_counter()
             try:
-                return self.adapter.generate(prompt)
+                try:
+                    text = self.adapter.generate(prompt)
+                    usage = getattr(self.adapter, 'last_usage', None)
+                    if isinstance(usage, dict) and usage.get('totalTokenCount') is not None:
+                        try:
+                            token_totals.append(int(usage['totalTokenCount']))
+                        except (TypeError, ValueError):
+                            pass
+                except RuntimeError as exc:
+                    # A provider side no text response (Gemini signals these
+                    # with finishReason RECITATION) is an availability miss,
+                    # not a network failure. At temperature 0 it reproduces
+                    # stably, so a retry would spend quota for the same
+                    # result. It is recorded as the empty response it is,
+                    # and the Response availability family counts the miss.
+                    if 'contained no text' not in str(exc):
+                        raise
+                    text = ''
+                    logger.warning(
+                        "Provider returned no text for one probe (recitation "
+                        "guard); recorded as an empty response.")
+                return text
             finally:
                 latencies.append(time.perf_counter() - call_started)
 
         responses = _generate_batch_concurrent(
-            timed_generate, [item['text'] for item in items])
+            timed_generate, [item['text'] for item in items],
+            max_workers=self.max_workers)
         ordered = sorted(latencies)
         count = max(1, len(ordered))
         self.last_cycle_latency_seconds = round(sum(ordered) / count, 3)
@@ -622,6 +736,10 @@ class LLMDriftMonitor:
             ordered[(count - 1) // 2] if ordered else 0.0, 3)
         self.last_latency_p95_seconds = round(
             ordered[min(count - 1, int(round(0.95 * (count - 1))))] if ordered else 0.0, 3)
+        # Provider reported token accounting, when the adapter exposes it
+        # (Gemini does). Nothing is inferred about quality from this; it is
+        # only cost visibility for the configured free tier quota.
+        self.last_tokens_total = sum(token_totals) if token_totals else None
 
         run_ids: List[int] = []
         responses_by_text = list(responses)
@@ -892,9 +1010,12 @@ class LLMDriftMonitor:
                 n_permutations=500,  # Smaller for speed
                 random_seed=self.random_seed
             )
-        results['mmd_statistic'] = mmd_stat
-        results['mmd_pvalue'] = mmd_pval
-        results['mmd_raw_pvalue'] = mmd_pval
+        # The pooled response level permutation below is retained as an
+        # exploratory statistic and an effect size reference. Which MMD
+        # enters the significance family is decided right after the paired
+        # prompt level test runs.
+        results['mmd_statistic_pooled'] = mmd_stat
+        results['mmd_pvalue_pooled'] = mmd_pval
         # Distinct embedding vectors next to the nominal window sizes: a
         # deterministic adapter repeats the same answers, so identical p
         # values across cycles over identical samples are repeats, not
@@ -904,14 +1025,14 @@ class LLMDriftMonitor:
         results['current_unique_responses'] = count_unique_embeddings(
             cur_embeddings)
 
-        # Paired prompt level MMD diagnostic: the matched panel probes the
-        # same prompt ids on both sides, and runs from one prompt share that
-        # prompt as a source of variation a run level permutation ignores.
-        # This permutation exchanges whole prompts' answer sets instead, so
-        # repeated answers to one prompt cannot manufacture cross group
-        # confidence. Reported alongside the standard pooled test; it changes
-        # no alert path, and the shared alerting definition stays the one
-        # above.
+        # Paired prompt level MMD: the matched panel probes the same prompt
+        # ids on both sides, and answers from one prompt share that prompt as
+        # a source of variation a response level permutation ignores. When
+        # the panel is matched, this test is the inferential MMD: it is the
+        # permutation that respects the repeated prompt structure, so it is
+        # what enters the BH significance family and the alert path. The
+        # pooled response level test stays in the results as an exploratory
+        # statistic and effect size reference (see *_pooled fields).
         ref_paired = self.storage.get_embeddings_with_run_ids_for_runs(
             ref_run_ids)
         cur_paired = self.storage.get_embeddings_with_run_ids_for_runs(
@@ -926,6 +1047,19 @@ class LLMDriftMonitor:
         results['paired_cluster_mmd_statistic'] = pc_stat
         results['paired_cluster_mmd_pvalue'] = pc_pval
         results['paired_cluster_prompt_pairs'] = pc_pairs
+        paired_available = pc_pairs is not None and pc_pairs > 0
+        results['mmd_statistic'] = pc_stat if paired_available else mmd_stat
+        mmd_family_pval = pc_pval if paired_available else mmd_pval
+        results['mmd_pvalue'] = mmd_family_pval
+        results['mmd_raw_pvalue'] = mmd_family_pval
+        # The exchangeable unit and the permutation regime stay explicit:
+        # whole prompt answer sets versus individual responses, and exhaustive
+        # enumeration versus seeded sampling above the pattern cap.
+        results['mmd_permutation_unit'] = ('prompt_cluster' if paired_available
+                                           else 'response')
+        results['paired_cluster_method'] = (
+            ('exhaustive' if pc_pairs <= 12 else 'sampled')
+            if paired_available else None)
 
         # Effect sizes, kept separate from significance: with enough samples a
         # trivial change becomes significant, so alerts report magnitude too.
@@ -967,8 +1101,11 @@ class LLMDriftMonitor:
         results['category_tests'] = self._run_category_tests(
             all_runs, cur_prompt_ids, cur_size)
         
-        # Benjamini-Hochberg correction on the three p-values
-        pvalues = [ks_pval, prop_pval, mmd_pval]
+        # Benjamini-Hochberg correction on the three p-values. The MMD entry
+        # is the permutation that respects the repeated prompt structure
+        # (prompt cluster level) whenever the panel is matched, so the
+        # family's semantic p does not inherit cross prompt false confidence.
+        pvalues = [ks_pval, prop_pval, results['mmd_pvalue']]
         alpha = self.config.get('alerts', {}).get('significance_threshold', 0.05)
         adjusted_pvals, significant_flags = benjamini_hochberg_correction(pvalues, alpha=alpha)
         
@@ -986,7 +1123,20 @@ class LLMDriftMonitor:
             if i < len(significant_flags) and significant_flags[i]:
                 bh_significant.append(name)
         results['bh_significant_tests'] = bh_significant
+        # Legacy field: "any BH significant test", kept for stored history
+        # compatibility. Never used for the headline or the drift alert, both
+        # of which follow the split below.
         results['overall_drift_detected'] = 1 if len(bh_significant) > 0 else 0
+
+        # Split signal groups. The headline can never call a validity rate
+        # change a distribution shift: distribution_shift_detected follows
+        # the two distributional detectors only, quality_change_detected is
+        # the corrected validity comparison, and the absolute invalid share
+        # threshold stays its own guardrail (overall_quality_degradation).
+        results['distribution_shift_detected'] = 1 if (
+            results['ks_significant'] or results['mmd_significant']) else 0
+        results['quality_change_detected'] = int(
+            results['proportion_z_significant'])
         
         # Quality degradation detection
         quality_cfg = self.config['alerts']
@@ -1001,6 +1151,17 @@ class LLMDriftMonitor:
                 overall_quality_degradation = 1
         
         results['overall_quality_degradation'] = overall_quality_degradation
+
+        # Provider cost and latency visibility for this cycle: per call
+        # timings gathered during the probe batch, plus provider reported
+        # token counts when the adapter exposes them.
+        results['provider_latency_mean_seconds'] = getattr(
+            self, 'last_cycle_latency_seconds', None)
+        results['provider_latency_p50_seconds'] = getattr(
+            self, 'last_latency_p50_seconds', None)
+        results['provider_latency_p95_seconds'] = getattr(
+            self, 'last_latency_p95_seconds', None)
+        results['probe_tokens_total'] = getattr(self, 'last_tokens_total', None)
         
         # Store results
         self.storage.insert_test_results(results)
@@ -1123,12 +1284,32 @@ class LLMDriftMonitor:
         rows = []
         for pid in cur_prompt_ids:
             prompt = prompt_by_id.get(pid, {})
+            # Display discipline: the public label replaces the raw prompt
+            # text on the dashboard, and prompts marked for redaction (the
+            # safety boundary group) never expose their exact wording at
+            # all. A redacted response is withheld the same way, because a
+            # model's answer can quote the disallowed request back.
+            redacted = bool(prompt.get('redact_prompt', False))
+            label = prompt.get('public_label') or prompt.get('text', pid)
+            def describe_prompt(run: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+                if not redacted:
+                    return describe(run)
+                if run is None:
+                    return {'text': None, 'length': None, 'is_valid': None,
+                            'is_refusal': None}
+                return {'text': '(withheld: safety boundary prompt)',
+                        'length': run.get('response_length'),
+                        'is_valid': run.get('is_valid'),
+                        'is_refusal': refusal_of.get(run['id'])}
             rows.append({
                 'prompt_id': pid,
                 'category': prompt.get('category', 'unknown'),
-                'prompt_text': prompt.get('text', pid),
-                'reference': describe(ref_by_prompt.get(pid)),
-                'current': describe(cur_by_prompt.get(pid)),
+                'label': label,
+                'prompt_text': ('(withheld: safety boundary prompt)'
+                                if redacted else prompt.get('text', pid)),
+                'prompt_redacted': redacted,
+                'reference': describe_prompt(ref_by_prompt.get(pid)),
+                'current': describe_prompt(cur_by_prompt.get(pid)),
             })
         return {
             'ready': True,
@@ -1194,8 +1375,12 @@ class LLMDriftMonitor:
         alert_cfg = self.config.get('alerts', {})
         min_consecutive = int(alert_cfg.get('min_consecutive_cycles', 1))
 
-        # Alert for drift
-        if results.get('overall_drift_detected', 0):
+        # Alert for distribution shift. The headline verdict and the alert
+        # follow the distributional family only: a significant validity test
+        # is a quality signal, not evidence that the response distribution
+        # moved, and reporting it as a distribution shift would conflate
+        # exactly the two behaviours this system separates.
+        if results.get('distribution_shift_detected', 0):
             history = self.storage.get_recent_drift_flags(min_consecutive)
             persistence_ok = consecutive_flagged_history(history, min_consecutive)
             if persistence_ok and alert_cfg.get('use_alpha_spending', False):
@@ -1217,9 +1402,10 @@ class LLMDriftMonitor:
                     name for name, t in (results.get('category_tests') or {}).items()
                     if t.get('significant'))
                 parts = [
-                    f"Significant tests: {results.get('bh_significant_tests', [])}",
+                    f"Distributional tests flagged: "
+                    f"{[t for t in results.get('bh_significant_tests', []) if t != 'proportion_z']}",
                     f"streak: {consecutive_streak(history)} cycles",
-                    f"MMD stat: {results.get('mmd_statistic')}",
+                    f"MMD (prompt cluster) stat: {results.get('mmd_statistic')}",
                     f"centroid distance: {results.get('centroid_distance')}",
                     f"length shift: {results.get('length_shift_pct')}%",
                 ]
@@ -1239,18 +1425,33 @@ class LLMDriftMonitor:
                 alerts.append(alert)
                 self.storage.insert_alert(alert)
         
-        # Alert for quality degradation
+        # Alert for quality. Two distinct sources fire this family: a
+        # statistically significant validity (non empty response rate)
+        # change between the windows, and the absolute invalid response
+        # share guardrail on the current window. The message names which
+        # one moved, because they mean different things.
+        quality_reasons = []
+        if results.get('quality_change_detected', 0):
+            quality_reasons.append(
+                'validity (non empty response) rate shifted between the windows '
+                'after correction')
         if results.get('overall_quality_degradation', 0):
+            quality_reasons.append(
+                'invalid response share reached the configured absolute '
+                'threshold in the current window')
+        if quality_reasons:
             alert = {
                 'timestamp': timestamp,
                 'alert_type': 'quality_degradation',
                 'severity': 'high',
-                'message': 'High empty/invalid-response rate heuristic; investigate possible quality impact.',
+                'message': 'Quality signal: ' + ' and '.join(quality_reasons) + '. '
+                           'Investigate the current window\'s answers.',
                 'ks_pvalue': results.get('ks_adjusted_pvalue'),
                 'proportion_z_pvalue': results.get('proportion_z_adjusted_pvalue'),
                 'mmd_pvalue': results.get('mmd_adjusted_pvalue'),
-                'overall_drift_detected': results.get('overall_drift_detected', 0),
-                'overall_quality_degradation': 1
+                'overall_drift_detected': results.get('distribution_shift_detected', 0),
+                'overall_quality_degradation': results.get(
+                    'overall_quality_degradation', 0)
             }
             alerts.append(alert)
             self.storage.insert_alert(alert)

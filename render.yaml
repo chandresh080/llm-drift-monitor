@@ -9,8 +9,17 @@ services:
     healthCheckPath: /health/live
     envVars:
       - key: DRIFT_MONITOR_CONFIG
-        value: /app/config/config.cloud.yaml
-      # Tracking is memory safe now: each cycle logs to MLflow from a short
+        value: /app/config/config.gemini.yaml
+      # The hosted demo monitors Gemini itself through the native adapter.
+      # The key is set only in the Render secret store; the service starts
+      # the panels on stored data and reports the provider unavailable
+      # explicitly until it is provided. No fallback to a synthetic adapter,
+      # so there is nothing to mistake for real provider evidence.
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.1-flash-lite
+      # Tracking is memory safe: each cycle logs to MLflow from a short
       # lived subprocess, so mlflow never enters the serving process. Runs
       # land in the container's SQLite-backed mlflow.db; the free tier resets
       # the disk on redeploy, so the store is per deployment lifetime.

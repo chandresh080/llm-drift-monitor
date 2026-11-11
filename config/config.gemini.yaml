@@ -1,0 +1,52 @@
+# Hosted demonstration configuration (Render deployment): live Gemini.
+# The demo monitors the real provider through the native GeminiAdapter;
+# the API key lives only in the Render secret store, never in the repo.
+# Free tier quotas apply: cycles are rate limited in the API layer and the
+# adapter retries 429 responses with exponential backoff and jitter.
+
+target:
+  type: "gemini"
+  model_id: "gemini-3.1-flash-lite"
+  temperature: 0.0
+  timeout_seconds: 60
+  max_tokens: 512
+  max_workers: 4
+  # Free tier quota is a calls per minute allowance, so call STARTS are
+  # spaced apart: 13 s keeps a cycle under the observed 5 requests per
+  # minute limit whichever model the tier handes. The worker count just
+  # keeps retries from stacking; the gate provides the throughput cap.
+  call_spacing_seconds: 13.0
+
+embeddings:
+  model_name: "sentence-transformers/all-MiniLM-L6-v2"
+  device: "cpu"
+
+reference:
+  # Three complete cycles over the full 40 prompt panel. Full panel cycles
+  # keep category level analysis meaningful: each behavioural group holds
+  # its full prompt count per cycle instead of two samples.
+  window_size: 120
+  auto_create: true
+  min_runs: 10
+
+monitoring:
+  batch_size: 40
+  random_seed: 42
+  run_category_tests: true
+  category_window_cycles: 3
+  min_samples_per_category: 8
+
+alerts:
+  significance_threshold: 0.05
+  quality_degradation_threshold: 0.3
+  min_sample_size: 10
+  min_consecutive_cycles: 2
+  use_alpha_spending: false
+  planning_horizon_cycles: 30
+
+data:
+  # Gemini matched reference baseline (committed), built by
+  # scripts/generate_reference_db.py against Gemini itself: same model,
+  # panel version, decoding settings and embedding model across both
+  # windows. The synthetic demo database is never mixed with these runs.
+  db_path: "data/seed_gemini.db"

@@ -217,6 +217,19 @@ class TestProviderSwitching:
         assert adapter.base_url == \
             'https://generativelanguage.googleapis.com/v1beta'
 
+    def test_gemini_config_model_wins_over_environment(self, monkeypatch):
+        # A stale GEMINI_MODEL in an .env must not silently point the hosted
+        # demo at a different model and quota tier than its config (and the
+        # collected baseline) name.
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        monkeypatch.setenv("GEMINI_MODEL", "gemini-3.8-flash")
+        m = LLMDriftMonitor.__new__(LLMDriftMonitor)
+        m.config = self.make_monitor_config(
+            'gemini', extra={'model_id': 'gemini-3.1-flash-lite'})
+        m.random_seed = 42
+        adapter = m._create_adapter()
+        assert adapter.model_id == 'gemini-3.1-flash-lite'
+
     def test_openai_compatible_with_groq_key(self, monkeypatch):
         monkeypatch.setenv("GROQ_API_KEY", "test-key")
         monkeypatch.delenv("GROQ_MODEL", raising=False)

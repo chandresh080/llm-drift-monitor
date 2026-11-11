@@ -9,8 +9,11 @@ Operational shape, sized for a single small container:
 - Runs are serialized through a one worker queue. Cycles write to SQLite
   and share the embedding model, so running two at once would only add
   latency and memory pressure. POST /runs accepts an Idempotency-Key
-  header and replays the original run id for duplicate submissions, and a
-  minimum interval between enqueues acts as a simple rate limit.
+  header and replays the original run id for duplicate submissions, a
+  minimum interval between enqueues acts as a global rate limit, and the
+  queue is deliberately shallow (2) so a burst hits an explicit
+  queue-full 429 instead of accumulating runtime. The public demo adds
+  per visitor and daily budget limits on top (see the throttle constants).
 - The target model gets a circuit breaker: when it fails repeatedly, the
   next cycles fail in milliseconds instead of burning retries.
 - MLflow logging runs in a short lived subprocess, keeping mlflow out of
@@ -147,9 +150,53 @@ def _schedule_model_release() -> None:
 
 # ---------- run queue (single worker; cycles are serialized on purpose) ----------
 
-_run_queue: "queue.Queue[str]" = queue.Queue(maxsize=4)
+_run_queue: "queue.Queue[str]" = queue.Queue(maxsize=2)
 MIN_RUN_INTERVAL_SECONDS = 5.0
 _last_enqueue = [0.0]
+
+# Public demo throttle. Each cycle spends real Gemini quota and does 40 live
+# model calls, so a visitor driven rate limit sits on top of the global
+# interval: one run per IP per PUBLIC_RUN_INTERVAL_SECONDS, and a shared
+# daily cycle budget so a scripted loop cannot drain the free tier. Both
+# limits are process local and reset on restart; that is acceptable for a
+# demo where the point is bounded spend, not adversarial accounting.
+PUBLIC_RUN_INTERVAL_SECONDS = 600.0
+DAILY_CYCLE_BUDGET = 15
+_ip_last_run: Dict[str, float] = {}
+_ip_lock = threading.Lock()
+_daily_lock = threading.Lock()
+_daily_usage = {"date": time.strftime("%Y-%m-%d", time.gmtime()), "count": 0}
+
+
+def _daily_count_and_date() -> tuple:
+    with _daily_lock:
+        today = time.strftime("%Y-%m-%d", time.gmtime())
+        if _daily_usage["date"] != today:
+            _daily_usage["date"] = today
+            _daily_usage["count"] = 0
+        return _daily_usage["count"], today
+
+
+def _seconds_until_utc_midnight() -> int:
+    return max(60, int(86400 - (time.time() % 86400)))
+
+
+def _client_ip(request: Request) -> str:
+    # Render terminates TLS on a proxy, so the socket peer is the proxy and
+    # the real visitor address arrives in X-Forwarded-For's first hop.
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _seconds_until_next_ip_run(ip: str) -> float:
+    with _ip_lock:
+        last = _ip_last_run.get(ip)
+        now = time.monotonic()
+        if last is None or (now - last) >= PUBLIC_RUN_INTERVAL_SECONDS:
+            return 0.0
+        return PUBLIC_RUN_INTERVAL_SECONDS - (now - last)
 _idempotency: Dict[str, str] = {}
 _idempotency_lock = threading.Lock()
 
@@ -224,6 +271,8 @@ class RunResponse(BaseModel):
 
 class DriftLatestResponse(BaseModel):
     drift_detected: Optional[int] = None
+    distribution_shift_detected: Optional[int] = None
+    quality_change_detected: Optional[int] = None
     flagged_tests: Optional[list] = None
     quality_degradation: Optional[int] = None
     timestamp: Optional[str] = None
@@ -251,6 +300,12 @@ class DriftLatestResponse(BaseModel):
     paired_cluster_mmd_statistic: Optional[float] = None
     paired_cluster_mmd_pvalue: Optional[float] = None
     paired_cluster_prompt_pairs: Optional[int] = None
+    paired_cluster_method: Optional[str] = None
+    mmd_permutation_unit: Optional[str] = None
+    provider_latency_mean_seconds: Optional[float] = None
+    provider_latency_p50_seconds: Optional[float] = None
+    provider_latency_p95_seconds: Optional[float] = None
+    probe_tokens_total: Optional[int] = None
 
 
 class ProbeRunResponse(BaseModel):
@@ -303,6 +358,34 @@ async def create_run(request: Request) -> RunResponse:
             detail=f"A check was started less than {MIN_RUN_INTERVAL_SECONDS:.0f}s ago. Try again shortly.",
             headers={"Retry-After": str(retry_after)},
         )
+
+    # Per visitor interval: one cycle per IP per the public demo interval.
+    # Chinese checked first so the more specific message wins when both
+    # limits would trip on the same submission.
+    client_ip = _client_ip(request)
+    ip_wait = _seconds_until_next_ip_run(client_ip)
+    if ip_wait > 0:
+        _metrics["runs_rejected_total"] += 1
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                "Each visitor can start one check every "
+                f"{PUBLIC_RUN_INTERVAL_SECONDS:.0f}s. Try again later."),
+            headers={"Retry-After": str(int(ip_wait) + 1)},
+        )
+
+    # Shared daily cycle budget across all visitors on this deployment.
+    used_today, budget_date = _daily_count_and_date()
+    if used_today >= DAILY_CYCLE_BUDGET:
+        _metrics["runs_rejected_total"] += 1
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"The demo's daily cycle budget ({DAILY_CYCLE_BUDGET} for "
+                f"{budget_date}) is used up. It resets at UTC midnight."),
+            headers={"Retry-After": str(_seconds_until_utc_midnight())},
+        )
+
     run_id = str(uuid.uuid4())
     # Register before enqueueing: the worker may finish a warm cycle in well
     # under a second, and a late "running" write must never clobber a result.
@@ -315,6 +398,18 @@ async def create_run(request: Request) -> RunResponse:
         raise HTTPException(status_code=429, detail="The run queue is full. Try again shortly.")
 
     _last_enqueue[0] = now
+    # Budget and per IP accounting only after the cycle is actually accepted;
+    # rejected submissions consume neither.
+    with _ip_lock:
+        _ip_last_run[client_ip] = now
+        # Bounded: forget stale entries so the map cannot grow with visitors.
+        if len(_ip_last_run) > 10000:
+            cutoff = now - PUBLIC_RUN_INTERVAL_SECONDS
+            for stale_ip, stale_at in list(_ip_last_run.items()):
+                if stale_at < cutoff:
+                    _ip_last_run.pop(stale_ip, None)
+    with _daily_lock:
+        _daily_usage["count"] += 1
     if idem_key:
         with _idempotency_lock:
             _idempotency[idem_key] = run_id
@@ -373,6 +468,7 @@ def compute_latest_fields(latest: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         return {
             'drift_detected': None, 'flagged_tests': [], 'quality_degradation': None,
             'bh_significant_tests': [],
+            'distribution_shift_detected': None, 'quality_change_detected': None,
             'timestamp': None, 'reference_size': None, 'current_size': None,
             'ks_statistic': None, 'ks_pvalue': None, 'ks_adjusted_pvalue': None,
             'ks_significant': None,
@@ -385,6 +481,11 @@ def compute_latest_fields(latest: Optional[Dict[str, Any]]) -> Dict[str, Any]:
             'unique_reference': None, 'unique_current': None,
             'paired_cluster_mmd_statistic': None, 'paired_cluster_mmd_pvalue': None,
             'paired_cluster_prompt_pairs': None,
+            'paired_cluster_method': None, 'mmd_permutation_unit': None,
+            'provider_latency_mean_seconds': None,
+            'provider_latency_p50_seconds': None,
+            'provider_latency_p95_seconds': None,
+            'probe_tokens_total': None,
         }
     raw = latest.get('bh_significant_tests')
     if isinstance(raw, str):
@@ -399,6 +500,17 @@ def compute_latest_fields(latest: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return {
         'drift_detected': None if latest.get('overall_drift_detected') is None
             else int(latest['overall_drift_detected']),
+        # Split signal groups, derived here from the stored per test flags so
+        # legacy rows without monitor level fields still read correctly. A
+        # validity flag can never drive the distribution verdict.
+        'distribution_shift_detected': (
+            None if latest.get('ks_significant') is None
+            and latest.get('mmd_significant') is None
+            else int(bool(latest.get('ks_significant'))
+                     or bool(latest.get('mmd_significant')))),
+        'quality_change_detected': (
+            None if latest.get('proportion_z_significant') is None
+            else int(latest['proportion_z_significant'])),
         'flagged_tests': flagged,
         # Served under both names: flagged_tests is the canonical field the
         # dashboard reads; bh_significant_tests stays for API consumers of
@@ -430,6 +542,12 @@ def compute_latest_fields(latest: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         'paired_cluster_mmd_statistic': latest.get('paired_cluster_mmd_statistic'),
         'paired_cluster_mmd_pvalue': latest.get('paired_cluster_mmd_pvalue'),
         'paired_cluster_prompt_pairs': latest.get('paired_cluster_prompt_pairs'),
+        'paired_cluster_method': latest.get('paired_cluster_method'),
+        'mmd_permutation_unit': latest.get('mmd_permutation_unit'),
+        'provider_latency_mean_seconds': latest.get('provider_latency_mean_seconds'),
+        'provider_latency_p50_seconds': latest.get('provider_latency_p50_seconds'),
+        'provider_latency_p95_seconds': latest.get('provider_latency_p95_seconds'),
+        'probe_tokens_total': latest.get('probe_tokens_total'),
     }
 
 
@@ -461,29 +579,48 @@ def get_config() -> Dict[str, Any]:
     """Monitoring configuration the dashboard labels itself with.
 
     Read only configuration that shapes what a visitor sees; secrets and
-    provider keys are never included.
+    provider keys are never included. Provider availability is reported
+    explicitly: a missing or refused provider key means the demo serves
+    stored data and states that new cycles are unavailable, it never falls
+    back to a synthetic adapter behind the scenes.
     """
     monitor = _get_monitor()
     cfg = monitor.config
-    return cached_read("config", lambda: {
-        "target_model": monitor.adapter.model_id,
-        "adapter_type": type(monitor.adapter).__name__,
-        "embedding_model": cfg['embeddings']['model_name'].split('/')[-1],
-        "reference_window": cfg['reference']['window_size'],
-        "current_window": cfg['monitoring']['batch_size'],
-        "tests_start_at_responses": cfg['reference']['window_size']
-        + cfg['monitoring']['batch_size'],
-        "prompt_panel_version": monitor.canary_prompts['version'],
-        "prompt_panel_probes": len(monitor.canary_prompts['prompts']),
-        "probes_per_cycle": cfg['monitoring']['batch_size'],
-        "alpha": cfg['alerts'].get('significance_threshold', 0.05),
-        "min_consecutive_cycles": cfg['alerts'].get(
-            'min_consecutive_cycles', 2),
-        "category_window_cycles": cfg['monitoring'].get(
-            'category_window_cycles', 5),
-        "min_samples_per_category": cfg['monitoring'].get(
-            'min_samples_per_category', 8),
-    })
+    adapter = monitor.adapter
+    def build() -> Dict[str, Any]:
+        return {
+            "target_model": adapter.model_id if adapter else None,
+            "adapter_type": type(adapter).__name__ if adapter else None,
+            "provider_available": adapter is not None,
+            "provider_error": monitor.adapter_error,
+            "embedding_model": cfg['embeddings']['model_name'].split('/')[-1],
+            "reference_window": cfg['reference']['window_size'],
+            "current_window": cfg['monitoring']['batch_size'],
+            "tests_start_at_responses": cfg['reference']['window_size']
+            + cfg['monitoring']['batch_size'],
+            "prompt_panel_version": monitor.canary_prompts['version'],
+            "prompt_panel_probes": len(monitor.canary_prompts['prompts']),
+            "probes_per_cycle": cfg['monitoring']['batch_size'],
+            "alpha": cfg['alerts'].get('significance_threshold', 0.05),
+            "min_consecutive_cycles": cfg['alerts'].get(
+                'min_consecutive_cycles', 2),
+            "category_window_cycles": cfg['monitoring'].get(
+                'category_window_cycles', 5),
+            "min_samples_per_category": cfg['monitoring'].get(
+                'min_samples_per_category', 8),
+            # Baseline manifest: what actually produced the reference window
+            # stored in this database, so the comparison shown to a visitor
+            # carries its own provenance.
+            "baseline_manifest": monitor.storage.get_manifest() or None,
+            # Run policy as served: the same numbers the throttle enforces,
+            # so the frontend can state to visitors when their next check is.
+            "run_policy": {
+                "per_visitor_interval_seconds": PUBLIC_RUN_INTERVAL_SECONDS,
+                "daily_cycle_budget": DAILY_CYCLE_BUDGET,
+                "daily_cycles_used_today": _daily_usage["count"],
+            },
+        }
+    return cached_read("config", build)
 
 
 @app.get("/drift/comparison")
@@ -630,17 +767,38 @@ def health() -> Dict[str, Any]:
         storage.count_successful_runs()
     except Exception:
         db_ok = False
-    try:
-        provider_ok = bool(_get_monitor().adapter.ping())
-    except Exception:
+    monitor = _get_monitor()
+    provider_name = (monitor.adapter.model_id if monitor.adapter
+                     else cfg_model_id(monitor))
+    if monitor.adapter is None:
+        # Explicit unavailable state, never a synthetic fallback: the
+        # deployment is missing its provider key and states it.
         provider_ok = False
+        provider_error = monitor.adapter_error
+        provider_status = "not_configured"
+    else:
+        try:
+            provider_ok = bool(monitor.adapter.ping())
+            provider_error = None if provider_ok else \
+                "Provider ping failed."
+            provider_status = "ok" if provider_ok else "unreachable"
+        except Exception as exc:
+            provider_ok = False
+            provider_error = str(exc)
+            provider_status = "unreachable"
     status = "ok" if (db_ok and provider_ok) else "degraded"
     return {
         "status": status,
         "db": "ok" if db_ok else "unreachable",
-        "provider": _get_monitor().adapter.model_id,
-        "provider_status": "ok" if provider_ok else "unreachable",
+        "provider": provider_name,
+        "provider_status": provider_status,
+        "provider_error": provider_error,
     }
+
+
+def cfg_model_id(monitor: LLMDriftMonitor) -> Optional[str]:
+    """Configured provider model id, readable even when no adapter exists."""
+    return monitor.config.get('target', {}).get('model_id')
 
 
 @app.get("/metrics", response_class=PlainTextResponse)

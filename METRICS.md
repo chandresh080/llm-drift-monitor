@@ -44,7 +44,8 @@ Source: `results/delay_detection_delay.csv`, `results/delay_false_alarms.csv`,
 `results/delay_alert_precision.csv`, 100 trials over a 90 day horizon with the shift
 injected on day 45. Production parity: 50 reference runs, 10 current runs per cycle,
 500 MMD permutations, matching `config/config.yaml`. The per-day decision reproduces
-the deployed pooled pipeline: three detectors, Benjamini-Hochberg across them, then
+the deployed pooled pipeline as it stood when the simulation ran: three detectors,
+Benjamini-Hochberg across them, then
 the alert rule. Data handling matches the runtime: validity is measured across all 10
 responses, lengths and embeddings only for the successful ones, so the
 distributional detectors see a Binomial(10, p_valid) sized window. Shift magnitude
@@ -55,6 +56,14 @@ gate are not simulated.
 | Rule | Mean delay (days) | Median delay (days) | Detection rate | False alarms per 100 quiet days | Alert precision |
 | --- | --- | --- | --- | --- | --- |
 | Single pooled cycle (unfiltered) | 0.00 | 0.0 | 100.0% | 3.09 | 0.970 |
+
+Scope note for sections 2 to 4: these simulations model responses as independent
+draws (pooled, iid) with a synthetic generator; they predate the paired prompt
+level permutation that the production path now uses whenever the panel is
+matched. Read them as a characterisation of the persistence policy and of each
+statistic's behaviour, not as calibrated performance of today's paired alert
+path, which would require a fresh simulation over the current test family
+definition.
 | k-of-n (2 of last 5) | 0.90 | 1.0 | 100.0% | 1.11 | 0.9888 |
 | Deployed persistence (2 consecutive) | 0.97 | 1.0 | 100.0% | 0.18 | 0.9982 |
 | CUSUM (h = 3.5) | 0.79 | 1.0 | 100.0% | 1.58 | 0.9702 |
@@ -177,6 +186,12 @@ the bandwidth is computed with the median heuristic on every window instead of f
 
 ## 7. Drift as a proxy for invalid-response regression
 
+Terminology note: the "invalid response" measure is the non-empty response rate
+heuristic (a blank or whitespace only answer), labelled Response availability on
+today's dashboard. It is an availability signal, not an instruction following or
+correctness measure; the simulation below models it as guarding against
+responses going away.
+
 Source: `results/reliability_results.csv`, exactly 100 stratified trials per
 condition, production parity (50 reference, 10 current, 500 permutations). Equal
 mixture over four conditions: null, benign distribution shift only, silent
@@ -254,11 +269,15 @@ Detector statistics and p values:
 | --- | --- |
 | `ks_statistic`, `ks_pvalue` | KS statistic and p on response length distributions |
 | `proportion_z_stat`, `proportion_z_pvalue` | Validity proportion test; `proportion_test_method` records fisher when expected counts are small |
-| `mmd_statistic`, `mmd_pvalue` | RBF MMD statistic and permutation p on embeddings |
-| `ks_adjusted_pvalue`, `proportion_z_adjusted_pvalue`, `mmd_adjusted_pvalue` | BH adjusted values for the pooled family |
+| `mmd_statistic`, `mmd_pvalue` | RBF MMD statistic and permutation p on embeddings. When the panel is matched this is the paired prompt cluster permutation (the inferential entry in the corrected family and the alert path); the pooled response level permutation is kept as exploratory only |
+| `mmd_statistic_pooled`, `mmd_pvalue_pooled` | The pooled response level permutation, exploratory statistic and effect size reference, never the alert source |
+| `mmd_permutation_unit`, `paired_cluster_method` | The exchangeable unit (prompt_cluster or response) and the permutation regime (exhaustive or sampled), recorded per cycle |
+| `ks_adjusted_pvalue`, `proportion_z_adjusted_pvalue`, `mmd_adjusted_pvalue` | BH adjusted values across the test family |
 | `ks_significant`, `proportion_z_significant`, `mmd_significant` | 0/1 flags after correction |
-| `bh_significant_tests` | Count of corrected rejections in the cycle |
-| `overall_drift_detected` | Pooled flag for the cycle |
+| `distribution_shift_detected`, `quality_change_detected` | Split headline signals: a shift requires a distributional flag (KS or MMD); a validity rate change is the quality family. A proportion flag can never turn the distribution verdict |
+| `provider_latency_mean_seconds`, `provider_latency_p95_seconds`, `probe_tokens_total` | Per cycle provider cost visibility: measured call latency percentiles and provider reported token totals, when the adapter exposes usage |
+| `bh_significant_tests` | Which corrected tests rejected in the cycle |
+| `overall_drift_detected` | Legacy field: any corrected test, kept for stored history compatibility; never used for the headline or the drift alert |
 | `overall_quality_degradation` | Legacy column name; the actual definition is an invalid-response threshold: it is 1 when the current window has at least 10 responses (`alerts.min_sample_size`) and the invalid proportion is 0.30 or higher (`alerts.quality_degradation_threshold`). It is a high-invalid-response-rate flag, not a general answer quality judgment |
 | `centroid_distance` | Euclidean distance between reference and current embedding centroids, the baseline detector |
 | `length_shift_pct` | Percent change in mean response length |
@@ -386,7 +405,12 @@ duplicate embeddings at entry. Second, the panel is matched (the same ten prompt
 ids are probed on both sides), so the standard run level permutation is joined in
 the results by a paired prompt level MMD that exchanges whole prompts' answer sets
 across all 1024 swap patterns; it reports statistic -0.027, raw p 1.0, ten matched
-pairs. KS and the validity proportion test deliberately keep every stored run:
+pairs. In the current implementation that paired permutation is the inferential
+MMD entry: when matched prompt pairs exist it is what enters the corrected family
+and the alert path, and the pooled response level permutation is retained as an
+exploratory statistic. At the time of this experiment it was reported as a
+diagnostic beside the pooled test, which is why the alerting conclusions below
+are about the pooled path. KS and the validity proportion test deliberately keep every stored run:
 different texts with equal lengths are genuinely different observations, and a
 failed call is a real event regardless of repeats. Third, the identical pooled p
 values across every stored cycle are one comparison of two fixed answer sets, not

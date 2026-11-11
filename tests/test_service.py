@@ -227,6 +227,16 @@ class TestResultFieldMapping:
             'paired_cluster_mmd_statistic': -0.027,
             'paired_cluster_mmd_pvalue': 1.0,
             'paired_cluster_prompt_pairs': 10,
+            # production permutation metadata
+            'mmd_permutation_unit': 'prompt_cluster',
+            'paired_cluster_method': 'sampled',
+            # provider cost visibility
+            'provider_latency_mean_seconds': 4.2,
+            'provider_latency_p50_seconds': 4.0,
+            'provider_latency_p95_seconds': 5.1,
+            'probe_tokens_total': 960,
+            # split signal families as the monitor now emits them
+            'distribution_shift_detected': 0, 'quality_change_detected': 0,
             'bh_significant_tests': [], 'overall_drift_detected': 0,
             'overall_quality_degradation': 0,
         }
@@ -251,9 +261,54 @@ class TestResultFieldMapping:
         assert payload['unique_reference'] == 12
         assert payload['unique_current'] == 10
         assert payload['paired_cluster_mmd_pvalue'] == 1.0
+        # Production permutation metadata and provider cost fields survive.
+        assert payload['mmd_permutation_unit'] == 'prompt_cluster'
+        assert payload['paired_cluster_method'] == 'sampled'
+        assert payload['provider_latency_mean_seconds'] == 4.2
+        assert payload['provider_latency_p95_seconds'] == pytest.approx(5.1)
+        assert payload['probe_tokens_total'] == 960
+        # The split signals round trip: a validity flag can be on while the
+        # distribution family is off, and each field reads independently.
+        assert payload['distribution_shift_detected'] == 0
+        assert payload['quality_change_detected'] == 0
         # A refusal rate change card computed from these fields is real data,
         # not a missing read.
         assert payload['refusal_rate_current'] - payload['refusal_rate_reference'] == pytest.approx(0.05)
+
+    def test_split_signals_derived_from_legacy_rows(self, tmp_path):
+        """Rows stored before the split existed still derive it, from the
+        distributional flags only: a validity flag can never leak into the
+        distribution verdict through this path."""
+        storage = DriftMonitorStorage(str(tmp_path / "legacy_split.db"))
+        results = self.representative_results()
+        results.update({
+            'ks_significant': 0, 'mmd_significant': 0,
+            'proportion_z_significant': 1,
+            'overall_drift_detected': 1,  # legacy "any flag" field, ignored
+        })
+        results.pop('distribution_shift_detected', None)
+        results.pop('quality_change_detected', None)
+        storage.insert_test_results(results)
+        stored = storage.get_all_test_results(limit=1)[0]
+        from api import compute_latest_fields
+        payload = compute_latest_fields(stored)
+        assert payload['distribution_shift_detected'] == 0
+        assert payload['quality_change_detected'] == 1
+        assert payload['drift_detected'] == 1  # legacy passthrough stays
+
+    def test_split_signals_from_distributional_flags(self, tmp_path):
+        storage = DriftMonitorStorage(str(tmp_path / "dist_split.db"))
+        results = self.representative_results()
+        results.update({'ks_significant': 1, 'mmd_significant': 0,
+                        'proportion_z_significant': 0})
+        results.pop('distribution_shift_detected', None)
+        results.pop('quality_change_detected', None)
+        storage.insert_test_results(results)
+        stored = storage.get_all_test_results(limit=1)[0]
+        from api import compute_latest_fields
+        payload = compute_latest_fields(stored)
+        assert payload['distribution_shift_detected'] == 1
+        assert payload['quality_change_detected'] == 0
 
     def test_legacy_rows_without_effect_sizes_read_as_null(self, tmp_path):
         storage = DriftMonitorStorage(str(tmp_path / "legacy.db"))
@@ -268,3 +323,220 @@ class TestResultFieldMapping:
         assert stored['refusal_rate_reference'] is None
         assert stored['unique_reference'] is None
         assert stored['paired_cluster_mmd_statistic'] is None
+
+
+class TestRunThrottle:
+    """The public run throttle: one check per visitor per interval, and a
+    shared daily cycle budget, both explicit 429s with Retry-After. These
+    limits exist because a hosted cycle spends real provider quota."""
+
+    @staticmethod
+    def reset_state(monkeypatch):
+        from fastapi.testclient import TestClient
+
+        from api import app as api_app
+        monkeypatch.setattr("api.MIN_RUN_INTERVAL_SECONDS", 0.0)
+        monkeypatch.setattr("api.PUBLIC_RUN_INTERVAL_SECONDS", 600.0)
+        monkeypatch.setattr("api._last_enqueue", [0.0])
+        monkeypatch.setattr("api._ip_last_run", {})
+        monkeypatch.setattr("api._daily_usage",
+                            {"date": "2099-01-01", "count": 0})
+        # Never hand runs to the real worker: the monitor costs an
+        # embedding model load no unit test should pay.
+        class BlockedQueue:
+            def __init__(self):
+                self.items = []
+            def put_nowait(self, item):
+                self.items.append(item)
+            def qsize(self):
+                return len(self.items)
+            def get(self, *args, **kwargs):
+                import time
+                time.sleep(600)
+        monkeypatch.setattr("api._run_queue", BlockedQueue())
+        return TestClient(api_app)
+
+    def test_second_run_by_same_ip_inside_interval_is_rejected(self, monkeypatch):
+        client = self.reset_state(monkeypatch)
+        first = client.post("/runs")
+        assert first.status_code == 200
+        second = client.post("/runs")
+        assert second.status_code == 429
+        assert "Retry-After" in second.headers
+        assert "600" in second.headers["Retry-After"]
+
+    def test_daily_budget_rejects_after_exhaustion(self, monkeypatch):
+        monkeypatch.setattr("api.DAILY_CYCLE_BUDGET", 1)
+        client = self.reset_state(monkeypatch)
+        # reset_state leaves a stale date on purpose; stamp today with zero
+        # used so the first acceptance consumes the single-item budget.
+        from api import _daily_count_and_date
+        today = _daily_count_and_date()[1]
+        monkeypatch.setattr("api._daily_usage", {"date": today, "count": 0})
+        # Collapse the per visitor interval so the second POST reaches the
+        # budget check instead of being stopped one limit earlier.
+        monkeypatch.setattr("api.PUBLIC_RUN_INTERVAL_SECONDS", 0.0)
+        first = client.post("/runs")
+        assert first.status_code == 200
+        second = client.post("/runs")
+        assert second.status_code == 429
+        assert "daily cycle budget" in second.json()["detail"]
+        # Retry-After points to UTC midnight, meaning it is positive and
+        # bounded by a day.
+        assert 0 < int(second.headers["Retry-After"]) <= 86400
+
+    def test_rejected_runs_do_not_consume_budget(self, monkeypatch):
+        client = self.reset_state(monkeypatch)
+        client.post("/runs")
+        rejected = client.post("/runs")
+        assert rejected.status_code == 429
+        from api import _daily_usage
+        assert _daily_usage["count"] == 1  # only the accepted run counted
+
+    def test_budget_counts_a_date_rolled_forward(self, monkeypatch):
+        client = self.reset_state(monkeypatch)
+        client.post("/runs")
+        from api import _daily_usage
+        # A stale date resets the counter rather than carrying yesterday's
+        # usage into today.
+        assert _daily_usage["count"] == 1
+        _daily_usage["date"] = "1999-01-01"
+        from api import _daily_count_and_date
+        count, date = _daily_count_and_date()
+        assert count == 0 and date != "1999-01-01"
+
+
+class StubMonitor:
+    """Duck typed LLMDriftMonitor for endpoint tests without adapter or
+    embedding model construction."""
+
+    def __init__(self, storage, adapter=None, adapter_error=None):
+        self.storage = storage
+        self.adapter = adapter
+        self.adapter_error = adapter_error
+        self.config = {"target": {"model_id": "gemini-3.1-flash-lite"},
+                       "embeddings": {"model_name":
+                                          "sentence-transformers/all-MiniLM-L6-v2"},
+                       "reference": {"window_size": 120, "min_runs": 10},
+                       "monitoring": {"batch_size": 40, "category_window_cycles": 3,
+                                      "min_samples_per_category": 8},
+                       "alerts": {"significance_threshold": 0.05,
+                                  "min_consecutive_cycles": 2}}
+        self.canary_prompts = {"version": "3.0.0", "prompts": [{"id": i}
+            for i in range(40)]}
+
+
+class TestProviderUnavailableSurface:
+    def test_health_reports_not_configured_explicitly(self, monkeypatch, tmp_path):
+        from api import health
+
+        storage = DriftMonitorStorage(str(tmp_path / "stub.db"))
+        monitor = StubMonitor(storage, adapter=None,
+                              adapter_error=(
+                                  "Gemini API key is required. Set "
+                                  "GEMINI_API_KEY (e.g. in .env) or pass "
+                                  "api_key explicitly."))
+        monkeypatch.setattr("api._get_monitor", lambda: monitor)
+        payload = health()
+        assert payload["status"] == "degraded"
+        assert payload["provider"] == "gemini-3.1-flash-lite"
+        assert payload["provider_status"] == "not_configured"
+        assert "API key is required" in payload["provider_error"]
+
+    def test_config_reports_provider_unavailable_and_policy(self, monkeypatch, tmp_path):
+        from api import get_config
+
+        storage = DriftMonitorStorage(str(tmp_path / "stub.db"))
+        storage.insert_manifest({"provider": "gemini",
+                                 "model_id": "gemini-3.1-flash-lite"})
+        monitor = StubMonitor(storage, adapter=None, adapter_error="missing key")
+        monkeypatch.setattr("api._get_monitor", lambda: monitor)
+        payload = get_config()
+        assert payload["provider_available"] is False
+        assert payload["provider_error"] == "missing key"
+        assert payload["baseline_manifest"]["provider"] == "gemini"
+        assert payload["run_policy"]["daily_cycle_budget"] > 0
+        # No key material of any kind appears in the config endpoint.
+        assert "GEMINI_API_KEY" not in str(payload)
+        assert "api_key" not in str(payload).lower()
+
+
+class TestComparisonRedaction:
+    """Safety boundary prompts are displayed as labels only; their exact
+    wording and the answers to them never leave the API."""
+
+    @staticmethod
+    def build_monitor(tmp_path):
+        from monitor import LLMDriftMonitor
+
+        storage = DriftMonitorStorage(str(tmp_path / "cmp.db"))
+        monitor = LLMDriftMonitor.__new__(LLMDriftMonitor)
+        monitor.storage = storage
+        monitor.config = {"monitoring": {"batch_size": 2},
+                          "reference": {"window_size": 2}}
+        monitor.canary_prompts = {
+            "version": "3.0.0",
+            "prompts": [
+                {"id": "fact_001", "category": "factual",
+                 "text": "What is the capital of France?",
+                 "public_label": "Capital of France",
+                 "redact_prompt": False},
+                {"id": "refu_025", "category": "safety_boundary",
+                 "text": "SENSITIVE REQUEST WORDING SENTINEL",
+                 "public_label": "Disallowed synthesis request, details withheld",
+                 "redact_prompt": True},
+            ],
+        }
+        return monitor
+
+    def seed_cycles(self, monitor, cycles):
+        for i in range(cycles):
+            for prompt in monitor.canary_prompts["prompts"]:
+                monitor.storage.insert_probe_run(
+                    timestamp=f"2026-01-0{i + 1}T00:00:00",
+                    prompt_version="3.0.0",
+                    prompt_text=prompt["text"],
+                    model_id="gemini-3.1-flash-lite",
+                    response_text=f"answer {i}",
+                    response_length=20 + i,
+                    is_valid=True, run_status="success",
+                    adapter_type="gemini",
+                    prompt_id=prompt["id"],
+                    category=prompt["category"],
+                    cycle_id=f"cycle{i}",
+                )
+
+    def test_redacted_prompt_never_exposes_wording(self, tmp_path):
+        monitor = self.build_monitor(tmp_path)
+        self.seed_cycles(monitor, 3)  # 2 reference cycles + 1 current
+        payload = monitor.get_window_comparison()
+        assert payload["ready"] is True
+        rows = {r["prompt_id"]: r for r in payload["rows"]}
+        safe_row = rows["fact_001"]
+        assert safe_row["prompt_text"] == "What is the capital of France?"
+        assert safe_row["prompt_redacted"] is False
+        assert safe_row["reference"]["text"] is not None
+
+        red_row = rows["refu_025"]
+        assert red_row["prompt_redacted"] is True
+        assert red_row["label"] == "Disallowed synthesis request, details withheld"
+        assert "SENSITIVE" not in str(red_row)
+        assert "SENTINEL" not in str(red_row)
+        assert red_row["prompt_text"] == "(withheld: safety boundary prompt)"
+        # The answers are withheld the same way; the metadata stays visible.
+        assert red_row["reference"]["text"] == "(withheld: safety boundary prompt)"
+        assert red_row["reference"]["length"] is not None
+        assert red_row["reference"]["is_valid"] is not None
+        assert red_row["current"]["text"].startswith("(withheld")
+
+    def test_manifest_roundtrip(self, tmp_path):
+        storage = DriftMonitorStorage(str(tmp_path / "manifest.db"))
+        assert storage.get_manifest() == {}
+        storage.insert_manifest({"provider": "gemini",
+                                 "model_id": "gemini-3.1-flash-lite",
+                                 "panel_version": "3.0.0"})
+        storage.insert_manifest({"provider": "gemini"})  # update, not duplicate
+        manifest = storage.get_manifest()
+        assert manifest == {"provider": "gemini",
+                            "model_id": "gemini-3.1-flash-lite",
+                            "panel_version": "3.0.0"}
