@@ -141,6 +141,11 @@ const evaluation = {
 
 let routeOverrides = {};
 
+/* The provider comparison fixture is the committed artifact itself, so the
+   smoke test also pins that the exported JSON stays renderable. */
+const providerComparison = JSON.parse(
+  fs.readFileSync(path.join(__dirname, "provider_comparison.json"), "utf8"));
+
 function resp(json, opts = {}) {
   return { ok: opts.ok !== false, status: opts.status || 200,
            headers: { get: () => opts.retryAfter == null ? null : opts.retryAfter },
@@ -188,6 +193,7 @@ const fixtures = {
   "/drift/categories": () => resp({
     category_window_cycles: 3, min_samples_per_category: 8, rows: [] }),
   "/evaluation": () => resp(evaluation),
+  "/static/provider_comparison.json": () => resp(providerComparison),
 };
 
 function getFixture(url) {
@@ -313,6 +319,54 @@ const settle = () => new Promise((r) => setImmediate(r));
   check("detection rate sub documents the limited trial basis",
     getById("ev-detect-sub").textContent.includes("limited"),
     getById("ev-detect-sub").textContent);
+
+  console.log("scenario 2b: recorded provider comparison renders from the committed artifact");
+
+  /* loadEvaluation kicked off the static-asset loader as its own task. */
+  await settle();
+
+  const provCmpHtml = getById("prov-cmp").innerHTML;
+  check("both provider models render in the comparison table",
+    provCmpHtml.includes("openai/gpt-oss-20b")
+      && provCmpHtml.includes("gemini-3.1-flash-lite"),
+    provCmpHtml.slice(0, 200));
+  check("groq latency range renders from the artifact",
+    provCmpHtml.includes("0.69") && provCmpHtml.includes("1.23"),
+    provCmpHtml.slice(0, 400));
+  check("groq reference validity is shown as not measured, not invented",
+    provCmpHtml.includes("not measured"),
+    provCmpHtml.slice(0, 600));
+
+  /* The renderer fills this paragraph through innerHTML (it embeds
+     formatted values), and the DOM stub keeps textContent separate. */
+  const provVerdict = getById("prov-cmp-verdict").innerHTML;
+  check("comparison verdict reports no corrected flag and no alert",
+    provVerdict.includes("no corrected test flagged") && provVerdict.includes("no alert fired"),
+    provVerdict.slice(0, 160));
+  check("comparison verdict carries the paired diagnostic",
+    provVerdict.includes("matched prompts"),
+    provVerdict.slice(0, 300));
+  check("comparison states the cross-provider caveat explicitly",
+    provVerdict.includes("cross-provider"),
+    provVerdict.slice(-300));
+  check("comparison names the uncontrolled differences",
+    provVerdict.includes("reasoning"),
+    provVerdict.slice(300, 700));
+  check("comparison cites its source artifacts",
+    provVerdict.includes("real_provider_results.json"),
+    provVerdict.slice(-300));
+
+  console.log("scenario 2c: comparison asset failure is an explicit state");
+  routeOverrides = { "/static/provider_comparison.json": () => {
+    throw new Error("asset missing");
+  } };
+  vmEval("state.providerComparison = null;");
+  await loadProviderComparison();
+  await settle();
+  check("missing comparison asset renders an explicit unavailable state",
+    getById("prov-cmp").innerHTML.includes("unavailable"),
+    getById("prov-cmp").innerHTML.slice(0, 120));
+  routeOverrides = {};
 
   console.log("scenario 3: a hanging /health must not stop any panel");
 

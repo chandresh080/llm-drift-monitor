@@ -19,6 +19,7 @@ const state = {
   comparison: null,   // /drift/comparison
   categories: null,   // /drift/categories
   evaluation: null,   // /evaluation
+  providerComparison: null,  // recorded Groq vs Gemini comparison (static asset)
   failed: new Set(),  // data endpoints that did not answer (explicit unavailable states)
   awake: false,       // at least one data endpoint has answered
   wakeStartedAt: null,
@@ -771,6 +772,7 @@ function renderPairedDiagnostic() {
 }
 
 async function loadEvaluation() {
+  loadProviderComparison();
   try {
     state.evaluation = await fetchJson("/evaluation");
   } catch (err) {
@@ -779,6 +781,92 @@ async function loadEvaluation() {
     return;
   }
   renderEvaluation();
+}
+
+/* The recorded Groq versus Gemini comparison lives in a committed static
+   artifact built by scripts/export_provider_comparison.py from the stored
+   experiment outputs. Loading it is its own task (a static file, no API
+   work) so the evaluation tab never waits on it. */
+async function loadProviderComparison() {
+  try {
+    state.providerComparison =
+      await fetchJson("/static/provider_comparison.json");
+    state.failed.delete("providerComparison");
+  } catch (err) {
+    state.providerComparison = null;
+    state.failed.add("providerComparison");
+  }
+  try {
+    renderProviderComparison();
+  } catch (err) { /* a renderer must never take the page down */ }
+}
+
+function renderProviderComparison() {
+  const pc = state.providerComparison;
+  const box = $("prov-cmp");
+  const verdict = $("prov-cmp-verdict");
+  if (!box) return;
+  if (!pc) {
+    box.innerHTML =
+      '<p class="muted">Recorded comparison unavailable in this deployment.</p>';
+    if (verdict) verdict.textContent = "";
+    return;
+  }
+  const agg = (rows) => {
+    const p50 = rows.map((r) => r.latency_p50_s).filter((v) => v != null);
+    const p95 = rows.map((r) => r.latency_p95_s).filter((v) => v != null);
+    const tokens = rows.map((r) => r.tokens_total).filter((v) => v != null);
+    const ok = rows.reduce((s, r) => s + (r.ok_runs || 0), 0);
+    const failed = rows.reduce((s, r) => s + (r.failed_runs || 0), 0);
+    const range = (xs, digits) => xs.length
+      ? `${Math.min(...xs).toFixed(digits)} to ${Math.max(...xs).toFixed(digits)}`
+      : null;
+    return {
+      p50: range(p50, 2), p95: range(p95, 2),
+      tokens: range(tokens, 0), ok, failed,
+    };
+  };
+  const ref = agg(pc.reference.cycles);
+  const cur = agg(pc.current.cycles);
+  const validity = (rows) => {
+    const vals = rows.map((r) => r.validity_rate).filter((v) => v != null);
+    if (!vals.length) return "not measured (tests ran on the current stage only)";
+    const min = Math.min(...vals) * 100, max = Math.max(...vals) * 100;
+    return min === max ? `${min.toFixed(0)}%` : `${min.toFixed(0)} to ${max.toFixed(0)}%`;
+  };
+  const row = (label, stage, model, a, v) => `
+    <tr><td>${label}</td><td>${stage}</td><td>${model}</td>
+    <td>${a.ok} / ${a.failed}</td><td>${a.p50 || "n/a"}</td>
+    <td>${a.p95 || "n/a"}</td><td>${a.tokens || "n/a"}</td><td>${v}</td></tr>`;
+  box.innerHTML = `
+    <table class="plain-table"><thead><tr>
+      <th>Provider</th><th>Stage</th><th>Model</th><th>Stored answers (ok / failed)</th>
+      <th>Latency p50 (s)</th><th>Latency p95 (s)</th><th>Tokens per cycle</th>
+      <th>Validity</th>
+    </tr></thead><tbody>
+      ${row(pc.reference.provider, "reference, 5 cycles",
+        pc.reference.model, ref, validity(pc.reference.cycles))}
+      ${row(pc.current.provider, "current, 6 cycles",
+        pc.current.model, cur, validity(pc.current.cycles))}
+    </tbody></table>`;
+
+  if (verdict) {
+    const f1 = (pc.families || {}).single_cycle || {};
+    const f2 = (pc.families || {}).extended_final || {};
+    const noFlag = !f1.any_significant && !f2.any_significant;
+    verdict.innerHTML =
+      `Detector verdicts: ${noFlag
+        ? "no corrected test flagged in either the single cycle comparison or the five cycle extension, and no alert fired"
+        : "one or more tests flagged (see the committed artifacts)"}. `
+      + `The paired prompt level permutation reported raw p ${fmtP(f1.paired_mmd_pvalue)} `
+      + `over ${f1.paired_prompt_pairs} matched prompts. Shared settings: prompt panel `
+      + `version ${pc.shared.prompt_panel_version}, ${pc.shared.prompts_per_cycle} prompts per `
+      + `cycle, temperature ${pc.shared.temperature}, max_tokens ${pc.shared.max_tokens}, `
+      + `embeddings ${pc.shared.embedding_model}. Declared uncontrolled differences: `
+      + `${pc.shared.uncontrolled_differences.map((d) => String(d)).join("; ")}. `
+      + `Sources: ${pc.source_artifacts.join(", ")}, derived by `
+      + `${pc.generated_by}. ${pc.caveat}`;
+  }
 }
 
 /* Numeric keys everywhere: the CSV reader returns delta values as strings

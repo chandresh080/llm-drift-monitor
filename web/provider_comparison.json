@@ -1,0 +1,185 @@
+{
+ "caveat": "Cross-provider, cross-model comparison. Different models served by different providers; a detected shift could not be attributed exclusively to provider behavior, and no drift alert fired here. The hosted demo's drift verdicts compare Gemini against Gemini only.",
+ "collected_on": "2026-11-08",
+ "current": {
+  "cycles": [
+   {
+    "cycle": 1,
+    "failed_runs": 0,
+    "latency_mean_s": 2.339,
+    "latency_p50_s": 1.722,
+    "latency_p95_s": 6.531,
+    "mean_length": 989.3,
+    "ok_runs": 10,
+    "stage": "gemini_current",
+    "tokens_total": 91,
+    "validity_rate": 1.0
+   },
+   {
+    "cycle": 1,
+    "failed_runs": 0,
+    "latency_mean_s": 2.577,
+    "latency_p50_s": 1.562,
+    "latency_p95_s": 6.255,
+    "mean_length": 989.3,
+    "ok_runs": 10,
+    "stage": "gemini_current",
+    "tokens_total": 521,
+    "validity_rate": 1.0
+   },
+   {
+    "cycle": 2,
+    "failed_runs": 0,
+    "latency_mean_s": 1.92,
+    "latency_p50_s": 1.523,
+    "latency_p95_s": 3.175,
+    "mean_length": 989.3,
+    "ok_runs": 10,
+    "stage": "gemini_current",
+    "tokens_total": 524,
+    "validity_rate": 1.0
+   },
+   {
+    "cycle": 3,
+    "failed_runs": 0,
+    "latency_mean_s": 1.874,
+    "latency_p50_s": 1.44,
+    "latency_p95_s": 3.021,
+    "mean_length": 989.3,
+    "ok_runs": 10,
+    "stage": "gemini_current",
+    "tokens_total": 524,
+    "validity_rate": 1.0
+   },
+   {
+    "cycle": 4,
+    "failed_runs": 0,
+    "latency_mean_s": 5.618,
+    "latency_p50_s": 2.479,
+    "latency_p95_s": 15.381,
+    "mean_length": 989.3,
+    "ok_runs": 10,
+    "stage": "gemini_current",
+    "tokens_total": 91,
+    "validity_rate": 1.0
+   },
+   {
+    "cycle": 5,
+    "failed_runs": 0,
+    "latency_mean_s": 1.879,
+    "latency_p50_s": 1.435,
+    "latency_p95_s": 2.974,
+    "mean_length": 989.3,
+    "ok_runs": 10,
+    "stage": "gemini_current",
+    "tokens_total": 524,
+    "validity_rate": 1.0
+   }
+  ],
+  "model": "gemini-3.1-flash-lite",
+  "provider": "Google Gemini"
+ },
+ "families": {
+  "extended_final": {
+   "alerts": [],
+   "any_significant": false,
+   "ks_pvalue": 0.39459210638345227,
+   "mmd_pvalue": 0.9800399201596807,
+   "paired_mmd_pvalue": 1.0,
+   "paired_prompt_pairs": 10,
+   "proportion_z_pvalue": 1.0
+  },
+  "single_cycle": {
+   "alerts": [],
+   "any_significant": false,
+   "ks_pvalue": 0.39459210638345227,
+   "mmd_pvalue": 0.9800399201596807,
+   "paired_mmd_pvalue": 1.0,
+   "paired_prompt_pairs": 10,
+   "proportion_z_pvalue": 1.0
+  }
+ },
+ "generated_by": "scripts/export_provider_comparison.py",
+ "reference": {
+  "cycles": [
+   {
+    "cycle": 1,
+    "failed_runs": 0,
+    "latency_mean_s": 0.777,
+    "latency_p50_s": 0.686,
+    "latency_p95_s": 1.231,
+    "mean_length": null,
+    "ok_runs": 10,
+    "stage": "groq_reference",
+    "tokens_total": 390,
+    "validity_rate": null
+   },
+   {
+    "cycle": 2,
+    "failed_runs": 0,
+    "latency_mean_s": 0.674,
+    "latency_p50_s": 0.616,
+    "latency_p95_s": 1.015,
+    "mean_length": null,
+    "ok_runs": 10,
+    "stage": "groq_reference",
+    "tokens_total": 390,
+    "validity_rate": null
+   },
+   {
+    "cycle": 3,
+    "failed_runs": 0,
+    "latency_mean_s": 0.682,
+    "latency_p50_s": 0.454,
+    "latency_p95_s": 1.111,
+    "mean_length": null,
+    "ok_runs": 10,
+    "stage": "groq_reference",
+    "tokens_total": 352,
+    "validity_rate": null
+   },
+   {
+    "cycle": 4,
+    "failed_runs": 0,
+    "latency_mean_s": 0.652,
+    "latency_p50_s": 0.564,
+    "latency_p95_s": 0.978,
+    "mean_length": null,
+    "ok_runs": 10,
+    "stage": "groq_reference",
+    "tokens_total": 390,
+    "validity_rate": null
+   },
+   {
+    "cycle": 5,
+    "failed_runs": 0,
+    "latency_mean_s": 0.623,
+    "latency_p50_s": 0.592,
+    "latency_p95_s": 0.899,
+    "mean_length": null,
+    "ok_runs": 10,
+    "stage": "groq_reference",
+    "tokens_total": 390,
+    "validity_rate": null
+   }
+  ],
+  "model": "openai/gpt-oss-20b",
+  "provider": "Groq",
+  "reasoning_effort": "low"
+ },
+ "shared": {
+  "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+  "max_tokens": 512,
+  "prompt_panel_version": "2.1.0",
+  "prompts_per_cycle": 10,
+  "temperature": 0.0,
+  "uncontrolled_differences": [
+   "different underlying models (this is a cross-provider comparison, not a within-model temporal drift study)",
+   "Groq openai/gpt-oss-20b consumes part of the token budget on hidden reasoning even at low effort; Gemini does not expose this knob in this pipeline"
+  ]
+ },
+ "source_artifacts": [
+  "results/real_provider_results.json",
+  "results/real_provider_extended_results.json"
+ ]
+}

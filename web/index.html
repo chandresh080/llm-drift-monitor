@@ -301,6 +301,21 @@
     </section>
 
     <section class="panel">
+      <h2 class="panel-title">Recorded provider comparison: Groq versus Gemini</h2>
+      <div class="chip" id="prov-cmp-chip">Recorded experiment, not a live call</div>
+      <p class="panel-note">A real hosted-provider comparison recorded with this
+        pipeline on 2026-11-08: the same 10 prompt panel and generation settings sent
+        to Groq (reference stage) and Google Gemini (current stage), using the
+        production adapters and storage unchanged. This is cross-provider,
+        cross-model evidence that the adapters work; it is deliberately not a drift
+        result, because a shift between two different models could never be
+        attributed to provider behavior alone. The hosted demo's drift verdicts
+        compare Gemini against Gemini only.</p>
+      <div id="prov-cmp"></div>
+      <p id="prov-cmp-verdict" class="panel-note"></p>
+    </section>
+
+    <section class="panel">
       <h2 class="panel-title">Distribution shift versus quality regression</h2>
       <p class="panel-note">The 2x2 question the monitor is designed around: did the
         response distribution change, or did response quality degrade? Rows are

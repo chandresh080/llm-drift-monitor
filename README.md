@@ -267,11 +267,13 @@ substitutes for the other.
   sizes, the per prompt reference vs current comparison (with the safety
   boundary prompts shown as public labels only), category evidence with the
   counts behind every skip decision, alert history, and a separate System
-  evaluation tab for the simulation numbers. The first 160 stored responses
-  make an evaluation cycle: the committed Gemini baseline plus one current
-  cycle. Checks run one prompt panel cycle at a time; with the 13 second
-  call spacing that respects the free tier quota, a cycle takes several
-  minutes.
+  evaluation tab for the simulation numbers plus the recorded Groq versus
+  Gemini comparison (a committed artifact derived from the stored experiment
+  outputs, presented as cross-provider adapter evidence, never a drift
+  verdict). The first 160 stored responses make an evaluation cycle: the
+  committed Gemini baseline plus one current cycle. Checks run one prompt
+  panel cycle at a time; with the 13 second call spacing that respects the
+  free tier quota, a cycle takes several minutes.
 - Local, no keys needed: `python -m scripts.generate_seed_db` (synthetic
   adapter, uses the 10 prompt panel and the seeded shift history), then
   `uvicorn api:app --port 8000` and open `http://localhost:8000`.
@@ -305,11 +307,14 @@ dashboard is a thin page over it.
 - `scripts/generate_reference_db.py`: collects the live Gemini baseline
   (`data/seed_gemini.db`) with the hosted model setup and writes its
   provenance manifest; resumable across transient provider failures.
+- `scripts/export_provider_comparison.py`: derives the recorded Groq versus
+  Gemini comparison shown in the evaluation tab from the committed
+  experiment outputs into `web/provider_comparison.json`; never calls any API.
 - `experiments/`: the evaluation described above.
 
 ## Testing
 
-`pytest` (113 tests), `ruff check .`, and a Node dashboard contract smoke test
+`pytest` (115 tests), `ruff check .`, and a Node dashboard contract smoke test
 (`web/smoke.test.js`, a mocked DOM test that covers per endpoint progressive
 rendering, the hanging health check acceptance scenario, the split signal
 families, prompt redaction and the evaluation chart data fidelity) run in CI on
