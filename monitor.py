@@ -26,6 +26,40 @@ from sequential_testing import (spent_alpha, consecutive_flagged_history,
 
 logger = logging.getLogger("llm_drift_monitor.monitor")
 
+# Provider keys may arrive as Render-style secret files (a file named after the
+# variable, mounted at /etc/secrets/<name>) instead of environment variables.
+# The adapters read keys from os.environ, so these files are folded into the
+# process environment before the adapter is built.
+_PROVIDER_KEY_NAMES = ("GEMINI_API_KEY", "GROQ_API_KEY",
+                       "OPENAI_API_KEY", "XAI_API_KEY")
+
+
+def load_provider_key_secret_files(
+        search_dirs: Tuple[str, ...] = ("/etc/secrets", ".")) -> None:
+    """Fold provider key secret files into the process environment.
+
+    For each known key name absent from the environment, the first search
+    directory holding a non-empty file of that name wins, and the stripped
+    file content becomes the variable's value. A variable already present is
+    never overwritten, so an explicitly set key keeps precedence and a missing
+    key keeps its explicit unconfigured state.
+    """
+    for name in _PROVIDER_KEY_NAMES:
+        if os.environ.get(name):
+            continue
+        for directory in search_dirs:
+            path = os.path.join(directory, name)
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    value = handle.read().strip()
+            except OSError:
+                continue
+            if value:
+                os.environ[name] = value
+                logger.info("Provider key %s loaded from secret file", name)
+                break
+
+
 
 def _generate_batch_concurrent(generate, prompts: List[str],
                                max_workers: int = 8) -> List[str]:
@@ -534,6 +568,9 @@ class LLMDriftMonitor:
             load_dotenv()
         except ImportError:
             pass  # python-dotenv optional; fall back to process environment only
+        # Render stores keys as secret files at /etc/secrets/<name>; fold those
+        # into the environment before the adapter decides it is unconfigured.
+        load_provider_key_secret_files()
         self.storage = DriftMonitorStorage(self.config['data']['db_path'])
         
         # Initialize embedding extractor
