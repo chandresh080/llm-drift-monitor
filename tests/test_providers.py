@@ -151,6 +151,46 @@ class TestGeminiAdapter:
         with pytest.raises(RuntimeError, match="API key is required"):
             GeminiAdapter()
 
+    def test_secret_file_folds_into_environment(self, monkeypatch, tmp_path):
+        """A Render-style secret file (key name as filename) supplies the key
+        when the environment variable is absent."""
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        secret = tmp_path / "GEMINI_API_KEY"
+        secret.write_text("  AIza-test-key-from-secret-file  \n",
+                          encoding="utf-8")
+        empty = tmp_path / "sub"
+        empty.mkdir()
+        monitor.load_provider_key_secret_files(
+            search_dirs=(str(empty), str(tmp_path)))
+        import os
+        assert os.environ["GEMINI_API_KEY"] == "AIza-test-key-from-secret-file"
+
+    def test_secret_file_never_overrides_explicit_env(self, monkeypatch, tmp_path):
+        """An explicitly set environment variable keeps precedence."""
+        monkeypatch.setenv("GEMINI_API_KEY", "explicit-key")
+        secret = tmp_path / "GEMINI_API_KEY"
+        secret.write_text("file-key", encoding="utf-8")
+        monitor.load_provider_key_secret_files(search_dirs=(str(tmp_path),))
+        import os
+        assert os.environ["GEMINI_API_KEY"] == "explicit-key"
+
+    def test_secret_file_missing_and_empty_are_ignored(self, monkeypatch, tmp_path):
+        """A missing file and an empty file both leave the variable unset."""
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        (tmp_path / "GEMINI_API_KEY").write_text("   \n", encoding="utf-8")
+        monitor.load_provider_key_secret_files(search_dirs=(str(tmp_path),))
+        import os
+        assert not os.environ.get("GEMINI_API_KEY")
+
+    def test_gemini_adapter_uses_secret_file_key(self, monkeypatch, tmp_path):
+        """End to end: adapter builds with the key folded in from the file."""
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        secret = tmp_path / "GEMINI_API_KEY"
+        secret.write_text("AIza-test-key", encoding="utf-8")
+        monitor.load_provider_key_secret_files(search_dirs=(str(tmp_path),))
+        adapter = GeminiAdapter()
+        assert adapter.api_key == "AIza-test-key"
+
     def test_api_error_propagates_and_trips_breaker(self, monkeypatch):
         def failing_post(*args, **kwargs):
             raise RuntimeError("Gemini native endpoint returned HTTP 429")
