@@ -206,7 +206,13 @@ def _execute_cycle(run_id: str) -> None:
     started = time.perf_counter()
     try:
         monitor = _get_monitor()
-        result = monitor.run_monitoring_cycle(num_probes=10)
+        # Full configured panel, not a reduced subset: the committed reference
+        # baseline and the matched window rule both require every stored cycle
+        # to cover the same prompt ids, so a smaller visitor cycle could never
+        # share a window with the seeded history and every check would stop at
+        # "insufficient matched window data". The 13 s call spacing and the
+        # visitor/daily budgets keep the free tier cost bounded instead.
+        result = monitor.run_monitoring_cycle()
         _runs[run_id] = {"status": "completed", "result": result}
         _metrics["cycles_total"] += 1
         _metrics["last_cycle_seconds"] = round(time.perf_counter() - started, 2)
