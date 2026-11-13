@@ -32,5 +32,11 @@ services:
         value: "2"
       - key: OMP_NUM_THREADS
         value: "1"
+      # The embedding model runs on ONNX Runtime: the torch stack loading mid
+      # cycle peaked past the free tier's 512 MB ceiling (observed 127 -> 505 MB
+      # then an OOM kill dropped the cycle and reset the disk). The ONNX graph
+      # is baked into the image; see embeddings.py for the selection contract.
+      - key: DRIFT_MONITOR_EMBEDDING_BACKEND
+        value: "onnx"
       - key: TOKENIZERS_PARALLELISM
         value: "false"

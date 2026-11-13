@@ -16,8 +16,32 @@ class EmbeddingExtractor:
     
     @property
     def model(self):
-        """Lazy load the embedding model."""
+        """Lazy load the embedding model.
+
+        The backend is selectable through DRIFT_MONITOR_EMBEDDING_BACKEND.
+        "onnx" runs the same MiniLM weights on ONNX Runtime, which peaks a
+        few hundred MB below the torch stack: the hosted free tier enforces
+        a 512 MB ceiling and the torch stack loading mid cycle breached it
+        (observed RSS 127 -> 505 MB -> OOM kill). The ONNX export is baked
+        into the deployment image, so loading never exports. The default
+        stays torch so local runs, experiments and tests behave exactly as
+        they always have; a failed ONNX load falls back with a warning.
+        """
         if self._model is None:
+            backend = (os.environ.get("DRIFT_MONITOR_EMBEDDING_BACKEND")
+                       or "").strip().lower()
+            if backend == "onnx":
+                from sentence_transformers import SentenceTransformer
+                try:
+                    self._model = SentenceTransformer(
+                        self.model_name, device=self.device, backend="onnx",
+                        model_kwargs={"file_name": "onnx/model.onnx"})
+                    logger.info("Embedding model loaded on the ONNX Runtime "
+                                "backend")
+                    return self._model
+                except Exception as exc:  # fall back to torch below
+                    logger.warning("ONNX embedding backend unavailable (%s); "
+                                   "falling back to torch", exc)
             import torch
             # Small model: wide thread pools add overhead rather than speed.
             # Respect an explicit OMP_NUM_THREADS from the deployment; cap otherwise.
