@@ -23,6 +23,13 @@ RUN python -c "from sentence_transformers import SentenceTransformer; \
     SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', device='cpu', backend='onnx')" \
     && echo "ONNX embedding export baked into image"
 
+# Select the ONNX backend here rather than through the deployment platform's
+# environment: blueprint managed services have been observed to skip newly
+# added env vars on sync, and a missed variable means the torch stack loads
+# mid cycle and breaches the memory ceiling again. embeddings.py reads this
+# and still honors an explicit deployment env var if one is set.
+ENV DRIFT_MONITOR_EMBEDDING_BACKEND=onnx
+
 COPY . .
 
 EXPOSE 8000
