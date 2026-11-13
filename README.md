@@ -114,10 +114,13 @@ rather than borrowed from bigger deployments:
 - **Keeping the demo awake.** The free tier pauses the service after 15 minutes without
   traffic, and the first request to a paused instance waits out the spin up. A scheduled
   GitHub Action pings the health endpoint every ten minutes, so the demo usually answers
-  immediately; without that workflow a fresh visit can take a minute or two.- **MLflow without the memory cost.** Each cycle logs its params, metrics, and the full
+- **MLflow without the memory cost.** Each cycle logs its params, metrics, and the full
   drift report to MLflow from a short lived subprocess: the serving process never imports
   mlflow, so a memory capped deployment stays safe while every run still lands in the
-  tracking store, pinned to the exact git hash and config.
+  tracking store, pinned to the exact git hash and config. Because the child's memory still
+  counts against the instance ceiling, a cgroup headroom check skips the subprocess on hosts
+  too small to afford the import (the free tier), so tracking degrades to "skipped" instead
+  of becoming an out of memory kill.
 
 Deliberately not used: read replicas, data sharding, and a CDN. There is one SQLite file
 per deployment, queried through indexed paths; sharding or replicas would add moving parts

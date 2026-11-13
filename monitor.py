@@ -26,6 +26,37 @@ from sequential_testing import (spent_alpha, consecutive_flagged_history,
 
 logger = logging.getLogger("llm_drift_monitor.monitor")
 
+
+def _memory_headroom_mb(base: str = "/sys/fs/cgroup") -> Optional[float]:
+    """Memory available to the container in MB, or None when unknown.
+
+    Reads the cgroup v2 memory files; cgroup v1 paths and hosts without
+    cgroup accounting return None so callers treat memory as unconstrained.
+    """
+    try:
+        with open(os.path.join(base, "memory.max"), encoding="utf-8") as handle:
+            limit = handle.read().strip()
+        with open(os.path.join(base, "memory.current"), encoding="utf-8") as handle:
+            current = handle.read().strip()
+        if not limit or limit == "max":
+            return None
+        return (int(limit) - int(current)) / (1024 * 1024)
+    except (OSError, ValueError):
+        return None
+
+
+def _mlflow_headroom_ok(headroom_mb: Optional[float],
+                        required_mb: float = 450.0) -> bool:
+    """Whether the container can afford a mlflow import in a subprocess.
+
+    The mlflow import costs roughly 400 MB inside the child process, and that
+    memory counts against the instance limit even though it is not resident
+    in the serving process: the earlier design assumed a subprocess keeps a
+    memory capped deployment safe, but the cgroup ceiling applies to the
+    whole instance, and the child was the OOM killer's trigger at cycle end.
+    """
+    return headroom_mb is None or headroom_mb >= required_mb
+
 # Provider keys may arrive as Render-style secret files (a file named after the
 # variable, mounted at /etc/secrets/<name>) instead of environment variables.
 # The adapters read keys from os.environ, so these files are folded into the
@@ -868,6 +899,17 @@ class LLMDriftMonitor:
             # memory ceiling (model held warm), so drop the model before mlflow
             # exists in a second process. The next cycle reloads it on demand.
             self.embedder.release()
+
+            # The child's memory counts against the instance ceiling even
+            # though it is not resident here; skip tracking when the container
+            # cannot afford the import (the hosted free tier cannot).
+            headroom = _memory_headroom_mb()
+            if not _mlflow_headroom_ok(headroom):
+                logger.info(
+                    "Skipping MLflow logging: %.0f MB memory headroom is below "
+                    "what the mlflow import needs; tracking resumes on hosts "
+                    "with headroom", headroom if headroom is not None else -1)
+                return
 
             flagged_count = int(
                 results.get('ks_significant', 0) +
