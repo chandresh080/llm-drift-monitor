@@ -37,7 +37,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel
 
-from monitor import LLMDriftMonitor
+from monitor import LLMDriftMonitor, _cgroup_memory_stats
 from storage import DriftMonitorStorage
 
 app = FastAPI(title="LLM Drift Monitor")
@@ -860,6 +860,25 @@ def metrics() -> str:
         "# HELP drift_uptime_seconds Seconds since the process started.",
         "# TYPE drift_uptime_seconds gauge",
         f"drift_uptime_seconds {int(time.time() - _started_at)}",
+    ]
+    # The instance ceiling applies to the whole cgroup, not just this process:
+    # child processes and reclaimable cache count too, and the platform's OOM
+    # killer acts on these numbers. Peak retains a spike that lands between
+    # two polls, which is exactly how the free tier's kills escaped notice.
+    cgroup = _cgroup_memory_stats()
+    lines += [
+        "# HELP drift_cgroup_limit_mb Memory limit of the instance cgroup.",
+        "# TYPE drift_cgroup_limit_mb gauge",
+        f"drift_cgroup_limit_mb {cgroup['limit_mb'] or 0}",
+        "# HELP drift_cgroup_current_mb Current memory of the instance cgroup.",
+        "# TYPE drift_cgroup_current_mb gauge",
+        f"drift_cgroup_current_mb {cgroup['current_mb'] or 0}",
+        "# HELP drift_cgroup_peak_mb Peak memory of the instance cgroup.",
+        "# TYPE drift_cgroup_peak_mb gauge",
+        f"drift_cgroup_peak_mb {cgroup['peak_mb'] or 0}",
+        "# HELP drift_cgroup_oom_kills Kernel oom kill count for the cgroup.",
+        "# TYPE drift_cgroup_oom_kills counter",
+        f"drift_cgroup_oom_kills {cgroup['oom_kills'] or 0}",
     ]
     return "\n".join(lines) + "\n"
 

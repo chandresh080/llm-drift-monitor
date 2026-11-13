@@ -99,7 +99,25 @@ class EmbeddingExtractor:
                     logger.info("Embedding model loaded on the torch free "
                                 "ONNX Runtime backend")
                     return self._model
-                except Exception as exc:  # fall back to torch below
+                except Exception as exc:
+                    # The torch fallback costs roughly 500 MB. On a memory
+                    # capped host that fallback is not a fallback but an OOM
+                    # kill of the whole instance: one that also destroys the
+                    # logs and the run record. When the container cannot
+                    # afford torch, fail loudly instead - the cycle handler
+                    # turns the exception into a failed run carrying the
+                    # underlying ONNX failure, which survives to be read.
+                    try:
+                        from monitor import (_memory_headroom_mb,
+                                             _mlflow_headroom_ok)
+                        headroom = _memory_headroom_mb()
+                    except Exception:
+                        headroom = None
+                    if headroom is not None and not _mlflow_headroom_ok(headroom):
+                        raise RuntimeError(
+                            "ONNX embedding backend failed and the container "
+                            f"lacks memory headroom for the torch fallback "
+                            f"({headroom:.0f} MB free): {exc}") from exc
                     logger.warning("ONNX embedding backend unavailable (%s); "
                                    "falling back to torch", exc)
             import torch
