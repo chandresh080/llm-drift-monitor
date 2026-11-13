@@ -27,22 +27,56 @@ from sequential_testing import (spent_alpha, consecutive_flagged_history,
 logger = logging.getLogger("llm_drift_monitor.monitor")
 
 
+def _cgroup_memory_stats(base: str = "/sys/fs/cgroup") -> Dict[str, Optional[float]]:
+    """Cgroup v2 memory accounting for the whole instance, in MB.
+
+    Returns limit/current/peak (None when uncapped or unreadable) and the
+    oom kill counter. The peak matters for debugging: a memory spike that
+    kills the instance between two metric polls is invisible in current but
+    retained in memory.peak until the cgroup is recreated. The oom counter
+    is the kernel's own record that the ceiling was breached.
+    """
+    stats: Dict[str, Optional[float]] = {
+        "limit_mb": None, "current_mb": None, "peak_mb": None,
+        "oom_kills": None,
+    }
+
+    def _read(name: str):
+        with open(os.path.join(base, name), encoding="utf-8") as handle:
+            return handle.read().strip()
+
+    try:
+        limit_raw = _read("memory.max")
+        stats["current_mb"] = int(_read("memory.current")) / (1024 * 1024)
+        try:  # memory.peak exists on kernels >= 5.19; absent reads raise OSError
+            stats["peak_mb"] = int(_read("memory.peak")) / (1024 * 1024)
+        except OSError:
+            pass
+        try:
+            events = _read("memory.events")
+            for line in events.splitlines():
+                if line.startswith("oom_kill "):
+                    stats["oom_kills"] = float(line.split()[1])
+                    break
+        except OSError:
+            pass
+        if limit_raw and limit_raw != "max":
+            stats["limit_mb"] = int(limit_raw) / (1024 * 1024)
+    except (OSError, ValueError):
+        pass
+    return stats
+
+
 def _memory_headroom_mb(base: str = "/sys/fs/cgroup") -> Optional[float]:
     """Memory available to the container in MB, or None when unknown.
 
     Reads the cgroup v2 memory files; cgroup v1 paths and hosts without
     cgroup accounting return None so callers treat memory as unconstrained.
     """
-    try:
-        with open(os.path.join(base, "memory.max"), encoding="utf-8") as handle:
-            limit = handle.read().strip()
-        with open(os.path.join(base, "memory.current"), encoding="utf-8") as handle:
-            current = handle.read().strip()
-        if not limit or limit == "max":
-            return None
-        return (int(limit) - int(current)) / (1024 * 1024)
-    except (OSError, ValueError):
+    stats = _cgroup_memory_stats(base=base)
+    if stats["limit_mb"] is None or stats["current_mb"] is None:
         return None
+    return stats["limit_mb"] - stats["current_mb"]
 
 
 def _mlflow_headroom_ok(headroom_mb: Optional[float],

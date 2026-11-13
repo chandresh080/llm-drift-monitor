@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 import embeddings
+import monitor
 from embeddings import EmbeddingExtractor
 
 
@@ -54,6 +55,11 @@ def fake_backends(monkeypatch):
     torch_stub = types.SimpleNamespace(set_num_threads=lambda n: None)
     monkeypatch.setitem(sys.modules, "torch", torch_stub)
     monkeypatch.setattr(embeddings, "_OnnxMiniLM", _FakeOnnxMiniLM)
+    # The fallback guard reads the real cgroup; pin it so the fixture is
+    # deterministic regardless of the machine running the tests. The headroom
+    # gate is exercised separately in test_onnx_failure_raises_without_headroom.
+    monkeypatch.setattr(monitor, "_memory_headroom_mb", lambda base=None: None)
+    monkeypatch.setattr(monitor, "_mlflow_headroom_ok", lambda h, **k: True)
     return _FakeSentenceTransformer, _FakeOnnxMiniLM
 
 
@@ -81,6 +87,21 @@ def test_onnx_failure_falls_back_to_torch(fake_backends, monkeypatch):
     assert extractor.model is not None
     torch_calls, onnx_calls = fake_backends
     assert onnx_calls.calls == ["onnx"] and torch_calls.calls == [None]
+
+
+def test_onnx_failure_raises_without_headroom(fake_backends, monkeypatch):
+    """On a memory capped host the torch fallback is an OOM kill, not a
+    fallback: the guard must fail loudly so the cycle records the cause."""
+    _, onnx_cls = fake_backends
+    onnx_cls.fail = True
+    monkeypatch.setenv("DRIFT_MONITOR_EMBEDDING_BACKEND", "onnx")
+    monkeypatch.setattr(monitor, "_memory_headroom_mb", lambda base=None: 300.0)
+    monkeypatch.setattr(monitor, "_mlflow_headroom_ok", lambda h, **k: False)
+    extractor = EmbeddingExtractor()
+    with pytest.raises(RuntimeError) as excinfo:
+        _ = extractor.model
+    assert "torch fallback" in str(excinfo.value)
+    assert "onnx unavailable" in str(excinfo.value)
 
 
 def test_backend_setting_is_case_insensitive(fake_backends, monkeypatch):
