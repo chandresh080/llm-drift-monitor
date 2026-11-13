@@ -17,11 +17,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 # embedder on the torch free ONNX Runtime backend (embeddings.py) to stay
 # under the free tier's 512 MB ceiling, and a pre-warmed HF cache means the
 # serving process only loads (never downloads) after each container recycle.
-# HF_HOME pins the cache location so the runtime resolves the same files.
+# The two files are fetched directly here rather than by importing repo code:
+# this layer runs before COPY . ., and keeping repo code out of it lets the
+# layer stay cached across commits. HF_HOME pins the cache location so the
+# runtime resolves the same files.
 ENV HF_HOME=/app/hf
-RUN DRIFT_MONITOR_EMBEDDING_BACKEND=onnx python -c \
-    "from embeddings import EmbeddingExtractor; EmbeddingExtractor().model" \
-    && echo "Torch free ONNX embedder baked into image"
+RUN python -c "from huggingface_hub import hf_hub_download; \
+    hf_hub_download('sentence-transformers/all-MiniLM-L6-v2', 'onnx/model.onnx'); \
+    hf_hub_download('sentence-transformers/all-MiniLM-L6-v2', 'tokenizer.json')" \
+    && echo "Torch free ONNX embedder files baked into image"
 
 # Select the ONNX backend here rather than through the deployment platform's
 # environment: blueprint managed services have been observed to skip newly
