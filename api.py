@@ -437,7 +437,18 @@ def get_run(run_id: str) -> RunResponse:
     """Return status and results for a run."""
     run = _runs.get(run_id)
     if run is None:
-        raise HTTPException(status_code=404, detail="Run not found")
+        # Run records live in the process, and the free tier recycles the
+        # container between spins: an unknown id after this process started
+        # means the record was lost with its instance, not that the run is
+        # still pending. A bare 404 would leave a polling dashboard hanging
+        # forever, so the lost state is explicit.
+        return RunResponse(
+            run_id=run_id,
+            status="lost",
+            error=("The hosted instance recycled while this check ran; "
+                   "its record was lost and nothing was committed. "
+                   "Run the check again."),
+        )
     return RunResponse(
         run_id=run_id,
         status=run.get("status", "unknown"),
