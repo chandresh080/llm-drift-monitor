@@ -759,6 +759,138 @@ def get_evaluation() -> Dict[str, Any]:
     }
 
 
+_debug_embedder_lock = threading.Lock()
+
+
+@app.get("/debug/embedder")
+def debug_embedder(stage: str = "info") -> Dict[str, Any]:
+    """Staged embedder load diagnostics for the memory capped instance.
+
+    Each stage is a separate request on purpose: if one stage breaches the
+    instance memory ceiling the instance dies with that request, the stages
+    before it have already answered, and the missing response identifies
+    the culprit. Stages build on each other: info (environment and baked
+    cache inventory), tokenizer (Rust tokenizer from the baked cache),
+    session (onnxruntime InferenceSession from the baked graph), full (the
+    production EmbeddingExtractor path, released afterwards).
+    """
+    out: Dict[str, Any] = {"stage": stage}
+    if not _debug_embedder_lock.acquire(blocking=False):
+        out["error"] = "another debug stage is running; retry shortly"
+        return out
+    try:
+        import glob as _glob
+
+        def snap() -> Dict[str, Any]:
+            return _cgroup_memory_stats()
+
+        def report(tag: str, before: Dict[str, Any]) -> None:
+            after = snap()
+            out[f"{tag}_current_mb"] = after.get("current_mb")
+            out[f"{tag}_peak_mb"] = after.get("peak_mb")
+            before_peak = before.get("peak_mb") or 0.0
+            if after.get("peak_mb") is not None:
+                out[f"{tag}_peak_delta_mb"] = round(
+                    after["peak_mb"] - before_peak, 1)
+
+        if stage == "info":
+            out["env"] = {
+                "HF_HOME": os.environ.get("HF_HOME"),
+                "backend": os.environ.get("DRIFT_MONITOR_EMBEDDING_BACKEND"),
+            }
+            hf_home = os.environ.get("HF_HOME")
+            if hf_home:
+                pattern = os.path.join(
+                    hf_home, "hub", "models--sentence-transformers--"
+                    "all-MiniLM-L6-v2", "snapshots", "*", "**")
+                files = []
+                for path in sorted(_glob.glob(pattern, recursive=True)):
+                    if os.path.isfile(path):
+                        files.append({
+                            "path": path.replace(hf_home, "$HF_HOME"),
+                            "size_mb": round(
+                                os.path.getsize(path) / (1024 * 1024), 1)})
+                out["baked_cache"] = files
+            for mod, attr in (("onnxruntime", "__version__"),
+                              ("tokenizers", "__version__"),
+                              ("huggingface_hub", "__version__")):
+                try:
+                    out[f"version_{mod}"] = getattr(
+                        __import__(mod), attr)
+                except Exception as exc:
+                    out[f"version_{mod}"] = f"unavailable: {exc}"
+            report("start", snap())
+            return out
+
+        if stage == "tokenizer":
+            before = snap()
+            started = time.perf_counter()
+            try:
+                from embeddings import resolve_model_file
+                from tokenizers import Tokenizer
+                path = resolve_model_file(
+                    "sentence-transformers/all-MiniLM-L6-v2", "tokenizer.json")
+                out["resolve_seconds"] = round(time.perf_counter() - started, 2)
+                out["resolve_source"] = (
+                    "baked cache" if os.path.exists(path) else "downloaded")
+                tokenizer = Tokenizer.from_file(path)
+                out["vocab_size"] = tokenizer.get_vocab_size()
+                out["load_seconds"] = round(
+                    time.perf_counter() - started, 2)
+            except Exception as exc:
+                out["error"] = f"{type(exc).__name__}: {exc}"
+            report("after", before)
+            return out
+
+        if stage == "session":
+            before = snap()
+            try:
+                import onnxruntime as ort
+                from embeddings import resolve_model_file
+                started = time.perf_counter()
+                path = resolve_model_file(
+                    "sentence-transformers/all-MiniLM-L6-v2", "onnx/model.onnx")
+                out["resolve_seconds"] = round(time.perf_counter() - started, 2)
+                out["file_size_mb"] = round(
+                    os.path.getsize(path) / (1024 * 1024), 1)
+                report("resolved", before)
+                options = ort.SessionOptions()
+                options.intra_op_num_threads = 2
+                started = time.perf_counter()
+                session = ort.InferenceSession(
+                    path, options, providers=["CPUExecutionProvider"])
+                out["session_seconds"] = round(time.perf_counter() - started, 2)
+                out["inputs"] = [i.name for i in session.get_inputs()]
+                del session
+            except Exception as exc:
+                out["error"] = f"{type(exc).__name__}: {exc}"
+            report("after", before)
+            return out
+
+        if stage == "full":
+            before = snap()
+            try:
+                from embeddings import EmbeddingExtractor
+                started = time.perf_counter()
+                extractor = EmbeddingExtractor()
+                model = extractor.model
+                out["backend"] = type(model).__name__
+                out["load_seconds"] = round(time.perf_counter() - started, 2)
+                report("loaded", before)
+                extractor.release()
+                out["released"] = True
+            except Exception as exc:
+                out["error"] = f"{type(exc).__name__}: {exc}"
+            report("after", before)
+            return out
+
+        out["error"] = ("unknown stage; use info, tokenizer, session or full "
+                        "in that order")
+        return out
+    finally:
+        _debug_embedder_lock.release()
+
+
 @app.get("/health/live")
 def liveness() -> Dict[str, str]:
     """Liveness: is this process serving. Returns without touching the

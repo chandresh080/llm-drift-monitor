@@ -6,6 +6,33 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def resolve_model_file(model_name: str, filename: str) -> str:
+    """Resolve a model file, preferring the deployment's baked HF cache.
+
+    hf_hub_download performs a network round trip to resolve the latest
+    revision even when the file is already cached, and on a cache miss it
+    downloads inside the calling process: on the memory capped free tier a
+    surprise 90 MB fetch is exactly the kind of spike that kills the
+    instance. The image bakes both files under HF_HOME, so look there first
+    and only touch the network when the baked cache is absent (local
+    development, fresh checkouts).
+    """
+    cache_root = os.environ.get("HF_HOME")
+    if cache_root:
+        repo_dir = "models--" + model_name.replace("/", "--")
+        snapshots = os.path.join(cache_root, "hub", repo_dir, "snapshots")
+        try:
+            revisions = sorted(os.listdir(snapshots), reverse=True)
+        except OSError:
+            revisions = []
+        for revision in revisions:
+            path = os.path.join(snapshots, revision, filename)
+            if os.path.isfile(path):
+                return path
+    from huggingface_hub import hf_hub_download
+    return hf_hub_download(model_name, filename)
+
+
 class _OnnxMiniLM:
     """Torch free ONNX Runtime embedder for MiniLM style models.
 
@@ -22,17 +49,16 @@ class _OnnxMiniLM:
     def __init__(self, model_name: str, max_seq_length: int = 256,
                  intra_op_threads: int = 2):
         import onnxruntime as ort
-        from huggingface_hub import hf_hub_download
         from tokenizers import Tokenizer
 
-        tokenizer_path = hf_hub_download(model_name, "tokenizer.json")
+        tokenizer_path = resolve_model_file(model_name, "tokenizer.json")
         self._tokenizer = Tokenizer.from_file(tokenizer_path)
         # MiniLM pairs truncation at 256 with batch padding to the longest
         # sequence, applied manually below because encode_batch does not pad.
         self._tokenizer.enable_truncation(max_length=max_seq_length)
         self._max_seq_length = max_seq_length
 
-        weights_path = hf_hub_download(model_name, "onnx/model.onnx")
+        weights_path = resolve_model_file(model_name, "onnx/model.onnx")
         options = ort.SessionOptions()
         options.intra_op_num_threads = intra_op_threads
         self._session = ort.InferenceSession(
