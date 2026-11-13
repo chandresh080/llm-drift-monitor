@@ -13,15 +13,15 @@ RUN pip install --no-cache-dir torch \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Bake the embedding model's ONNX export into the image: the hosted demo
-# runs the embedder on the ONNX Runtime backend to stay under the free
-# tier's 512 MB ceiling, and a pre-built graph means the serving process
-# only loads (never exports) after each container recycle. HF_HOME pins
-# the cache location so the runtime resolves the same export.
+# Bake the embedding model's files into the image: the hosted demo runs the
+# embedder on the torch free ONNX Runtime backend (embeddings.py) to stay
+# under the free tier's 512 MB ceiling, and a pre-warmed HF cache means the
+# serving process only loads (never downloads) after each container recycle.
+# HF_HOME pins the cache location so the runtime resolves the same files.
 ENV HF_HOME=/app/hf
-RUN python -c "from sentence_transformers import SentenceTransformer; \
-    SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', device='cpu', backend='onnx')" \
-    && echo "ONNX embedding export baked into image"
+RUN DRIFT_MONITOR_EMBEDDING_BACKEND=onnx python -c \
+    "from embeddings import EmbeddingExtractor; EmbeddingExtractor().model" \
+    && echo "Torch free ONNX embedder baked into image"
 
 # Select the ONNX backend here rather than through the deployment platform's
 # environment: blueprint managed services have been observed to skip newly

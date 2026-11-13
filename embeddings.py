@@ -5,9 +5,69 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+class _OnnxMiniLM:
+    """Torch free ONNX Runtime embedder for MiniLM style models.
+
+    The hosted demo's free tier enforces a 512 MB ceiling. Importing
+    sentence_transformers pulls the whole torch stack (~250 MB) into the
+    process before any backend decision, which alone pushed cycles past the
+    ceiling. This embedder drives the exported ONNX graph directly through
+    onnxruntime with the pure Rust tokenizers library, so torch is never
+    imported. It reproduces sentence_transformers' all-MiniLM-L6-v2 output
+    exactly: attention mask weighted mean pooling over the last hidden
+    states, then L2 normalization.
+    """
+
+    def __init__(self, model_name: str, max_seq_length: int = 256,
+                 intra_op_threads: int = 2):
+        import onnxruntime as ort
+        from huggingface_hub import hf_hub_download
+        from tokenizers import Tokenizer
+
+        tokenizer_path = hf_hub_download(model_name, "tokenizer.json")
+        self._tokenizer = Tokenizer.from_file(tokenizer_path)
+        # MiniLM pairs truncation at 256 with batch padding to the longest
+        # sequence, applied manually below because encode_batch does not pad.
+        self._tokenizer.enable_truncation(max_length=max_seq_length)
+        self._max_seq_length = max_seq_length
+
+        weights_path = hf_hub_download(model_name, "onnx/model.onnx")
+        options = ort.SessionOptions()
+        options.intra_op_num_threads = intra_op_threads
+        self._session = ort.InferenceSession(
+            weights_path, options, providers=["CPUExecutionProvider"])
+
+    def encode(self, texts, convert_to_numpy=True, **kwargs):
+        """Embed texts with MiniLM's documented pooling, torch free."""
+        del convert_to_numpy, kwargs
+        import numpy as np
+        encodings = self._tokenizer.encode_batch(list(texts))
+        seq_len = max(len(e.ids) for e in encodings) if encodings else 1
+        input_ids = np.zeros((len(encodings), seq_len), dtype=np.int64)
+        attention = np.zeros((len(encodings), seq_len), dtype=np.int64)
+        type_ids = np.zeros((len(encodings), seq_len), dtype=np.int64)
+        for row, enc in enumerate(encodings):
+            n = len(enc.ids)
+            input_ids[row, :n] = enc.ids
+            attention[row, :n] = enc.attention_mask
+            type_ids[row, :n] = enc.type_ids
+        hidden = self._session.run(
+            ["last_hidden_state"],
+            {"input_ids": input_ids, "attention_mask": attention,
+             "token_type_ids": type_ids})[0]
+        mask = attention[:, :, None].astype(hidden.dtype)
+        summed = (hidden * mask).sum(axis=1)
+        counts = np.clip(mask.sum(axis=1), 1e-9, None)
+        embeddings = summed / counts
+        norms = np.clip(np.linalg.norm(embeddings, axis=1, keepdims=True),
+                        1e-12, None)
+        return embeddings / norms
+
+
 class EmbeddingExtractor:
     """Extract sentence embeddings and response features locally."""
-    
+
     def __init__(self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2", device: str = "cpu"):
         self.model_name = model_name
         self.device = device
@@ -19,25 +79,25 @@ class EmbeddingExtractor:
         """Lazy load the embedding model.
 
         The backend is selectable through DRIFT_MONITOR_EMBEDDING_BACKEND.
-        "onnx" runs the same MiniLM weights on ONNX Runtime, which peaks a
-        few hundred MB below the torch stack: the hosted free tier enforces
-        a 512 MB ceiling and the torch stack loading mid cycle breached it
-        (observed RSS 127 -> 505 MB -> OOM kill). The ONNX export is baked
-        into the deployment image, so loading never exports. The default
-        stays torch so local runs, experiments and tests behave exactly as
-        they always have; a failed ONNX load falls back with a warning.
+        "onnx" runs the same MiniLM weights through a direct ONNX Runtime +
+        tokenizers implementation (_OnnxMiniLM) that never imports torch: the
+        hosted free tier enforces a 512 MB ceiling and importing the torch
+        stack mid cycle breached it (observed RSS 127 -> 505 MB -> OOM kill,
+        and again 354 MB with the sentence_transformers ONNX backend, which
+        still imports torch). The model and tokenizer files are baked into
+        the deployment image's HF cache, so loading is fully offline. The
+        default stays torch so local runs, experiments and tests behave
+        exactly as they always have; a failed ONNX load falls back with a
+        warning.
         """
         if self._model is None:
             backend = (os.environ.get("DRIFT_MONITOR_EMBEDDING_BACKEND")
                        or "").strip().lower()
             if backend == "onnx":
-                from sentence_transformers import SentenceTransformer
                 try:
-                    self._model = SentenceTransformer(
-                        self.model_name, device=self.device, backend="onnx",
-                        model_kwargs={"file_name": "onnx/model.onnx"})
-                    logger.info("Embedding model loaded on the ONNX Runtime "
-                                "backend")
+                    self._model = _OnnxMiniLM(self.model_name)
+                    logger.info("Embedding model loaded on the torch free "
+                                "ONNX Runtime backend")
                     return self._model
                 except Exception as exc:  # fall back to torch below
                     logger.warning("ONNX embedding backend unavailable (%s); "
