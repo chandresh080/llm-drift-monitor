@@ -1141,11 +1141,33 @@ async function runCheck() {
       + `and evaluated, which can take several minutes on the hosted tier.`;
 
     /* Hosted free tier cycles can take minutes when provider call starts
-       are spread to respect quota; poll patiently with generous ticks. */
+       are spread to respect quota; poll patiently with generous ticks. The
+       instance can also recycle mid check (free tier pause), in which case
+       the run record disappears: consecutive misses stop the loop with an
+       honest message instead of polling a ghost forever. */
+    let misses = 0;
     for (let i = 0; i < 90; i++) {
       await new Promise((r) => setTimeout(r, 10000));
       const st = await fetchJson("/runs/" + runId).catch(() => null);
-      if (!st) continue;
+      if (!st) {
+        misses += 1;
+        if (misses >= 3) {
+          note.textContent = "The hosted instance recycled while this check "
+            + "ran, so its record is gone and nothing was committed. "
+            + "Panels show the last stored cycle; run the check again.";
+          await loadAll();
+          return;
+        }
+        continue;
+      }
+      misses = 0;
+
+      if (st.status === "lost") {
+        note.textContent = st.error
+          || "The hosted instance recycled while this check ran; run again.";
+        await loadAll();
+        return;
+      }
 
       if (st.status === "completed") {
         const r = st.result || {};

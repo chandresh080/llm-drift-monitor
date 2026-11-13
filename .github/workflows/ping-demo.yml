@@ -3,11 +3,19 @@
 # This workflow pings the health endpoint every ten minutes so the demo
 # answers quickly for visitors. It consumes a few seconds of Actions time
 # per ping and nothing else.
+#
+# GitHub throttles scheduled workflows on low traffic repositories: with a
+# single cron entry actual runs arrived hours apart, long enough for the
+# service to pause mid cycle and drop the visitor's check. Several staggered
+# entries are the documented workaround; each is scheduled independently, so
+# dropped runs only thin the coverage instead of removing it.
 name: Ping the demo
 
 on:
   schedule:
-    - cron: "*/10 * * * *"
+    - cron: "0,10,20,30,40,50 * * * *"
+    - cron: "3,13,23,33,43,53 * * * *"
+    - cron: "6,16,26,36,46,56 * * * *"
   workflow_dispatch:
 
 jobs:
