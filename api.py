@@ -181,7 +181,7 @@ def _schedule_model_release() -> None:
 WATCHDOG_INTERVAL_SECONDS = 2.0
 WATCHDOG_TRIGGER_MB = 260.0
 WATCHDOG_COOLDOWN_SECONDS = 8.0
-_watchdog_state = {"last_dump": 0.0, "dumps": 0}
+_watchdog_state = {"last_dump": 0.0, "dumps": 0, "last_report": ""}
 _watchdog_lock = threading.Lock()
 
 
@@ -257,7 +257,13 @@ def _watchdog_loop() -> None:
                     continue
                 _watchdog_state["last_dump"] = now
                 _watchdog_state["dumps"] += 1
-            _watchdog_report("climb", current)
+            import io
+            import contextlib
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                _watchdog_report("climb", current)
+            with _watchdog_lock:
+                _watchdog_state["last_report"] = buffer.getvalue()
         except Exception:
             continue
 
@@ -1059,6 +1065,16 @@ def debug_embedder(stage: str = "info") -> Dict[str, Any]:
             except Exception as exc:
                 out["error"] = f"{type(exc).__name__}: {exc}"
             report("after", before)
+            return out
+
+        if stage == "report":
+            # The watchdog's most recent climb attribution, readable live
+            # during a ramp the instance is still serving through.
+            with _watchdog_lock:
+                out["dumps"] = _watchdog_state["dumps"]
+                out["report"] = _watchdog_state["last_report"] or (
+                    "no climb has been observed by the watchdog yet")
+            out["memory_stat_mb"] = _cgroup_memory_stat_fields()
             return out
 
         if stage == "full":
