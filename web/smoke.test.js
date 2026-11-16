@@ -6,16 +6,21 @@
 
    Contract list:
    - each data endpoint renders the panel it feeds, independent of the
-     other endpoints (a hanging /health in particular changes nothing)
+     other endpoints (no endpoint can block another)
+   - the status pill derives from /health/live alone: Online / Offline,
+     and readiness is never fetched, never blocks, never rewrites it
    - the split signal families render separately: a response availability
      flag can never flip the distribution shift headline
    - redacted safety boundary prompts show their public label and a
      withheld chip, never raw wording
    - flagged counts read the field the API actually returns
-   - missing test values render as an explicit state, never as "No flag"
+   - missing test values render as an explicit state ("Not evaluated",
+     "—"), never as "No flag" or zero
    - product CSV string keys ("0.0") resolve against numeric lookups
    - the refusal rate change takes its sign from the delta itself
    - rate limit rejections surface the server's Retry-After message
+   - the information architecture: heavy evidence sections are collapsed
+     <details>, the initial view is verdict + metrics + detectors
 
    Used by CI; run locally with: node web/smoke.test.js */
 
@@ -72,8 +77,7 @@ const documentStub = {
 };
 
 /* setInterval is stubbed before app.js loads: the script installs periodic
-   loops and a test must not keep the event loop alive. The real behavior of
-   those loops is verified by the per endpoint scenarios below instead. */
+   loops and a test must not keep the event loop alive. */
 const timers = [];
 global.setInterval = (fn, ms) => { timers.push({ fn, ms }); return timers.length; };
 global.clearInterval = () => {};
@@ -153,17 +157,13 @@ function resp(json, opts = {}) {
 }
 
 function fixtureResponse(url) {
+  requestedUrls.push(url);
   const fn = routeOverrides[url] || getFixture(url);
   if (fn == null) throw new Error("app requested unplanned endpoint " + url);
   return fn();
 }
 
 const fixtures = {
-  /* Readiness answers. The delay scenario overrides /health with a
-     response that never resolves, which is strictly worse than a 15 s
-     slow answer for this contract. */
-  "/health": () => resp({ status: "ok", db: "ok", provider: "gemini-3.1-flash-lite",
-                          provider_status: "ok" }),
   "/health/live": () => resp({ status: "ok" }),
   "/config": () => resp({
     target_model: "gemini-3.1-flash-lite", adapter_type: "GeminiAdapter",
@@ -200,6 +200,7 @@ function getFixture(url) {
   return fixtures[url] || null;
 }
 
+const requestedUrls = [];
 global.fetch = async (url) => fixtureResponse(url);
 
 /* ---------- load the dashboard ---------- */
@@ -228,22 +229,55 @@ const settle = () => new Promise((r) => setImmediate(r));
 
   console.log("scenario 1: healthy endpoints, full data");
 
-  /* Readiness check ran via loadHealth and answered ok. */
-  check("status pill shows service online",
-    getById("health-pill").innerHTML.includes("Service online"),
+  /* Status derives from /health/live alone, which answered ok. */
+  check("status pill shows Online from the liveness endpoint",
+    getById("health-pill").innerHTML.includes("Online"),
     getById("health-pill").innerHTML);
+
+  check("readiness (/health) is never fetched",
+    !requestedUrls.some((u) => u === "/health" || u.includes("/health?")
+      || u.startsWith("/health/") && u !== "/health/live"),
+    requestedUrls.filter((u) => u.startsWith("/health") && u !== "/health/live").join(", "));
+
+  check("distribution headline follows the distribution family field",
+    getById("kpi-drift").textContent === "Shift detected",
+    getById("kpi-drift").textContent);
 
   check("flagged count reads the canonical API field",
     getById("kpi-flagged").textContent.trim() === "1 / 3",
     getById("kpi-flagged").textContent);
 
-  check("distribution headline follows the distribution family field",
-    getById("kpi-drift").textContent === "Shift flagged",
-    getById("kpi-drift").textContent);
+  check("responses evaluated metric from /stats",
+    getById("kpi-runs").textContent === "320",
+    getById("kpi-runs").textContent);
+
+  check("last check metric shows the latest cycle timestamp",
+    getById("kpi-lastcheck").textContent !== "—"
+      && getById("kpi-lastcheck").textContent !== "",
+    getById("kpi-lastcheck").textContent);
+
+  check("verdict meta names both window sizes and the check time",
+    getById("verdict-meta").textContent.includes("Reference: 120 responses")
+      && getById("verdict-meta").textContent.includes("Current: 40 responses")
+      && getById("verdict-meta").textContent.includes("Last checked:"),
+    getById("verdict-meta").textContent);
 
   check("quality guardrail reported separately and not conflated with shift",
-    getById("quality-strip").innerHTML.includes("Quality guardrail tripped"),
+    getById("quality-strip").hidden === false
+      && getById("quality-strip").innerHTML.includes("Invalid-response guardrail tripped"),
     getById("quality-strip").innerHTML.slice(0, 80));
+
+  const detHtml = getById("detector-rows").innerHTML;
+  check("detector table renders all three rows with methods",
+    detHtml.includes("Response length") && detHtml.includes("KS")
+      && detHtml.includes("Response availability") && detHtml.includes("Fisher / z")
+      && detHtml.includes("Semantic shift") && detHtml.includes("Paired MMD"),
+    detHtml.slice(0, 200));
+  check("flagged detector shows Flagged with its adjusted p",
+    detHtml.includes("Flagged") && detHtml.includes("0.030"),
+    detHtml.slice(0, 400));
+  check("unflagged detectors show No flag",
+    detHtml.includes("No flag"), detHtml.slice(0, 400));
 
   check("refusal rate change takes its sign from the delta, not the reference",
     getById("eff-refusal").textContent.startsWith("-5.0"),
@@ -253,8 +287,12 @@ const settle = () => new Promise((r) => setImmediate(r));
     getById("eff-length").textContent === "+19.5%",
     getById("eff-length").textContent);
 
-  /* Empty-history comparison renders an explained bootstrap state. */
-  check("fresh deployment state explains the two windows",
+  check("centroid distance renders numerically",
+    getById("eff-centroid").textContent === "0.153",
+    getById("eff-centroid").textContent);
+
+  /* Empty-history comparison renders a compact bootstrap state. */
+  check("fresh deployment state explains the two windows compactly",
     getById("comparison-wrap").innerHTML.includes("Evaluation has not started yet"),
     "");
 
@@ -278,13 +316,18 @@ const settle = () => new Promise((r) => setImmediate(r));
 
   check("config shows the run policy the throttle enforces",
     getById("cfg-runpolicy").textContent.includes("10 min")
-      && getById("cfg-runpolicy").textContent.includes("15 checks")
+      && getById("cfg-runpolicy").textContent.includes("15 per day")
       && getById("cfg-runpolicy").textContent.includes("4 used today"),
     getById("cfg-runpolicy").textContent);
 
-  check("run note no longer hardcodes the old 10 response cycle",
-    getById("run-note").textContent.includes("40 responses"),
+  check("run note uses the configured cycle size, not a hardcoded number",
+    getById("run-note").textContent.includes("40 prompts per run")
+      && getById("run-note").textContent.includes("every 10 min"),
     getById("run-note").textContent);
+
+  check("header model label comes from /config",
+    getById("model-label").textContent.includes("gemini-3.1-flash-lite"),
+    getById("model-label").textContent);
 
   console.log("scenario 2: evaluation tab data fidelity");
 
@@ -310,19 +353,17 @@ const settle = () => new Promise((r) => setImmediate(r));
   check("persist2 marked shipped in the trade-off table",
     tradeoffHtml.includes("shipped"), "");
 
-  /* p95 and the delay/false-alarm headline line stay faithful. */
-  check("overhead renders with sample count",
-    getById("ev-overhead").textContent === "388 ms"
-      && getById("ev-overhead-sub").textContent.includes("12 recorded benchmark cycles"),
-    getById("ev-overhead-sub").textContent);
+  /* Headline numbers stay faithful. */
+  check("overhead renders with the sample count basis",
+    getById("ev-overhead").textContent === "388 ms",
+    getById("ev-overhead").textContent);
 
-  check("detection rate sub documents the limited trial basis",
-    getById("ev-detect-sub").textContent.includes("limited"),
-    getById("ev-detect-sub").textContent);
+  check("methodology disclosure states the limited trial basis",
+    getById("ev-methodology").innerHTML.includes("limited"),
+    getById("ev-methodology").innerHTML.slice(0, 200));
 
   console.log("scenario 2b: recorded provider comparison renders from the committed artifact");
 
-  /* loadEvaluation kicked off the static-asset loader as its own task. */
   await settle();
 
   const provCmpHtml = getById("prov-cmp").innerHTML;
@@ -337,21 +378,16 @@ const settle = () => new Promise((r) => setImmediate(r));
     provCmpHtml.includes("not measured"),
     provCmpHtml.slice(0, 600));
 
-  /* The renderer fills this paragraph through innerHTML (it embeds
-     formatted values), and the DOM stub keeps textContent separate. */
   const provVerdict = getById("prov-cmp-verdict").innerHTML;
   check("comparison verdict reports no corrected flag and no alert",
-    provVerdict.includes("no corrected test flagged") && provVerdict.includes("no alert fired"),
+    provVerdict.includes("No corrected test flagged") && provVerdict.includes("no alert fired"),
     provVerdict.slice(0, 160));
-  check("comparison verdict carries the paired diagnostic",
-    provVerdict.includes("matched prompts"),
+  check("comparison carries the paired diagnostic and differences",
+    provVerdict.includes("matched prompts") && provVerdict.includes("reasoning"),
     provVerdict.slice(0, 300));
   check("comparison states the cross-provider caveat explicitly",
-    provVerdict.includes("cross-provider"),
+    provVerdict.includes("Cross-provider") || provVerdict.includes("cross-provider"),
     provVerdict.slice(-300));
-  check("comparison names the uncontrolled differences",
-    provVerdict.includes("reasoning"),
-    provVerdict.slice(300, 700));
   check("comparison cites its source artifacts",
     provVerdict.includes("real_provider_results.json"),
     provVerdict.slice(-300));
@@ -368,47 +404,37 @@ const settle = () => new Promise((r) => setImmediate(r));
     getById("prov-cmp").innerHTML.slice(0, 120));
   routeOverrides = {};
 
-  console.log("scenario 3: a hanging /health must not stop any panel");
+  console.log("scenario 3: liveness failure shows Offline; data still renders");
 
-  /* Acceptance scenario from the review: /health never answers at all.
-     Data endpoints answer and every dependent panel renders. */
-  routeOverrides = { "/health": () => new Promise(() => {/* hangs forever */}) };
-  vmEval("state.health = null; renderHealthPill();");
+  /* The pill is the only thing /health/live drives: when it fails the
+     instance is Offline, and stored data panels are untouched. */
+  routeOverrides = { "/health/live": () => {
+    throw new Error("connection refused");
+  } };
+  vmEval("state.live = null; loadLive();");
+  await settle();
+
+  check("pill shows Offline when liveness fails",
+    getById("health-pill").innerHTML.includes("Offline"),
+    getById("health-pill").innerHTML);
+
   await loadAll();
   await settle();
 
-  check("stored responses still render with /health hanging",
+  check("stored responses still render with liveness failing",
     getById("kpi-runs").textContent === "320",
     getById("kpi-runs").textContent);
 
-  check("detectors still render with /health hanging",
-    getById("det-mmd-decision").textContent === "Flagged",
-    getById("det-mmd-decision").textContent);
-
-  check("comparison still renders with /health hanging",
-    getById("comparison-wrap").innerHTML.includes("Evaluation has not started yet"),
+  check("detectors still render with liveness failing",
+    getById("detector-rows").innerHTML.includes("Flagged"),
     "");
-
-  check("pill says data is loaded while the status check is pending",
-    getById("health-pill").innerHTML.includes("Data loaded"),
-    getById("health-pill").innerHTML);
 
   routeOverrides = {};
 
-  console.log("scenario 4: /health/live answers before readiness");
-
-  /* New early state: process alive (fast endpoint), data still loading. */
-  vmEval("loadLive(); state.awake = false; renderHealthPill();");
-  await settle();
-
-  check("pill shows the alive state before readiness answers",
-    getById("health-pill").innerHTML.includes("Service alive"),
-    getById("health-pill").innerHTML);
-
-  console.log("scenario 5: split signals, redacted prompts, rate limits");
+  console.log("scenario 4: split signals, redacted prompts, rate limits");
 
   /* availability fires, distribution does not: the headline must stay
-     Stable and the quality line must name the real source. */
+     "No shift detected" and the quality strip must name the real source. */
   routeOverrides = { "/drift/latest": () => resp({
     ...latestFull,
     drift_detected: 0, distribution_shift_detected: 0,
@@ -420,17 +446,19 @@ const settle = () => new Promise((r) => setImmediate(r));
   await settle();
 
   check("availability flag cannot flip the distribution headline",
-    getById("kpi-drift").textContent === "Stable",
+    getById("kpi-drift").textContent === "No shift detected",
     getById("kpi-drift").textContent);
 
   check("availability change is reported as its own quality signal",
-    getById("quality-strip").innerHTML.includes("Response availability changed"),
+    getById("quality-strip").hidden === false
+      && getById("quality-strip").innerHTML.includes("Response availability changed"),
     getById("quality-strip").innerHTML.slice(0, 120));
 
   routeOverrides = {};
 
   /* Redacted comparison: the safety boundary row shows only the public
-     label plus the withheld marker. */
+     label plus the withheld marker, and the expanded body explains the
+     withholding instead of revealing the answer. */
   routeOverrides = { "/drift/comparison": () => resp({
     ready: true, reference_size: 120, current_size: 40,
     rows: [
@@ -459,7 +487,14 @@ const settle = () => new Promise((r) => setImmediate(r));
     cmpHtml.slice(0, 200));
   check("normal row keeps its readable prompt",
     cmpHtml.includes("palindrome"), cmpHtml.slice(0, 200));
-  routeOverrides = {};
+  check("redacted sample body explains withholding instead of showing answers",
+    cmpHtml.includes("Safety boundary probe")
+      && cmpHtml.includes("not published"),
+    "");
+  check("samples are per-prompt expandable details, not a full-width table",
+    cmpHtml.includes("<details class=\"sample\"")
+      && !cmpHtml.includes("<table"),
+    "");
 
   /* 429 on the run endpoint: the server's message and Retry-After land in
      the run note instead of disappearing into a console error. */
@@ -478,7 +513,7 @@ const settle = () => new Promise((r) => setImmediate(r));
 
   routeOverrides = {};
 
-  console.log("scenario 6: absent test values");
+  console.log("scenario 5: absent test values");
 
   routeOverrides = {
     "/drift/latest": () => resp({
@@ -499,18 +534,64 @@ const settle = () => new Promise((r) => setImmediate(r));
   await settle();
 
   check("missing detector decides as Not evaluated, never No flag",
-    getById("det-ks-decision").textContent === "Not evaluated",
-    getById("det-ks-decision").textContent);
-  check("missing effect size renders not recorded",
-    getById("eff-refusal").textContent === "not recorded",
-    getById("eff-refusal").textContent);
-  check("paired section degrades to not recorded",
-    getById("paired-stat").textContent === "not recorded",
+    getById("detector-rows").innerHTML.includes("Not evaluated")
+      && !getById("detector-rows").innerHTML.includes("No flag"),
+    getById("detector-rows").innerHTML.slice(0, 300));
+  check("missing effect size renders an em dash, not zero",
+    getById("eff-refusal").textContent === "—"
+      && getById("eff-length").textContent === "—",
+    `${getById("eff-refusal").textContent} / ${getById("eff-length").textContent}`);
+  check("flagged metric degrades to an em dash without the field",
+    getById("kpi-flagged").textContent === "—",
+    getById("kpi-flagged").textContent);
+  check("paired section degrades to an em dash",
+    getById("paired-stat").textContent === "—",
     getById("paired-stat").textContent);
   check("missing latency degrades to an explicit not recorded",
-    getById("cfg-latency").textContent === "not recorded for the latest cycle",
+    getById("cfg-latency").textContent === "not recorded",
     getById("cfg-latency").textContent);
   routeOverrides = {};
+
+  console.log("scenario 6: no stored history at all");
+
+  routeOverrides = {
+    "/drift/latest": () => resp({ drift_detected: null,
+      distribution_shift_detected: null, timestamp: null }),
+  };
+  await loadAll();
+  await settle();
+
+  check("no history shows the explicit not-evaluated verdict",
+    getById("kpi-drift").textContent === "Not evaluated yet",
+    getById("kpi-drift").textContent);
+  check("no history hides the quality strip",
+    getById("quality-strip").hidden === true,
+    "");
+
+  routeOverrides = {};
+
+  console.log("scenario 7: information architecture of the shipped page");
+
+  /* The page itself (not the stub DOM) must put heavy evidence behind
+     collapsed details and keep the initial view compact. */
+  const page = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
+  const sectionDetails = (page.match(/<details class="section-details"/g) || []).length;
+  check("heavy evidence sections are collapsed details blocks",
+    sectionDetails >= 4, `found ${sectionDetails}`);
+  check("initial view has verdict, metrics and detectors",
+    page.includes('id="verdict-box"') && page.includes('id="detector-rows"')
+      && page.includes('class="metric-row"'),
+    "");
+  check("the old full-width API directory is gone from the footer",
+    !page.includes("api-list") && !page.includes("GET /drift/latest"),
+    "");
+  check("footer links are compact (GitHub, API, methodology)",
+    page.includes('href="/docs"')
+      && page.includes("llm-drift-monitor/blob/main/METRICS.md"),
+    "");
+  check("the demonstration-environment disclaimer is gone",
+    !page.includes("Demonstration environment"),
+    "");
 
   if (failures) {
     console.log(`\n${failures} check(s) failed`);
