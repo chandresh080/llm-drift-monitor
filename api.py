@@ -168,6 +168,104 @@ def _schedule_model_release() -> None:
         timer.start()
 
 
+# ---------- memory climb watchdog ----------
+
+# The OOM kill has escaped every indirect measurement: the parent's
+# ru_maxrss resets on restart, the kill lands between metric polls, and
+# Render drops the instance logs around the failure. This watchdog watches
+# the cgroup directly and, when a climb starts, prints a full attribution
+# report to stderr: the loaded heavy modules (torch here would mean the
+# guarded fallback fired anyway), the largest object classes in the gc
+# heap, thread stacks, and per process RSS. Render keeps an instance's
+# logs even after the instance dies, so the report survives the kill.
+WATCHDOG_INTERVAL_SECONDS = 2.0
+WATCHDOG_TRIGGER_MB = 260.0
+WATCHDOG_COOLDOWN_SECONDS = 8.0
+_watchdog_state = {"last_dump": 0.0, "dumps": 0}
+_watchdog_lock = threading.Lock()
+
+
+def _watchdog_report(reason: str, current_mb: float) -> None:
+    import faulthandler
+    import gc
+    import sys as _sys
+    import types as _types
+
+    loaded = [name for name in ("torch", "sentence_transformers",
+                                "transformers", "onnxruntime", "mlflow",
+                                "sklearn", "scipy")
+              if name in _sys.modules]
+    histogram = []
+    try:
+        sizes: _types.Dict[str, int] = {}
+        for obj in gc.get_objects():
+            try:
+                key = f"{type(obj).__module__}.{type(obj).__name__}"
+                sizes[key] = sizes.get(key, 0) + _sys.getsizeof(obj, 0)
+            except Exception:
+                continue
+        histogram = sorted(sizes.items(), key=lambda kv: kv[1],
+                           reverse=True)[:12]
+        histogram = [f"{name}={total / (1024 * 1024):.1f}MB"
+                     for name, total in histogram]
+    except Exception:
+        histogram = ["histogram unavailable"]
+    print(
+        f"MEMORY_CLIMB_REPORT reason={reason} cgroup_current_mb={current_mb:.0f} "
+        f"uptime_s={int(time.time() - _started_at)} dump#{_watchdog_state['dumps']} "
+        f"heavy_modules={loaded or 'none'}", flush=True)
+    print(f"GC_HEAP_TOP {histogram}", flush=True)
+    print("THREAD_STACKS_START", flush=True)
+    try:
+        faulthandler.dump_traceback(file=_sys.stderr)
+    except Exception:
+        print("thread stacks unavailable", flush=True)
+    print("THREAD_STACKS_END", flush=True)
+    try:
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            try:
+                with open(f"/proc/{entry}/status", encoding="utf-8") as fh:
+                    rss_kb = 0
+                    for line in fh:
+                        if line.startswith("VmRSS:"):
+                            rss_kb = int(line.split()[1])
+                            break
+                with open(f"/proc/{entry}/cmdline", encoding="utf-8") as fh:
+                    cmd = fh.read().replace("\x00", " ").strip()[:80]
+                if rss_kb > 1024:
+                    print(f"PROC pid={entry} rss_mb={rss_kb / 1024:.1f} cmd={cmd}",
+                          flush=True)
+            except (OSError, ValueError, IndexError):
+                continue
+    except Exception:
+        pass
+
+
+def _watchdog_loop() -> None:
+    while True:
+        time.sleep(WATCHDOG_INTERVAL_SECONDS)
+        try:
+            stats = _cgroup_memory_stats()
+            current = stats.get("current_mb")
+            if current is None or current < WATCHDOG_TRIGGER_MB:
+                continue
+            now = time.monotonic()
+            with _watchdog_lock:
+                if now - _watchdog_state["last_dump"] < WATCHDOG_COOLDOWN_SECONDS:
+                    continue
+                _watchdog_state["last_dump"] = now
+                _watchdog_state["dumps"] += 1
+            _watchdog_report("climb", current)
+        except Exception:
+            continue
+
+
+threading.Thread(target=_watchdog_loop, name="memory-watchdog",
+                 daemon=True).start()
+
+
 # ---------- run queue (single worker; cycles are serialized on purpose) ----------
 
 _run_queue: "queue.Queue[str]" = queue.Queue(maxsize=2)

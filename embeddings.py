@@ -126,6 +126,13 @@ class EmbeddingExtractor:
                                 "ONNX Runtime backend")
                     return self._model
                 except Exception as exc:
+                    # Unmissable in the instance logs even after an OOM
+                    # kill: this line separates "the onnx load itself
+                    # failed" from "the ramp happened inside the onnx
+                    # load", which the watchdog report cannot tell apart
+                    # on its own.
+                    print(f"EMBEDDER_ONNX_LOAD_FAILED "
+                          f"{type(exc).__name__}: {exc}", flush=True)
                     # The torch fallback costs roughly 500 MB. On a memory
                     # capped host that fallback is not a fallback but an OOM
                     # kill of the whole instance: one that also destroys the
