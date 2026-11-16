@@ -1101,10 +1101,32 @@ def debug_embedder(stage: str = "info") -> Dict[str, Any]:
             return out
 
         out["error"] = ("unknown stage; use info, tokenizer, session, full, "
-                        "procs or mlflow in diagnostic order")
+                        "procs, report or mlflow in diagnostic order")
         return out
     finally:
         _debug_embedder_lock.release()
+
+
+@app.on_event("startup")
+def preload_embedder() -> None:
+    """Warm the embedding model at boot, off the cycle's critical path.
+
+    The cold ONNX load was observed ramping past the instance ceiling when
+    it ran at generation end, stacked on a busy process. At boot the
+    baseline is at its lowest and nothing else is running, so the one time
+    the expensive load is paid is the safest moment. After the first cycle
+    the idle release timer takes over and later reloads reuse the cheaper
+    cold path (arena off, page cache dropped after load).
+    """
+    def _load() -> None:
+        try:
+            _get_monitor().embedder.model
+            print("EMBEDDER_PRELOAD_OK", flush=True)
+        except Exception as exc:
+            print(f"EMBEDDER_PRELOAD_FAILED {type(exc).__name__}: {exc}",
+                  flush=True)
+    threading.Thread(target=_load, name="embedder-preload",
+                     daemon=True).start()
 
 
 @app.get("/health/live")

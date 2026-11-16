@@ -61,8 +61,29 @@ class _OnnxMiniLM:
         weights_path = resolve_model_file(model_name, "onnx/model.onnx")
         options = ort.SessionOptions()
         options.intra_op_num_threads = intra_op_threads
+        # The hosted instance's ceiling counts the whole cgroup, and the
+        # cold load of this graph was observed ramping anonymous memory
+        # past it (the 86 MB protobuf parse plus the CPU arena's lookaside
+        # chunks, on top of the model file's page cache). Both are dispens
+        # able for short batches: the arena trades allocation syscalls for
+        # resident memory, and the mem pattern cache only pays off when the
+        # same shapes repeat in a hot loop.
+        options.enable_cpu_mem_arena = False
+        options.enable_mem_pattern = False
         self._session = ort.InferenceSession(
             weights_path, options, providers=["CPUExecutionProvider"])
+        # The session holds its own copy of the weights, so the file's page
+        # cache is pure duplication afterwards: advise the kernel to drop
+        # it. Under the cgroup ceiling even reclaimable cache triggers the
+        # platform's OOM metering, and this is 86 MB of it.
+        try:
+            fd = os.open(weights_path, os.O_RDONLY)
+            try:
+                os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+            finally:
+                os.close(fd)
+        except (OSError, AttributeError):
+            pass
 
     def encode(self, texts, convert_to_numpy=True, **kwargs):
         """Embed texts with MiniLM's documented pooling, torch free."""
