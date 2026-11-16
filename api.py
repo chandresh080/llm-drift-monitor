@@ -37,7 +37,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel
 
-from monitor import LLMDriftMonitor, _cgroup_memory_stats
+from monitor import LLMDriftMonitor, _cgroup_memory_stats, _cgroup_memory_stat_fields
 from storage import DriftMonitorStorage
 
 app = FastAPI(title="LLM Drift Monitor")
@@ -887,6 +887,82 @@ def debug_embedder(stage: str = "info") -> Dict[str, Any]:
             report("after", before)
             return out
 
+        if stage == "procs":
+            # Who holds the memory right now: every process in the
+            # instance's cgroup with its RSS and command line. Called
+            # during a climb it names the process that is ramping; on a
+            # quiet instance it exposes any platform agent sharing the
+            # ceiling with us.
+            out["memory_stat_mb"] = _cgroup_memory_stat_fields()
+            procs = []
+            for entry in os.listdir("/proc"):
+                if not entry.isdigit():
+                    continue
+                try:
+                    with open(f"/proc/{entry}/status",
+                              encoding="utf-8") as handle:
+                        rss_kb = None
+                        for line in handle:
+                            if line.startswith("VmRSS:"):
+                                rss_kb = int(line.split()[1])
+                                break
+                    with open(f"/proc/{entry}/cmdline",
+                              encoding="utf-8") as handle:
+                        cmdline = handle.read().replace("\x00", " ").strip()
+                    procs.append({"pid": int(entry),
+                                  "rss_mb": round((rss_kb or 0) / 1024, 1),
+                                  "cmd": cmdline[:120]})
+                except (OSError, ValueError, IndexError):
+                    continue
+            procs.sort(key=lambda p: p["rss_mb"], reverse=True)
+            out["processes"] = procs[:15]
+            report("after", snap())
+            return out
+
+        if stage == "mlflow":
+            # Isolated cost test for the detached tracking child: spawn the
+            # exact subprocess the cycle spawns (bypassing the headroom
+            # guard on purpose) and report the cgroup while it imports.
+            before = snap()
+            try:
+                import subprocess
+                import sys as _sys
+                proc = subprocess.Popen(
+                    [_sys.executable, "-m", "tracking"],
+                    stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE, cwd="/app")
+                payload = json.dumps({
+                    "run_name": "debug_embedder_mlflow_stage",
+                    "experiment_name": "llm-drift-daily",
+                    "tags": {}, "params": {}, "metrics": {},
+                    "artifacts": {},
+                }).encode("utf-8")
+                try:
+                    proc.stdin.write(payload)
+                    proc.stdin.close()
+                except BrokenPipeError:
+                    pass
+                # Sample while the child imports mlflow; the ramp shows in
+                # cgroup current long before the child exits.
+                samples = []
+                deadline = time.time() + 75
+                while time.time() < deadline:
+                    code = proc.poll()
+                    s = _cgroup_memory_stats()
+                    samples.append(round(s["current_mb"] or 0, 1))
+                    if code is not None:
+                        break
+                    time.sleep(3)
+                err = proc.stderr.read().decode("utf-8", "replace")[:400] \
+                    if proc.stderr else ""
+                out["child_exit_code"] = proc.poll()
+                out["stderr_head"] = err
+                out["current_samples_mb"] = samples
+            except Exception as exc:
+                out["error"] = f"{type(exc).__name__}: {exc}"
+            report("after", before)
+            return out
+
         if stage == "full":
             before = snap()
             try:
@@ -904,8 +980,8 @@ def debug_embedder(stage: str = "info") -> Dict[str, Any]:
             report("after", before)
             return out
 
-        out["error"] = ("unknown stage; use info, tokenizer, session or full "
-                        "in that order")
+        out["error"] = ("unknown stage; use info, tokenizer, session, full, "
+                        "procs or mlflow in diagnostic order")
         return out
     finally:
         _debug_embedder_lock.release()
@@ -1032,6 +1108,24 @@ def metrics() -> str:
         "# TYPE drift_cgroup_oom_kills counter",
         f"drift_cgroup_oom_kills {cgroup['oom_kills'] or 0}",
     ]
+    # The climb that kills the instance needs its composition: anon is
+    # process memory (a heavy import ramping in some process), file is page
+    # cache from file reads and downloads. A climb in file while anon stays
+    # flat means the kernel should reclaim it; a climb in anon names a
+    # process. This is the difference between two very different killers.
+    cstat = _cgroup_memory_stat_fields()
+    if cstat:
+        lines += [
+            "# HELP drift_cgroup_anon_mb Anonymous memory of the instance cgroup.",
+            "# TYPE drift_cgroup_anon_mb gauge",
+            f"drift_cgroup_anon_mb {cstat.get('anon', 0):.1f}",
+            "# HELP drift_cgroup_file_mb Page cache of the instance cgroup.",
+            "# TYPE drift_cgroup_file_mb gauge",
+            f"drift_cgroup_file_mb {cstat.get('file', 0):.1f}",
+            "# HELP drift_cgroup_sock_mb Socket memory of the instance cgroup.",
+            "# TYPE drift_cgroup_sock_mb gauge",
+            f"drift_cgroup_sock_mb {cstat.get('sock', 0):.1f}",
+        ]
     return "\n".join(lines) + "\n"
 
 

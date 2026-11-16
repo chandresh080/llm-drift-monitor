@@ -79,6 +79,31 @@ def _memory_headroom_mb(base: str = "/sys/fs/cgroup") -> Optional[float]:
     return stats["limit_mb"] - stats["current_mb"]
 
 
+def _cgroup_memory_stat_fields(
+        base: str = "/sys/fs/cgroup") -> Dict[str, float]:
+    """Selected fields of the cgroup's memory.stat, in MB.
+
+    anon / file / sock separate live allocations from reclaimable page
+    cache: Render's OOM event fires on the cgroup total, so a climb that is
+    mostly file cache behaves differently from one that is process memory.
+    Empty when the host exposes no memory.stat (cgroup v1 or none).
+    """
+    wanted = {"anon": ("anon",), "file": ("file",), "sock": ("sock",)}
+    fields: Dict[str, float] = {}
+    try:
+        with open(os.path.join(base, "memory.stat"), encoding="utf-8") as fh:
+            for line in fh:
+                parts = line.split()
+                if len(parts) != 2:
+                    continue
+                for key, names in wanted.items():
+                    if parts[0] in names:
+                        fields[key] = int(parts[1]) / (1024 * 1024)
+    except (OSError, ValueError):
+        pass
+    return fields
+
+
 def _mlflow_headroom_ok(headroom_mb: Optional[float],
                         required_mb: float = 450.0) -> bool:
     """Whether the container can afford a mlflow import in a subprocess.
