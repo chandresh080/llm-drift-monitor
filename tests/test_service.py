@@ -540,3 +540,66 @@ class TestComparisonRedaction:
         assert manifest == {"provider": "gemini",
                             "model_id": "gemini-3.1-flash-lite",
                             "panel_version": "3.0.0"}
+
+
+class TestRunRecordBound:
+    """Finding: _runs accumulated every polled run forever; completed
+    records now prune oldest-first once the bound is exceeded."""
+
+    def test_record_run_prunes_oldest(self, monkeypatch):
+        from api import MAX_RUN_RECORDS, _record_run, _runs
+        _runs.clear()
+        try:
+            for i in range(MAX_RUN_RECORDS + 25):
+                _record_run(f"run-{i}", {"status": "completed"})
+            assert len(_runs) == MAX_RUN_RECORDS
+            # Oldest records went first; the newest is always retained.
+            assert f"run-{MAX_RUN_RECORDS + 24}" in _runs
+            assert "run-0" not in _runs
+        finally:
+            _runs.clear()
+
+    def test_record_run_keeps_a_live_running_record(self, monkeypatch):
+        """A running record accepted now is younger than any completed one
+        pruned later, but a second running record can never evict it while
+        the bound has headroom (the demo budget is far below MAX)."""
+        from api import MAX_RUN_RECORDS, _record_run, _runs
+        _runs.clear()
+        try:
+            _record_run("live", {"status": "running"})
+            for i in range(MAX_RUN_RECORDS):
+                _record_run(f"done-{i}", {"status": "completed"})
+            assert "live" in _runs  # never over the bound, never pruned
+            _record_run("done-x", {"status": "completed"})  # hits bound
+            assert "live" in _runs
+        finally:
+            _runs.clear()
+
+
+class TestStaticAssets:
+    """Finding: FileResponse raises RuntimeError (HTTP 500) when the asset
+    file is absent; a missing asset is a 404."""
+
+    @staticmethod
+    def client():
+        from fastapi.testclient import TestClient
+
+        from api import app as api_app
+        return TestClient(api_app, raise_server_exceptions=False)
+
+    def test_missing_asset_is_404(self):
+        client = self.client()
+        response = client.get("/static/does_not_exist.png")
+        assert response.status_code == 404
+
+    def test_present_asset_is_served(self):
+        client = self.client()
+        response = client.get("/static/app.js")
+        assert response.status_code == 200
+        assert "javascript" in response.headers.get(
+            "content-type", "application/javascript")
+
+    def test_path_traversal_is_contained(self):
+        client = self.client()
+        response = client.get("/static/..%2F..%2Fapi.py")
+        assert response.status_code == 404

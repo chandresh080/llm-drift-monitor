@@ -105,18 +105,47 @@ def rbf_kernel(x: np.ndarray, y: np.ndarray, sigma: float = 1.0) -> float:
     dist_sq = float(np.sum(diff ** 2))
     return float(np.exp(-dist_sq / (2.0 * sigma ** 2)))
 
-def compute_median_bandwidth(Z: np.ndarray) -> float:
+def _pairwise_sq_dists(Z: np.ndarray,
+                       memory_budget_mb: float = 8.0) -> np.ndarray:
+    """Pairwise squared Euclidean distances, computed in row blocks.
+
+    The naive broadcast Z[:, None, :] - Z[None, :, :] materializes n*n*d
+    floats at once: two live 78 MB copies for the hosted demo's pooled
+    window (160 x 384 float64), on top of the warm embedding model. Two
+    kernel matrices in one cycle then stack those transients instead of
+    replacing them (glibc stops returning a large size to the OS after the
+    first free of that size), and the OOM kill ended every tested cycle on
+    the 512 MB instance. Blocking caps the live transient at the budget.
+    """
+    Z_arr = np.asarray(Z, dtype=float)
+    n, d = Z_arr.shape
+    bytes_per_row = max(1, n * d * Z_arr.itemsize)
+    block = max(1, int((memory_budget_mb * 1024 * 1024) / bytes_per_row))
+    out = np.empty((n, n), dtype=Z_arr.dtype)
+    for start in range(0, n, block):
+        stop = min(start + block, n)
+        delta = Z_arr[start:stop, None, :] - Z_arr[np.newaxis, :, :]
+        out[start:stop] = np.einsum("ijk,ijk->ij", delta, delta)
+    np.maximum(out, 0.0, out=out)  # float error can make equal pairs negative
+    return out
+
+
+def compute_median_bandwidth(Z: np.ndarray,
+                             dist_sq: Optional[np.ndarray] = None) -> float:
     """
     Compute RBF kernel bandwidth sigma using the median heuristic on pairwise Euclidean distances.
+
+    Callers that already hold the pairwise squared distance matrix pass it
+    as dist_sq so the blocked computation runs once, not twice.
     """
     Z_arr = np.asarray(Z, dtype=float)
     n = len(Z_arr)
     if n < 2:
         return 1.0
-    diff = Z_arr[:, np.newaxis, :] - Z_arr[np.newaxis, :, :]
-    dist_sq = np.sum(diff ** 2, axis=-1)
+    if dist_sq is None:
+        dist_sq = _pairwise_sq_dists(Z_arr)
     i_upper = np.triu_indices(n, k=1)
-    dists = np.sqrt(np.maximum(dist_sq[i_upper], 0.0))
+    dists = np.sqrt(dist_sq[i_upper])
     # Filter out exact duplicates / zero distances if possible
     positive_dists = dists[dists > 1e-6]
     if len(positive_dists) > 0:
@@ -127,10 +156,9 @@ def compute_median_bandwidth(Z: np.ndarray) -> float:
 
 def _compute_kernel_matrix(Z: np.ndarray, sigma: Optional[float] = None) -> Tuple[np.ndarray, float]:
     """Compute the full RBF kernel matrix and effective bandwidth sigma."""
-    diff = Z[:, np.newaxis, :] - Z[np.newaxis, :, :]
-    dist_sq = np.sum(diff ** 2, axis=-1)
+    dist_sq = _pairwise_sq_dists(Z)
     if sigma is None or sigma <= 0:
-        sigma = compute_median_bandwidth(Z)
+        sigma = compute_median_bandwidth(Z, dist_sq=dist_sq)
     gamma = 1.0 / (2.0 * (sigma ** 2))
     K = np.exp(-gamma * dist_sq)
     return K, sigma

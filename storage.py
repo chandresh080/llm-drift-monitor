@@ -52,6 +52,10 @@ class DriftMonitorStorage:
     def _init_db(self):
         """Initialize database schema."""
         with self._db() as conn:
+            # WAL lets dashboard reads proceed while a run cycle is writing.
+            # A persistent database property: set once here, not per
+            # connection, where it would take a write lock on every query.
+            conn.execute("PRAGMA journal_mode=WAL")
             # Baseline manifest: which provider, model, panel version and
             # decoding settings produced the reference window, plus when.
             # Reference windows are only comparable to runs made with the
@@ -335,7 +339,9 @@ class DriftMonitorStorage:
         conn = sqlite3.connect(self.db_path, timeout=5.0)
         try:
             # WAL lets dashboard reads proceed while a run cycle is writing.
-            conn.execute("PRAGMA journal_mode=WAL")
+            # journal_mode is a persistent database property, so it is set
+            # once in _init_db; setting it per connection would take a write
+            # lock on every query for no effect.
             yield conn
             conn.commit()
         finally:

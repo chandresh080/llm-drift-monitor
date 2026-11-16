@@ -43,7 +43,27 @@ from storage import DriftMonitorStorage
 app = FastAPI(title="LLM Drift Monitor")
 
 _runs: Dict[str, Dict[str, Any]] = {}
+# Bounded: completed run records live only for polling. Visitors who wait
+# past this many later submissions are past their own check; a long lived
+# instance would otherwise accumulate every record ever polled. The bound
+# is far above anything a visitor can hit (the daily budget caps checks at
+# DAILY_CYCLE_BUDGET per day), so pruning never removes a live record, and
+# running records are never pruned at all: their terminal write is due.
+MAX_RUN_RECORDS = 200
 logger = logging.getLogger("llm_drift_monitor.api")
+
+
+def _record_run(run_id: str, record: Dict[str, Any]) -> None:
+    """Store a run record, pruning the oldest once the bound is exceeded."""
+    _runs[run_id] = record
+    if len(_runs) <= MAX_RUN_RECORDS:
+        return
+    for old_id in list(_runs):  # dicts keep insertion order: oldest first
+        if len(_runs) <= MAX_RUN_RECORDS:
+            break
+        if _runs.get(old_id, {}).get("status") == "running":
+            continue  # still pending: its terminal write is due any moment
+        _runs.pop(old_id, None)
 
 # ---------- process level service object ----------
 
@@ -213,7 +233,7 @@ def _execute_cycle(run_id: str) -> None:
         # "insufficient matched window data". The 13 s call spacing and the
         # visitor/daily budgets keep the free tier cost bounded instead.
         result = monitor.run_monitoring_cycle()
-        _runs[run_id] = {"status": "completed", "result": result}
+        _record_run(run_id, {"status": "completed", "result": result})
         _metrics["cycles_total"] += 1
         _metrics["last_cycle_seconds"] = round(time.perf_counter() - started, 2)
         invalidate_read_cache()
@@ -225,7 +245,7 @@ def _execute_cycle(run_id: str) -> None:
             "duration_s": _metrics["last_cycle_seconds"],
         }))
     except Exception as exc:
-        _runs[run_id] = {"status": "failed", "error": str(exc)}
+        _record_run(run_id, {"status": "failed", "error": str(exc)})
         _metrics["cycles_failed_total"] += 1
         logger.error(json.dumps({"event": "drift_run_failed", "run_id": run_id, "error": str(exc)}))
     finally:
@@ -366,7 +386,7 @@ async def create_run(request: Request) -> RunResponse:
         )
 
     # Per visitor interval: one cycle per IP per the public demo interval.
-    # Chinese checked first so the more specific message wins when both
+    # Checked first so the more specific message wins when both
     # limits would trip on the same submission.
     client_ip = _client_ip(request)
     ip_wait = _seconds_until_next_ip_run(client_ip)
@@ -395,7 +415,7 @@ async def create_run(request: Request) -> RunResponse:
     run_id = str(uuid.uuid4())
     # Register before enqueueing: the worker may finish a warm cycle in well
     # under a second, and a late "running" write must never clobber a result.
-    _runs[run_id] = {"status": "running"}
+    _record_run(run_id, {"status": "running"})
     try:
         _run_queue.put_nowait(run_id)
     except queue.Full:
@@ -1028,7 +1048,9 @@ if os.path.isdir(_WEB_DIR):
 
     @app.get("/static/{asset_name}", include_in_schema=False)
     def static_asset(asset_name: str):
-        return FileResponse(
-            os.path.join(_WEB_DIR, os.path.basename(asset_name)),
-            headers={"Cache-Control": "no-store"},
-        )
+        path = os.path.join(_WEB_DIR, os.path.basename(asset_name))
+        # FileResponse raises RuntimeError (a 500) when the file is absent;
+        # a mistyped or removed asset is a 404, not a server error.
+        if not os.path.isfile(path):
+            raise HTTPException(status_code=404, detail="Asset not found")
+        return FileResponse(path, headers={"Cache-Control": "no-store"})

@@ -34,6 +34,15 @@ RUN python -c "from huggingface_hub import hf_hub_download; \
 # and still honors an explicit deployment env var if one is set.
 ENV DRIFT_MONITOR_EMBEDDING_BACKEND=onnx
 
+# Allocator hygiene for the 512 MB instance: glibc's malloc raises its mmap
+# threshold after freeing a large block, so the next block of that size goes
+# onto the brk heap instead of mmap and is never returned to the OS. Two
+# large transients in one cycle then stack instead of replacing each other,
+# which is exactly how the test phase's kernel matrices breached the ceiling.
+# Pinning the threshold keeps big allocations on mmap, freed via munmap.
+ENV MALLOC_MMAP_THRESHOLD_=1048576
+ENV MALLOC_TRIM_THRESHOLD_=1048576
+
 COPY . .
 
 EXPOSE 8000
