@@ -40,6 +40,10 @@ ENV DRIFT_MONITOR_EMBEDDING_BACKEND=onnx
 # large transients in one cycle then stack instead of replacing each other,
 # which is exactly how the test phase's kernel matrices breached the ceiling.
 # Pinning the threshold keeps big allocations on mmap, freed via munmap.
+# MALLOC_ARENA_MAX caps the per-thread arenas (each one holds trimmed but
+# unreturned heap): the render.yaml blueprint env has proven unreliable to
+# sync, so the memory-critical settings are baked into the image.
+ENV MALLOC_ARENA_MAX=2
 ENV MALLOC_MMAP_THRESHOLD_=1048576
 ENV MALLOC_TRIM_THRESHOLD_=1048576
 

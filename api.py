@@ -179,8 +179,12 @@ def _schedule_model_release() -> None:
 # heap, thread stacks, and per process RSS. Render keeps an instance's
 # logs even after the instance dies, so the report survives the kill.
 WATCHDOG_INTERVAL_SECONDS = 2.0
-WATCHDOG_TRIGGER_MB = 200.0
-WATCHDOG_COOLDOWN_SECONDS = 3.0
+# Above the warm steady state (~213 MB with the model held) so the idle
+# instance never triggers, and above the predicted cycle peak (~240) with
+# margin; a real ramp past ~350 is the only thing worth attributing. The
+# dumps burn CPU on the 0.15-core instance, so they must be rare.
+WATCHDOG_TRIGGER_MB = 350.0
+WATCHDOG_COOLDOWN_SECONDS = 5.0
 _watchdog_state = {"last_dump": 0.0, "dumps": 0, "last_report": ""}
 _watchdog_lock = threading.Lock()
 
