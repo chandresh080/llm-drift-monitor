@@ -1,8 +1,9 @@
 # LLM Drift Monitor
 
-A Python service that monitors changes in LLM responses using fixed canary prompts and statistical tests. It stores probe results, compares current responses with a reference window, and raises alerts when configured drift signals persist.
+[![Live Demo](https://img.shields.io/badge/Live_Demo-onrender.com-46E3B7?logo=render&logoColor=white)](https://llm-drift-monitor-api.onrender.com)
+[![CI](https://github.com/chandresh080/llm-drift-monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/chandresh080/llm-drift-monitor/actions/workflows/ci.yml)
 
-[Live demo](https://llm-drift-monitor-api.onrender.com) · [CI](https://github.com/chandresh080/llm-drift-monitor/actions/workflows/ci.yml)
+A Python service that monitors changes in LLM responses using fixed canary prompts and statistical tests. It stores probe results, compares current responses with a reference window, and raises alerts when configured drift signals persist.
 
 ## Why
 
