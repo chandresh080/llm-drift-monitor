@@ -179,8 +179,8 @@ def _schedule_model_release() -> None:
 # heap, thread stacks, and per process RSS. Render keeps an instance's
 # logs even after the instance dies, so the report survives the kill.
 WATCHDOG_INTERVAL_SECONDS = 2.0
-WATCHDOG_TRIGGER_MB = 260.0
-WATCHDOG_COOLDOWN_SECONDS = 8.0
+WATCHDOG_TRIGGER_MB = 200.0
+WATCHDOG_COOLDOWN_SECONDS = 3.0
 _watchdog_state = {"last_dump": 0.0, "dumps": 0, "last_report": ""}
 _watchdog_lock = threading.Lock()
 
@@ -259,11 +259,17 @@ def _watchdog_loop() -> None:
                 _watchdog_state["dumps"] += 1
             import io
             import contextlib
+            import sys as _sys
             buffer = io.StringIO()
             with contextlib.redirect_stdout(buffer):
                 _watchdog_report("climb", current)
+            report_text = buffer.getvalue()
+            # stderr is the channel that survives an OOM kill in the
+            # platform's instance logs; the in-memory copy is the live one.
+            _sys.stderr.write(report_text)
+            _sys.stderr.flush()
             with _watchdog_lock:
-                _watchdog_state["last_report"] = buffer.getvalue()
+                _watchdog_state["last_report"] = report_text
         except Exception:
             continue
 
