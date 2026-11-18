@@ -15,7 +15,7 @@
      withheld chip, never raw wording
    - flagged counts read the field the API actually returns
    - missing test values render as an explicit state ("Not evaluated",
-     "—"), never as "No flag" or zero
+     "n/a"), never as "No flag" or zero
    - product CSV string keys ("0.0") resolve against numeric lookups
    - the refusal rate change takes its sign from the delta itself
    - rate limit rejections surface the server's Retry-After message
@@ -252,7 +252,7 @@ const settle = () => new Promise((r) => setImmediate(r));
     getById("kpi-runs").textContent);
 
   check("last check metric shows the latest cycle timestamp",
-    getById("kpi-lastcheck").textContent !== "—"
+    getById("kpi-lastcheck").textContent !== "n/a"
       && getById("kpi-lastcheck").textContent !== "",
     getById("kpi-lastcheck").textContent);
 
@@ -314,16 +314,39 @@ const settle = () => new Promise((r) => setImmediate(r));
     getById("cfg-tokens").textContent.includes("960"),
     getById("cfg-tokens").textContent);
 
-  check("config shows the run policy the throttle enforces",
-    getById("cfg-runpolicy").textContent.includes("10 min")
-      && getById("cfg-runpolicy").textContent.includes("15 per day")
-      && getById("cfg-runpolicy").textContent.includes("4 used today"),
-    getById("cfg-runpolicy").textContent);
+  check("embedding model and baseline manifest survive as secondary metadata",
+    getById("cfg-embedding").textContent.includes("all-MiniLM-L6-v2")
+      && getById("cfg-manifest").textContent.includes("Baseline: gemini"),
+    `${getById("cfg-embedding").textContent} / ${getById("cfg-manifest").textContent}`);
 
-  check("run note uses the configured cycle size, not a hardcoded number",
+  check("run configuration section is renamed and collapsed by default",
+    fs.readFileSync(path.join(__dirname, "index.html"), "utf8")
+      .includes("<summary>Run configuration</summary>"),
+    "");
+
+  check("run note uses the configured cycle size and interval",
     getById("run-note").textContent.includes("40 prompts per run")
-      && getById("run-note").textContent.includes("every 10 min"),
+      && getById("run-note").textContent.includes("1 check per visitor / 10 min"),
     getById("run-note").textContent);
+
+  check("run note shows the remaining daily quota from /config",
+    getById("run-note").textContent.includes("11 of 15 checks left today"),
+    getById("run-note").textContent);
+
+  check("threshold and persistence render as compact values, not sentences",
+    getById("cfg-alpha").textContent === "0.05 · Benjamini–Hochberg"
+      && getById("cfg-persist").textContent === "2 consecutive flagged cycles",
+    `${getById("cfg-alpha").textContent} / ${getById("cfg-persist").textContent}`);
+
+  check("no em dash in any rendered UI copy",
+    ["kpi-drift", "verdict-sub", "verdict-meta", "run-note", "cfg-model",
+     "cfg-panel", "cfg-ref", "cfg-cur", "cfg-alpha", "cfg-persist",
+     "cfg-last-run", "cfg-latency", "cfg-tokens", "cfg-embedding",
+     "cfg-manifest", "eff-length", "eff-centroid", "eff-refusal",
+     "detector-rows"]
+      .every((id) => !getById(id).textContent.includes("—")
+        && !getById(id).innerHTML.includes("—")),
+    "");
 
   check("header model label comes from /config",
     getById("model-label").textContent.includes("gemini-3.1-flash-lite"),
@@ -538,14 +561,14 @@ const settle = () => new Promise((r) => setImmediate(r));
       && !getById("detector-rows").innerHTML.includes("No flag"),
     getById("detector-rows").innerHTML.slice(0, 300));
   check("missing effect size renders an em dash, not zero",
-    getById("eff-refusal").textContent === "—"
-      && getById("eff-length").textContent === "—",
+    getById("eff-refusal").textContent === "n/a"
+      && getById("eff-length").textContent === "n/a",
     `${getById("eff-refusal").textContent} / ${getById("eff-length").textContent}`);
   check("flagged metric degrades to an em dash without the field",
-    getById("kpi-flagged").textContent === "—",
+    getById("kpi-flagged").textContent === "n/a",
     getById("kpi-flagged").textContent);
   check("paired section degrades to an em dash",
-    getById("paired-stat").textContent === "—",
+    getById("paired-stat").textContent === "n/a",
     getById("paired-stat").textContent);
   check("missing latency degrades to an explicit not recorded",
     getById("cfg-latency").textContent === "not recorded",

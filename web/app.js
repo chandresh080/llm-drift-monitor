@@ -31,7 +31,6 @@ const state = {
 const WAKE_WAIT_MS = 5000;
 const REQUEST_TIMEOUT_MS = 15000;
 const NUM_TESTS = 3;      // detector family: KS, availability, MMD
-const DAILY_CYCLE_BUDGET = 15;  // display fallback; /config run_policy wins
 
 const $ = (id) => document.getElementById(id);
 
@@ -44,15 +43,18 @@ function escapeHtml(text) {
 
 function fmtTime(iso) {
   const t = new Date(iso);
-  if (isNaN(t)) return "—";
-  return t.toLocaleString(undefined, {
+  if (isNaN(t)) return "n/a";
+  const opts = {
     month: "short", day: "numeric",
     hour: "2-digit", minute: "2-digit",
-  });
+  };
+  /* An old cycle must show its actual date, not imply currentness. */
+  if (t.getFullYear() !== new Date().getFullYear()) opts.year = "numeric";
+  return t.toLocaleString(undefined, opts);
 }
 
 function fmtP(p) {
-  if (p == null) return "—";
+  if (p == null) return "n/a";
   return Number(p) < 0.001 ? "< 0.001" : Number(p).toFixed(3);
 }
 
@@ -227,7 +229,7 @@ function renderMetrics() {
     runsEl.textContent = Number(state.stats.probe_runs).toLocaleString();
     runsEl.className = "metric-value";
   } else {
-    runsEl.textContent = "—";
+    runsEl.textContent = "n/a";
     runsEl.className = "metric-value effect-missing";
   }
 
@@ -238,7 +240,7 @@ function renderMetrics() {
     flaggedEl.textContent = `${fired} / ${NUM_TESTS}`;
     flaggedEl.className = "metric-value" + (fired > 0 ? " kpi-alert" : "");
   } else {
-    flaggedEl.textContent = "—";
+    flaggedEl.textContent = "n/a";
     flaggedEl.className = "metric-value effect-missing";
   }
 
@@ -247,7 +249,7 @@ function renderMetrics() {
     lastEl.textContent = fmtTime(latest.timestamp);
     lastEl.className = "metric-value";
   } else {
-    lastEl.textContent = "—";
+    lastEl.textContent = "n/a";
     lastEl.className = "metric-value effect-missing";
   }
 }
@@ -293,7 +295,7 @@ function renderDetectors() {
       <tr data-testid="detector-row">
         <td class="detector-name">${escapeHtml(r.name)}</td>
         <td class="detector-method">${escapeHtml(r.method)}</td>
-        <td class="num">${r.p == null ? "—" : fmtP(r.p)}</td>
+        <td class="num">${r.p == null ? "n/a" : fmtP(r.p)}</td>
         <td>${decision}</td>
       </tr>`;
   }).join("");
@@ -306,7 +308,7 @@ function renderEffects() {
   const set = (id, value) => {
     const el = $(id);
     if (value == null) {
-      el.textContent = "—";
+      el.textContent = "n/a";
       el.className = "effect-value effect-missing";
     } else {
       el.textContent = value;
@@ -327,22 +329,32 @@ function renderEffects() {
 
 /* ---------- run note and configuration ---------- */
 
-/* The operational note under the button uses the real configured values:
-   how many prompts a run collects and the interval a visitor must wait
-   for. It never hardcodes numbers another deployment would contradict. */
+/* The operational note next to the Run check button uses the real
+   configured values: how many prompts a run collects, the per-visitor
+   interval, and the remaining daily quota. It never hardcodes numbers
+   another deployment would contradict. */
 function renderRunNote() {
   const c = state.config;
   if (!c || $("run-note").dataset.active) return;
   const rp = c.run_policy || {};
-  const intervalMin = rp.per_visitor_interval_seconds != null
-    ? Math.round(rp.per_visitor_interval_seconds / 60) : null;
-  const budget = rp.daily_cycle_budget != null ? rp.daily_cycle_budget : DAILY_CYCLE_BUDGET;
   const bits = [`${c.probes_per_cycle || c.prompt_panel_probes || "?"} prompts per run`];
-  if (intervalMin != null) bits.push(`one check per visitor every ${intervalMin} min`);
-  bits.push(`up to ${budget} checks per day`);
+  if (rp.per_visitor_interval_seconds != null) {
+    bits.push(`1 check per visitor / ${Math.round(rp.per_visitor_interval_seconds / 60)} min`);
+  }
+  if (rp.daily_cycle_budget != null) {
+    const used = rp.daily_cycles_used_today != null ? Number(rp.daily_cycles_used_today) : 0;
+    const left = Math.max(0, Number(rp.daily_cycle_budget) - used);
+    bits.push(left > 0
+      ? `${left} of ${rp.daily_cycle_budget} checks left today`
+      : "daily check budget used");
+  }
   $("run-note").textContent = bits.join(" · ");
 }
 
+/* Compact values only: no explanatory sentences next to a field, the
+   method names travel with the value when they matter ("0.05 ·
+   Benjamini–Hochberg"). Embedding model and baseline manifest stay
+   available as secondary metadata below the two columns. */
 function renderConfig() {
   const c = state.config;
   if (!c) {
@@ -351,54 +363,37 @@ function renderConfig() {
     return;
   }
   $("cfg-model").textContent = c.provider_available === false
-    ? `${c.target_model} (unavailable to run new cycles)`
-    : `${c.target_model} (${c.adapter_type})`;
-  $("cfg-embedding").textContent = c.embedding_model;
+    ? `${c.target_model} (unavailable)`
+    : c.target_model;
+  $("cfg-panel").textContent =
+    `v${c.prompt_panel_version} · ${c.probes_per_cycle} prompts per cycle`;
   const cyclesForWindow = c.probes_per_cycle
     ? Math.round(c.reference_window / c.probes_per_cycle) : null;
   $("cfg-ref").textContent = cyclesForWindow
-    ? `${c.reference_window} responses (${cyclesForWindow} cycles)`
+    ? `${c.reference_window} responses (${cyclesForWindow} complete cycles)`
     : `${c.reference_window} responses`;
-  $("cfg-cur").textContent = `${c.current_window} responses (1 cycle)`;
-  $("cfg-panel").textContent =
-    `v${c.prompt_panel_version} · ${c.prompt_panel_probes} prompts · `
-    + `${c.probes_per_cycle} per cycle`;
-  $("cfg-alpha").textContent =
-    `${Number(c.alpha).toFixed(2)} (Benjamini-Hochberg)`;
-  $("cfg-persist").textContent =
-    `${c.min_consecutive_cycles} consecutive flagged cycles`;
-  const ts = state.latest && state.latest.timestamp;
-  $("cfg-last-run").textContent = ts
-    ? `${fmtTime(ts)} · ${Number(state.latest.current_size)} vs `
-      + `${Number(state.latest.reference_size)} responses`
-    : "none yet";
+  $("cfg-cur").textContent = `${c.current_window} responses`;
+  $("cfg-alpha").textContent = `${Number(c.alpha).toFixed(2)} · Benjamini–Hochberg`;
+  $("cfg-persist").textContent = `${c.min_consecutive_cycles} consecutive flagged cycles`;
 
   const l = state.latest || {};
-  $("cfg-latency").textContent =
-    l.provider_latency_mean_seconds == null
-      ? "not recorded"
-      : `${Number(l.provider_latency_mean_seconds).toFixed(1)} s mean · `
-        + `${Number(l.provider_latency_p50_seconds).toFixed(1)} s p50 · `
-        + `${Number(l.provider_latency_p95_seconds).toFixed(1)} s p95`;
-  $("cfg-tokens").textContent =
-    l.probe_tokens_total == null
-      ? "not recorded"
-      : `${Number(l.probe_tokens_total).toLocaleString()} tokens per cycle`;
+  const ts = state.latest && state.latest.timestamp;
+  /* Window sizes already appear above; the timestamp is the new fact. */
+  $("cfg-last-run").textContent = ts ? fmtTime(ts) : "none yet";
+  $("cfg-latency").textContent = l.provider_latency_mean_seconds == null
+    ? "not recorded"
+    : `${Number(l.provider_latency_mean_seconds).toFixed(1)} s mean · `
+      + `${Number(l.provider_latency_p95_seconds).toFixed(1)} s p95`;
+  $("cfg-tokens").textContent = l.probe_tokens_total == null
+    ? "not recorded" : `${Number(l.probe_tokens_total).toLocaleString()} tokens`;
 
+  $("cfg-embedding").textContent = c.embedding_model
+    ? `Embedding model: ${c.embedding_model}` : "";
   const m = c.baseline_manifest;
   $("cfg-manifest").textContent = m
-    ? `${m.provider} ${m.model_id} · panel v${m.panel_version} · `
-      + `temperature ${m.temperature} · ${fmtTime(m.collected_at)}`
-    : "not recorded";
-
-  const rp = c.run_policy || {};
-  const used = rp.daily_cycles_used_today != null
-    ? Number(rp.daily_cycles_used_today) : null;
-  $("cfg-runpolicy").textContent =
-    `1 per visitor / ${Math.round((rp.per_visitor_interval_seconds
-      || 600) / 60)} min · ${rp.daily_cycle_budget != null
-      ? rp.daily_cycle_budget : DAILY_CYCLE_BUDGET} per day`
-    + (used != null ? ` (${used} used today)` : "");
+    ? `Baseline: ${m.provider} ${m.model_id} · panel v${m.panel_version} · `
+      + `temperature ${m.temperature} · collected ${fmtTime(m.collected_at)}`
+    : "";
   renderRunNote();
   renderModelLabel();
 }
@@ -452,12 +447,12 @@ function renderComparison() {
         <div class="sample-col">
           <h4>Reference</h4>
           <code class="resp-text">${escapeHtml(
-            r.reference && r.reference.text != null ? r.reference.text : "—")}</code>
+            r.reference && r.reference.text != null ? r.reference.text : "n/a")}</code>
         </div>
         <div class="sample-col">
           <h4>Current</h4>
           <code class="resp-text">${escapeHtml(
-            r.current && r.current.text != null ? r.current.text : "—")}</code>
+            r.current && r.current.text != null ? r.current.text : "n/a")}</code>
         </div>`;
     return `
       <details class="sample" data-redacted="${redacted ? "1" : "0"}">
@@ -622,7 +617,7 @@ function loadAll() {
 }
 
 /* Fast liveness probe: the single source of the status pill. A failure
-   means the instance is unreachable, which is an Offline state — distinct
+   means the instance is unreachable, which is an Offline state, distinct
    from the pre-answer "connecting" state. */
 async function loadLive() {
   try {
@@ -671,7 +666,7 @@ function renderPairedDiagnostic() {
   const set = (id, value) => {
     const el = $(id);
     if (value == null) {
-      el.textContent = "—";
+      el.textContent = "n/a";
       el.className = "effect-value effect-missing";
     } else {
       el.textContent = value;
@@ -757,8 +752,8 @@ function renderProviderComparison() {
   };
   const row = (label, stage, model, a, v) => `
     <tr><td>${label}</td><td>${stage}</td><td>${model}</td>
-    <td>${a.ok} / ${a.failed}</td><td>${a.p50 || "—"}</td>
-    <td>${a.p95 || "—"}</td><td>${a.tokens || "—"}</td><td>${v}</td></tr>`;
+    <td>${a.ok} / ${a.failed}</td><td>${a.p50 || "n/a"}</td>
+    <td>${a.p95 || "n/a"}</td><td>${a.tokens || "n/a"}</td><td>${v}</td></tr>`;
   box.innerHTML = `
     <table class="plain-table"><thead><tr>
       <th>Provider</th><th>Stage</th><th>Model</th><th>Stored answers</th>
@@ -775,7 +770,7 @@ function renderProviderComparison() {
     const f2 = (pc.families || {}).extended_final || {};
     const noFlag = !f1.any_significant && !f2.any_significant;
     verdict.innerHTML =
-      `Cross-provider, cross-model evidence that the adapters work — not a drift `
+      `Cross-provider, cross-model evidence that the adapters work, not a drift `
       + `result. ${noFlag
         ? "No corrected test flagged in either family, and no alert fired. "
         : "One or more tests flagged; see the committed artifacts. "}`
@@ -802,13 +797,13 @@ function renderEvaluation() {
   const h = ev.headline || {};
   const sigma = h.evaluated_shift_sigma;
   $("ev-delay").textContent =
-    h.mean_detection_delay_days == null ? "—" : `${Number(h.mean_detection_delay_days).toFixed(2)} d`;
+    h.mean_detection_delay_days == null ? "n/a" : `${Number(h.mean_detection_delay_days).toFixed(2)} d`;
   $("ev-fa").textContent =
-    h.false_alarms_per_100_days == null ? "—" : Number(h.false_alarms_per_100_days).toFixed(2);
+    h.false_alarms_per_100_days == null ? "n/a" : Number(h.false_alarms_per_100_days).toFixed(2);
   $("ev-detect").textContent =
-    h.detection_rate_pct == null ? "—" : `${Number(h.detection_rate_pct).toFixed(0)}%`;
+    h.detection_rate_pct == null ? "n/a" : `${Number(h.detection_rate_pct).toFixed(0)}%`;
   $("ev-overhead").textContent =
-    h.overhead_p95_seconds == null ? "—" : `${Math.round(h.overhead_p95_seconds * 1000)} ms`;
+    h.overhead_p95_seconds == null ? "n/a" : `${Math.round(h.overhead_p95_seconds * 1000)} ms`;
 
   const table = (headers, rows) => `
     <table class="plain-table"><thead><tr>
@@ -888,7 +883,7 @@ function renderEvaluation() {
     + `a limited number of trials${trials ? ` (${trials} per power point)` : ""}, `
     + `not a guarantee across all shifts. Category-level localization is weak at the `
     + `evaluated sample sizes. The provider comparison below is a real hosted call `
-    + `experiment comparing different models — it cannot establish temporal drift `
+    + `experiment comparing different models, so it cannot establish temporal drift `
     + `within one model. Full methodology: <a href="https://github.com/chandresh080/llm-drift-monitor/blob/main/METRICS.md" target="_blank" rel="noopener">METRICS.md</a>.`;
 }
 

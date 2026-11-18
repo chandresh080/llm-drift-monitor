@@ -100,13 +100,13 @@
               target="_blank" rel="noopener">METRICS.md</a>.</p>
           <div class="effect-row paired-row">
             <div class="effect"><span class="effect-label">Paired MMD statistic</span>
-              <span id="paired-stat" class="effect-value">—</span></div>
+              <span id="paired-stat" class="effect-value">n/a</span></div>
             <div class="effect"><span class="effect-label">Raw permutation p</span>
-              <span id="paired-p" class="effect-value">—</span></div>
+              <span id="paired-p" class="effect-value">n/a</span></div>
             <div class="effect"><span class="effect-label">Matched prompts</span>
-              <span id="paired-pairs" class="effect-value">—</span></div>
+              <span id="paired-pairs" class="effect-value">n/a</span></div>
             <div class="effect"><span class="effect-label">Swap patterns</span>
-              <span id="paired-patterns" class="effect-value">—</span></div>
+              <span id="paired-patterns" class="effect-value">n/a</span></div>
           </div>
         </div>
       </details>
@@ -114,11 +114,11 @@
 
     <section class="effect-row" id="effect-row" data-testid="effects">
       <div class="effect"><span class="effect-label">Mean response length change</span>
-        <span id="eff-length" class="effect-value">—</span></div>
+        <span id="eff-length" class="effect-value">n/a</span></div>
       <div class="effect"><span class="effect-label">Embedding centroid distance</span>
-        <span id="eff-centroid" class="effect-value">—</span></div>
+        <span id="eff-centroid" class="effect-value">n/a</span></div>
       <div class="effect"><span class="effect-label">Refusal rate change</span>
-        <span id="eff-refusal" class="effect-value">—</span></div>
+        <span id="eff-refusal" class="effect-value">n/a</span></div>
     </section>
 
     <details class="section-details">
@@ -140,21 +140,34 @@
     </details>
 
     <details class="section-details">
-      <summary>Configuration</summary>
-      <dl id="config-list" class="config-grid section-body">
-        <div><dt>Target model</dt><dd id="cfg-model">…</dd></div>
-        <div><dt>Embedding model</dt><dd id="cfg-embedding">…</dd></div>
-        <div><dt>Reference window</dt><dd id="cfg-ref">…</dd></div>
-        <div><dt>Current window</dt><dd id="cfg-cur">…</dd></div>
-        <div><dt>Prompt panel</dt><dd id="cfg-panel">…</dd></div>
-        <div><dt>Significance threshold</dt><dd id="cfg-alpha">…</dd></div>
-        <div><dt>Alert persistence</dt><dd id="cfg-persist">…</dd></div>
-        <div><dt>Last completed cycle</dt><dd id="cfg-last-run">…</dd></div>
-        <div><dt>Provider latency, latest cycle</dt><dd id="cfg-latency">…</dd></div>
-        <div><dt>Provider tokens, latest cycle</dt><dd id="cfg-tokens">…</dd></div>
-        <div><dt>Reference baseline manifest</dt><dd id="cfg-manifest">…</dd></div>
-        <div><dt>Run policy</dt><dd id="cfg-runpolicy">…</dd></div>
-      </dl>
+      <summary>Run configuration</summary>
+      <div class="section-body">
+        <div class="config-cols">
+          <div>
+            <p class="act-subhead">Monitoring setup</p>
+            <dl class="config-grid">
+              <div><dt>Target model</dt><dd id="cfg-model">…</dd></div>
+              <div><dt>Prompt panel</dt><dd id="cfg-panel">…</dd></div>
+              <div><dt>Reference window</dt><dd id="cfg-ref">…</dd></div>
+              <div><dt>Current window</dt><dd id="cfg-cur">…</dd></div>
+              <div><dt>Significance threshold</dt><dd id="cfg-alpha">…</dd></div>
+              <div><dt>Alert persistence</dt><dd id="cfg-persist">…</dd></div>
+            </dl>
+          </div>
+          <div>
+            <p class="act-subhead">Latest run</p>
+            <dl class="config-grid">
+              <div><dt>Last completed cycle</dt><dd id="cfg-last-run">…</dd></div>
+              <div><dt>Provider latency</dt><dd id="cfg-latency">…</dd></div>
+              <div><dt>Provider tokens</dt><dd id="cfg-tokens">…</dd></div>
+            </dl>
+          </div>
+        </div>
+        <p class="config-meta">
+          <span id="cfg-embedding"></span>
+          <span id="cfg-manifest"></span>
+        </p>
+      </div>
     </details>
 
   </div>
@@ -165,7 +178,7 @@
     <section class="head-row">
       <div class="head-copy">
         <h1>Evaluation</h1>
-        <p class="head-sub">Benchmark results from controlled simulations with known shifts —
+        <p class="head-sub">Benchmark results from controlled simulations with known shifts,
           not measurements from the hosted demo.</p>
       </div>
     </section>

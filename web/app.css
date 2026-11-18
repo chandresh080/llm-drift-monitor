@@ -669,12 +669,18 @@ details.sample > summary::-webkit-details-marker { display: none; }
 
 .alert-msg { color: var(--ink-2); min-width: 0; }
 
-/* ---------- configuration ---------- */
+/* ---------- run configuration ---------- */
 
-.config-grid {
+.config-cols {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 2px 24px;
+  gap: 4px 28px;
+}
+
+.config-cols .act-subhead { margin-bottom: 2px; }
+
+.config-grid {
+  margin: 0;
 }
 
 .config-grid > div {
@@ -695,6 +701,17 @@ details.sample > summary::-webkit-details-marker { display: none; }
   min-width: 0;
   overflow-wrap: anywhere;
 }
+
+/* Secondary technical metadata: available, but visually receded. */
+.config-meta {
+  margin: 10px 0 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+
+.config-meta span { display: block; }
+.config-meta span:empty { display: none; }
 
 /* ---------- evaluation charts ---------- */
 
@@ -766,7 +783,7 @@ details.sample > summary::-webkit-details-marker { display: none; }
     border-top: 1px solid var(--border);
   }
   .effect-row, .effect-row.paired-row { grid-template-columns: 1fr 1fr; }
-  .config-grid { grid-template-columns: 1fr; }
+  .config-cols { grid-template-columns: 1fr; }
   .sample-body { grid-template-columns: 1fr; }
   .brand-model { display: none; }
   .topbar-inner { padding: 10px 20px; }
