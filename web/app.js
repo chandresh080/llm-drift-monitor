@@ -96,25 +96,45 @@ async function fetchJson(url, opts = {}) {
   }
 }
 
-/* ---------- status pill ---------- */
+/* ---------- status pills ---------- */
 
-function setPill(cls, text) {
-  const pill = $("health-pill");
+function setPill(id, cls, text, title) {
+  const pill = $(id);
+  if (!pill) return;
   pill.className = "pill";
   if (cls) pill.classList.add(cls);
   pill.innerHTML = `<span class="dot"></span>${escapeHtml(text)}`;
+  if (title) pill.title = title;
+  else pill.removeAttribute("title");
 }
 
-/* The pill answers exactly one question: is the service up right now.
-   It is derived from /health/live alone, so a slow readiness check can
-   never produce a confusing intermediate wording. */
+/* API liveness answers one question: is the service up right now. It is
+   derived from /health/live alone, so a slow readiness check can never
+   produce a confusing intermediate wording. Provider availability is a
+   different fact about the target model and is rendered as its own pill:
+   a stored cycle can exist while the provider is temporarily unavailable,
+   and that must never read as "offline service". */
 function renderHealthPill() {
   if (state.live == null) {
-    setPill(null, "connecting");
+    setPill("health-pill", null, "API …");
     return;
   }
   const ok = state.live.status === "ok";
-  setPill(ok ? "pill-ok" : "pill-bad", ok ? "Online" : "Offline");
+  setPill("health-pill", ok ? "pill-ok" : "pill-bad",
+    ok ? "API online" : "API offline");
+}
+
+function renderProviderPill() {
+  const c = state.config;
+  if (!c) {
+    setPill("provider-pill", null, "provider …");
+    return;
+  }
+  const ok = c.provider_available !== false;
+  setPill("provider-pill", ok ? "pill-ok" : "pill-bad",
+    ok ? "provider available" : "provider unavailable",
+    ok ? `Target model ${c.target_model} can run new cycles`
+      : (c.provider_error || "The target provider cannot run new cycles"));
 }
 
 /* ---------- model label in the header ---------- */
@@ -123,12 +143,10 @@ function renderModelLabel() {
   const c = state.config;
   const el = $("model-label");
   if (!c || !c.target_model) {
-    el.textContent = state.failed.has("config") ? "" : "";
+    el.textContent = "";
     return;
   }
-  el.textContent = c.provider_available === false
-    ? `${c.target_model} · unavailable`
-    : c.target_model;
+  el.textContent = c.target_model;
 }
 
 function initTabs() {
@@ -360,6 +378,7 @@ function renderConfig() {
   if (!c) {
     $("cfg-model").textContent = state.failed.has("config")
       ? "unavailable" : "…";
+    renderProviderPill();
     return;
   }
   $("cfg-model").textContent = c.provider_available === false
@@ -395,75 +414,180 @@ function renderConfig() {
       + `temperature ${m.temperature} · collected ${fmtTime(m.collected_at)}`
     : "";
   renderRunNote();
+  renderProviderPill();
   renderModelLabel();
 }
 
 /* ---------- response samples ---------- */
 
-function sampleStatus(data) {
-  if (!data || data.text == null) return '<span class="muted">no stored answer</span>';
-  const chips = [`<span class="sample-meta">${data.length} chars</span>`];
-  if (data.is_valid != null) {
-    chips.push(`<span class="chip ${data.is_valid ? "chip-ok" : "chip-alert"}">`
-      + `${data.is_valid ? "non-empty" : "empty"}</span>`);
-  }
-  if (data.is_refusal === 1) {
-    chips.push('<span class="chip chip-alert">refusal</span>');
-  }
-  return chips.join("");
+/* Inspection tool, not a dump: compact grid rows, responses whose text
+   actually changed first, five rows until the visitor asks for all, and
+   the full text only inside a row's detail panel. */
+let samplesShowAll = false;
+let samplesCategory = "all";
+
+function sameResponse(a, b) {
+  const at = a && a.text != null ? String(a.text) : null;
+  const bt = b && b.text != null ? String(b.text) : null;
+  return at === bt;
+}
+
+function sampleLength(data) {
+  if (!data || data.text == null) return null;
+  return data.length != null ? Number(data.length) : String(data.text).length;
+}
+
+function sampleValidity(data) {
+  if (!data || data.is_valid == null) return "";
+  return data.is_valid
+    ? '<span class="s-state s-ok">non-empty</span>'
+    : '<span class="s-state s-bad">empty</span>';
+}
+
+/* Stored text can be null (not captured) or the empty string (the provider
+   returned nothing). Say which it is instead of showing a blank box. */
+function respText(data) {
+  if (!data || data.text == null) return "n/a";
+  return String(data.text).length ? String(data.text) : "(empty response)";
+}
+
+function sampleCells(r) {
+  const refLen = sampleLength(r.reference);
+  const curLen = sampleLength(r.current);
+  return {
+    ref: refLen == null
+      ? '<span class="s-missing">n/a</span>'
+      : `${refLen} ch ${sampleValidity(r.reference)}`,
+    current: curLen == null
+      ? '<span class="s-missing">n/a</span>'
+      : `${curLen} ch ${sampleValidity(r.current)}`,
+    changed: !sameResponse(r.reference, r.current),
+    delta: (refLen != null && curLen != null) ? curLen - refLen : null,
+  };
+}
+
+function changeCell(cells, redacted) {
+  if (redacted) return '<span class="s-missing">withheld</span>';
+  if (!cells.changed) return '<span class="s-state">unchanged</span>';
+  const d = cells.delta;
+  const delta = d == null ? "" :
+    `<span class="s-delta">${d > 0 ? "+" : ""}${d} ch</span>`;
+  return `<span class="s-changed">changed</span>${delta}`;
 }
 
 function renderComparison() {
   const wrap = $("comparison-wrap");
+  const count = $("sample-count");
   const c = state.comparison;
   if (c == null) {
+    if (count) count.textContent = "";
     wrap.innerHTML = `<p class="empty-state">${
       state.failed.has("comparison")
         ? "Comparison endpoint unavailable." : "Comparison unavailable."}</p>`;
     return;
   }
   if (!c.ready) {
+    if (count) count.textContent = "";
     wrap.innerHTML = `
       <p class="empty-state">Evaluation has not started yet: ${c.reference_stored} of
       ${c.reference_required} reference and ${c.current_stored} of ${c.current_required}
       current responses stored.</p>`;
     return;
   }
-  const rows = c.rows.map((r) => {
-    const label = r.label || r.prompt_text;
-    const redacted = Boolean(r.prompt_redacted);
-    const chips = [
-      `<span class="chip chip-cat">${escapeHtml(r.category)}</span>`,
-      redacted ? '<span class="chip chip-warn">withheld</span>' : "",
-      sampleStatus(r.reference),
-      sampleStatus(r.current),
-    ].filter(Boolean).join("");
-    const body = redacted
-      ? `<p class="sample-withheld">Safety boundary probe: the exact request and the
-           model's answers are not published. Lengths and validity flags above remain
-           visible.</p>`
+  const all = c.rows || [];
+  if (count) count.textContent = `· ${all.length} prompts`;
+
+  const categories = Array.from(new Set(all.map((r) => r.category).filter(Boolean)))
+    .sort();
+  if (samplesCategory !== "all" && !categories.includes(samplesCategory)) {
+    samplesCategory = "all";
+  }
+  const filtered = samplesCategory === "all"
+    ? all
+    : all.filter((r) => r.category === samplesCategory);
+
+  const decorated = filtered.map((r) => ({
+    r,
+    cells: sampleCells(r),
+    redacted: Boolean(r.prompt_redacted),
+  }));
+  /* Genuinely changed responses first; the sort is stable, so the stored
+     order survives inside each group. */
+  decorated.sort((a, b) => Number(b.cells.changed) - Number(a.cells.changed));
+
+  const visible = samplesShowAll ? decorated : decorated.slice(0, 5);
+  const rows = visible.map(({ r, cells, redacted }) => {
+    const label = r.label || r.prompt_text || r.prompt_id || "prompt";
+    const detail = redacted
+      ? `<p class="sample-withheld">Safety boundary probe: the exact request and
+           the model's answers are not published. Lengths and validity flags
+           remain visible above.</p>`
       : `
-        <p class="prompt-line">${escapeHtml(r.prompt_text)}</p>
-        <div class="sample-col">
-          <h4>Reference</h4>
-          <code class="resp-text">${escapeHtml(
-            r.reference && r.reference.text != null ? r.reference.text : "n/a")}</code>
-        </div>
-        <div class="sample-col">
-          <h4>Current</h4>
-          <code class="resp-text">${escapeHtml(
-            r.current && r.current.text != null ? r.current.text : "n/a")}</code>
+        <p class="prompt-line">${escapeHtml(r.prompt_text || "")}</p>
+        <div class="sample-cols">
+          <div class="sample-col">
+            <h4>Reference</h4>
+            <code class="resp-text">${escapeHtml(respText(r.reference))}</code>
+          </div>
+          <div class="sample-col">
+            <h4>Current</h4>
+            <code class="resp-text">${escapeHtml(respText(r.current))}</code>
+          </div>
         </div>`;
     return `
-      <details class="sample" data-redacted="${redacted ? "1" : "0"}">
-        <summary>
-          <span class="sample-label">${escapeHtml(label)}</span>
-          ${chips}
+      <details class="sample-row" data-redacted="${redacted ? "1" : "0"}"
+        data-changed="${cells.changed ? "1" : "0"}">
+        <summary class="sample-grid">
+          <span class="s-prompt">
+            <span class="s-label">${escapeHtml(label)}</span>
+            ${r.category ? `<span class="s-cat">${escapeHtml(r.category)}</span>` : ""}
+            ${redacted ? '<span class="chip chip-warn">withheld</span>' : ""}
+          </span>
+          <span class="s-num">${cells.ref}</span>
+          <span class="s-num">${cells.current}</span>
+          <span class="s-change">${changeCell(cells, redacted)}</span>
         </summary>
-        <div class="sample-body">${body}</div>
+        <div class="sample-detail">${detail}</div>
       </details>`;
   }).join("");
-  wrap.innerHTML = `<div class="sample-list">${rows}</div>`;
+
+  const controls = `
+    <div class="samples-controls">
+      <span class="samples-visible">${visible.length} of ${filtered.length} shown</span>
+      ${categories.length > 1 ? `
+        <select id="samples-category" class="samples-select" aria-label="Filter samples by category">
+          <option value="all">All categories</option>
+          ${categories.map((x) => `<option value="${escapeHtml(x)}"${
+            x === samplesCategory ? " selected" : ""}>${escapeHtml(x)}</option>`).join("")}
+        </select>` : ""}
+    </div>
+    <div class="sample-grid sample-head">
+      <span>Prompt</span><span>Reference</span><span>Current</span><span>Change</span>
+    </div>`;
+
+  const toggle = filtered.length > 5 ? `
+    <button id="samples-toggle" class="link-btn" type="button">
+      ${samplesShowAll ? "Show fewer" : `Show all ${filtered.length}`}
+    </button>` : "";
+
+  wrap.innerHTML = `${controls}
+    <div class="sample-list">${rows}</div>
+    ${toggle}`;
+
+  const toggleEl = $("samples-toggle");
+  if (toggleEl) {
+    toggleEl.addEventListener("click", () => {
+      samplesShowAll = !samplesShowAll;
+      renderComparison();
+    });
+  }
+  const selectEl = $("samples-category");
+  if (selectEl) {
+    selectEl.addEventListener("change", (event) => {
+      samplesCategory = event && event.target ? event.target.value : "all";
+      renderComparison();
+    });
+  }
 }
 
 /* ---------- category analysis ---------- */
@@ -496,7 +620,30 @@ function renderCategories() {
   wrap.innerHTML = `<div>${rows}</div>`;
 }
 
-/* ---------- activity: cycles and alerts ---------- */
+/* ---------- recent activity ---------- */
+
+/* The latest completed cycles answer "what happened recently" before any
+   other panel. Distribution shift, availability and guardrail stay
+   separate chips; an alert badge appears only when one was persisted for
+   that cycle. */
+function cycleState(r) {
+  const dist = r.overall_drift_detected != null
+    ? Number(r.overall_drift_detected)
+    : (Number(r.ks_significant) === 1 || Number(r.mmd_significant) === 1 ? 1 : 0);
+  return {
+    dist,
+    availability: Number(r.proportion_z_significant) === 1,
+    guardrail: Number(r.overall_quality_degradation) === 1,
+    insufficient: !r.reference_size || !r.current_size,
+  };
+}
+
+function alertsForCycle(timestamp) {
+  if (!timestamp) return [];
+  const key = String(timestamp).slice(0, 19);
+  return (state.alerts || []).filter((a) =>
+    String(a.timestamp || "").slice(0, 19) === key);
+}
 
 function renderActivity() {
   const el = $("activity-list");
@@ -504,63 +651,151 @@ function renderActivity() {
     el.innerHTML = '<p class="empty-state">Recent cycles unavailable.</p>';
     return;
   }
-  const rows = (state.results || []).slice(0, 8);
+  const rows = [...(state.results || [])]
+    .sort((a, b) => String(b.timestamp || "").localeCompare(String(a.timestamp || "")))
+    .slice(0, 3);
   if (!rows.length) {
     el.innerHTML = '<p class="empty-state">No completed cycles stored yet.</p>';
     return;
   }
-  const body = rows.map((r) => {
-    const insufficient = !r.reference_size || !r.current_size;
-    const distShifted = Number(r.ks_significant) === 1
-      || Number(r.mmd_significant) === 1;
-    const fired = (() => {
-      const raw = r.bh_significant_tests;
-      try {
-        return typeof raw === "string" ? JSON.parse(raw) : (raw || []);
-      } catch (e) { return []; }
-    })();
-    let verdict;
-    if (insufficient) verdict = '<span class="chip chip-warn">Insufficient data</span>';
-    else if (distShifted) {
-      verdict = `<span class="chip chip-alert">Shift flagged${
-        fired.length ? ` · ${escapeHtml(fired.join(", "))}` : ""}</span>`;
-    } else verdict = '<span class="chip chip-ok">No shift</span>';
+  el.innerHTML = rows.map((r) => {
+    const s = cycleState(r);
+    const status = s.insufficient
+      ? '<span class="chip chip-warn">Insufficient data</span>'
+      : '<span class="chip chip-ok">Completed</span>';
+    const outcome = s.dist === 1
+      ? '<span class="chip chip-alert">Shift flagged</span>'
+      : '<span class="chip chip-ok">No shift</span>';
+    const quality = [
+      s.availability ? '<span class="chip chip-alert">Availability changed</span>' : "",
+      s.guardrail ? '<span class="chip chip-alert">Guardrail tripped</span>' : "",
+    ].filter(Boolean).join("");
+    const alerts = alertsForCycle(r.timestamp);
+    const alertChip = alerts.length
+      ? `<span class="chip chip-alert">${alerts.length} alert${alerts.length > 1 ? "s" : ""}</span>`
+      : "";
     return `
-      <tr>
-        <td>${fmtTime(r.timestamp)}</td>
-        <td>#${r.id}</td>
-        <td>${verdict}</td>
-      </tr>`;
-  }).join("");
-  el.innerHTML = `
-    <p class="act-subhead">Recent cycles</p>
-    <table class="plain-table">
-      <thead><tr><th>Time</th><th>Cycle</th><th>Result</th></tr></thead>
-      <tbody>${body}</tbody>
-    </table>`;
-}
-
-function renderAlerts() {
-  const el = $("alerts-list");
-  if (state.failed.has("alerts")) {
-    el.innerHTML = '<p class="empty-state">Alerts unavailable.</p>';
-    return;
-  }
-  const rows = (state.alerts || []).slice(0, 8);
-  if (!rows.length) {
-    el.innerHTML = '<p class="act-subhead">Alerts</p><p class="empty-state">No alerts.</p>';
-    return;
-  }
-  const body = rows.map((a) => {
-    const type = a.alert_type === "drift" ? "Distribution shift" : "Quality signal";
-    return `
-      <div class="alert-row">
-        <span class="chip chip-alert">${escapeHtml(type)}</span>
-        <span class="muted">${fmtTime(a.timestamp)}</span>
-        <span class="alert-msg">${escapeHtml(a.message)}</span>
+      <div class="act-row" data-testid="activity-row">
+        <div class="act-ident">
+          <span class="act-cycle">Cycle #${escapeHtml(r.id)}</span>
+          ${status}
+        </div>
+        <div class="act-when">
+          <span>${fmtTime(r.timestamp)}</span>
+          <span class="act-resp">${
+            r.current_size != null ? Number(r.current_size) : "n/a"} responses</span>
+        </div>
+        <div class="act-outcome">${outcome}${quality}${alertChip}</div>
       </div>`;
   }).join("");
-  el.innerHTML = `<p class="act-subhead">Alerts</p>${body}`;
+}
+
+/* ---------- detector history ---------- */
+
+/* Actual stored cycles only, latest 12, chronological. Null adjusted
+   p-values break the line: a gap means "not measured", never p = 0. */
+function renderHistory() {
+  const el = $("history-chart");
+  if (!el) return;
+  const note = $("history-note");
+  const alpha = state.config && state.config.alpha != null
+    ? Number(state.config.alpha) : 0.05;
+  if (state.failed.has("results")) {
+    if (note) note.textContent = "Detector history is unavailable.";
+    el.innerHTML = '<p class="empty-state">Detector history unavailable.</p>';
+    return;
+  }
+  const rows = (state.results || [])
+    .filter((r) => r && (r.ks_adjusted_pvalue != null
+      || r.proportion_z_adjusted_pvalue != null
+      || r.mmd_adjusted_pvalue != null))
+    .sort((a, b) => String(a.timestamp || "").localeCompare(String(b.timestamp || "")))
+    .slice(-12);
+  if (!rows.length) {
+    if (note) {
+      note.textContent = "Historical monitoring data appears after the first "
+        + "completed cycle.";
+    }
+    el.innerHTML = '<p class="empty-state">No completed evaluations yet. '
+      + 'History appears after the first stored cycle.</p>';
+    return;
+  }
+  if (note) {
+    note.textContent = `Historical monitoring data from stored cycles. `
+      + `Dashed line: ${alpha} threshold. Flagged points ringed in red.`;
+  }
+  el.innerHTML = svgHistory(rows, alpha);
+}
+
+function svgHistory(rows, alpha) {
+  const w = 520, h = 220, m = { top: 16, right: 18, bottom: 48, left: 40 };
+  const iw = w - m.left - m.right;
+  const ih = h - m.top - m.bottom;
+  const n = rows.length;
+  const sx = (i) => m.left + (n === 1 ? iw / 2 : (i / (n - 1)) * iw);
+  const sy = (v) => m.top + ih - Math.max(0, Math.min(1, v)) * ih;
+  const series = [
+    { key: "ks_adjusted_pvalue", sig: "ks_significant", name: "KS", color: "#4F46E5" },
+    { key: "proportion_z_adjusted_pvalue", sig: "proportion_z_significant",
+      name: "Availability", color: "#0F766E" },
+    { key: "mmd_adjusted_pvalue", sig: "mmd_significant",
+      name: "Paired MMD", color: "#71717A" },
+  ];
+  const parts = [];
+
+  for (const v of [0, 0.25, 0.5, 0.75, 1]) {
+    const y = sy(v);
+    parts.push(`<line x1="${m.left}" y1="${y}" x2="${w - m.right}" y2="${y}" stroke="#F0F0F2"/>`);
+    parts.push(`<text x="${m.left - 6}" y="${y + 3}" font-size="10" fill="#71717A" text-anchor="end">${v}</text>`);
+  }
+  const ty = sy(alpha);
+  parts.push(`<line x1="${m.left}" y1="${ty}" x2="${w - m.right}" y2="${ty}" stroke="#DC2626" stroke-width="1" stroke-dasharray="4 3"/>`);
+  parts.push(`<text x="${w - m.right}" y="${ty - 5}" font-size="10" fill="#DC2626" text-anchor="end">alpha ${alpha}</text>`);
+
+  const stride = Math.max(1, Math.ceil(n / 5));
+  rows.forEach((r, i) => {
+    if (i % stride !== 0 && i !== n - 1) return;
+    const x = sx(i);
+    parts.push(`<line x1="${x}" y1="${h - m.bottom}" x2="${x}" y2="${h - m.bottom + 4}" stroke="#D4D4D8"/>`);
+    parts.push(`<text x="${x}" y="${h - m.bottom + 15}" font-size="10" fill="#71717A" text-anchor="middle">#${escapeHtml(r.id)}</text>`);
+  });
+  parts.push(`<text x="${m.left + iw / 2}" y="${h - 6}" font-size="10" fill="#71717A" text-anchor="middle">completed cycle</text>`);
+
+  for (const s of series) {
+    let path = "";
+    let open = false;
+    rows.forEach((r, i) => {
+      const v = r[s.key];
+      if (v == null) { open = false; return; }
+      path += `${open ? "L" : "M"}${sx(i).toFixed(1)} ${sy(Number(v)).toFixed(1)} `;
+      open = true;
+    });
+    if (path) {
+      parts.push(`<path d="${path.trim()}" fill="none" stroke="${s.color}" stroke-width="1.8"/>`);
+    }
+    rows.forEach((r, i) => {
+      const v = r[s.key];
+      if (v == null) return;
+      const flagged = Number(r[s.sig]) === 1;
+      parts.push(
+        `<circle cx="${sx(i).toFixed(1)}" cy="${sy(Number(v)).toFixed(1)}" `
+        + `r="${flagged ? 4.2 : 2.8}" fill="${s.color}" `
+        + `stroke="${flagged ? "#DC2626" : "none"}" stroke-width="${flagged ? "1.6" : "0"}">`
+        + `<title>Cycle #${escapeHtml(r.id)} · ${fmtTime(r.timestamp)} · `
+        + `${s.name} adjusted p ${fmtP(Number(v))}${flagged ? " (flagged)" : ""}</title>`
+        + `</circle>`);
+    });
+  }
+
+  const legend = `<div class="chart-legend">`
+    + series.map((s) => `<span class="legend-item">`
+      + `<span class="legend-swatch" style="background:${s.color}"></span>`
+      + `${s.name}</span>`).join("")
+    + `<span class="legend-item"><span class="legend-dash"></span>${alpha} threshold</span>`
+    + `</div>`;
+
+  return `<svg viewBox="0 0 ${w} ${h}" class="chart" role="img"
+    aria-label="Adjusted p-values per completed cycle">${parts.join("")}</svg>${legend}`;
 }
 
 /* ---------- data loading ---------- */
@@ -573,7 +808,7 @@ let wakePromise = null;
 const DATA_LOADERS = [
   {
     key: "config", url: "/config",
-    render: () => { renderConfig(); renderRunNote(); },
+    render: () => { renderConfig(); renderRunNote(); renderHistory(); },
   },
   {
     key: "stats", url: "/stats",
@@ -590,8 +825,10 @@ const DATA_LOADERS = [
       renderPairedDiagnostic();
     },
   },
-  { key: "results", url: "/drift/results?limit=12", render: renderActivity },
-  { key: "alerts", url: "/alerts?limit=10", render: renderAlerts },
+  { key: "results", url: "/drift/results?limit=12",
+    render: () => { renderActivity(); renderHistory(); } },
+  /* Alerts decorate activity rows; loading them re-renders activity. */
+  { key: "alerts", url: "/alerts?limit=10", render: renderActivity },
   { key: "comparison", url: "/drift/comparison", render: renderComparison },
   { key: "categories", url: "/drift/categories", render: renderCategories },
 ];

@@ -21,7 +21,8 @@
       <span id="model-label" class="brand-model"></span>
     </div>
     <div class="topbar-right">
-      <span id="health-pill" class="pill"><span class="dot"></span>connecting</span>
+      <span id="provider-pill" class="pill"><span class="dot"></span>provider …</span>
+      <span id="health-pill" class="pill"><span class="dot"></span>API …</span>
       <a class="gh-link" href="https://github.com/chandresh080/llm-drift-monitor"
          target="_blank" rel="noopener">GitHub</a>
     </div>
@@ -33,22 +34,25 @@
   <div id="banner" class="banner" hidden></div>
 
   <nav class="tabs" aria-label="Dashboard views">
-    <button class="tab tab-active" id="tab-btn-console" type="button">Console</button>
+    <button class="tab tab-active" id="tab-btn-console" type="button">Monitor</button>
     <button class="tab" id="tab-btn-evaluation" type="button">Evaluation</button>
   </nav>
 
-  <!-- ================= CONSOLE ================= -->
+  <!-- ================= MONITOR ================= -->
   <div id="tab-console">
 
-    <section class="head-row">
-      <div class="head-copy">
-        <h1>Model Behaviour</h1>
-        <p class="head-sub">Current model responses compared against a fixed canary baseline.</p>
+    <section class="activity-block">
+      <div class="activity-head">
+        <div>
+          <h1 class="activity-title">Recent activity</h1>
+          <p class="activity-sub">Latest completed monitoring cycles, newest first.</p>
+        </div>
+        <div class="head-actions">
+          <button id="run-btn" class="btn btn-primary" type="button">Run check</button>
+          <p id="run-note" class="run-note">Loading configuration…</p>
+        </div>
       </div>
-      <div class="head-actions">
-        <button id="run-btn" class="btn btn-primary" type="button">Run check</button>
-        <p id="run-note" class="run-note">Loading configuration…</p>
-      </div>
+      <div id="activity-list" class="activity-list"></div>
     </section>
 
     <section class="verdict" id="verdict-box" data-testid="verdict">
@@ -76,10 +80,19 @@
       </div>
     </section>
 
+    <section class="block" data-testid="history-block">
+      <div class="block-head">
+        <h2 class="block-title">Detector history</h2>
+        <span class="block-meta">adjusted p-values · last 12 completed cycles</span>
+      </div>
+      <div id="history-chart" class="chart-wrap"></div>
+      <p id="history-note" class="block-note">Historical monitoring data from stored cycles.</p>
+    </section>
+
     <section class="block">
       <table class="detector-table" data-testid="detector-table">
         <thead>
-          <tr><th>Detector</th><th>Method</th><th class="num">Adjusted p</th><th>Result</th></tr>
+          <tr><th>Detector</th><th class="detector-method">Method</th><th class="num">Adjusted p</th><th>Result</th></tr>
         </thead>
         <tbody id="detector-rows"></tbody>
       </table>
@@ -121,22 +134,14 @@
         <span id="eff-refusal" class="effect-value">n/a</span></div>
     </section>
 
-    <details class="section-details">
-      <summary>Response samples</summary>
+    <details class="section-details" id="samples-section">
+      <summary>Response samples <span id="sample-count" class="summary-count"></span></summary>
       <div id="comparison-wrap" class="section-body"></div>
     </details>
 
     <details class="section-details">
       <summary>Category analysis</summary>
       <div id="categories-wrap" class="section-body"></div>
-    </details>
-
-    <details class="section-details">
-      <summary>Activity</summary>
-      <div class="section-body act-grid">
-        <div id="activity-list"></div>
-        <div id="alerts-list"></div>
-      </div>
     </details>
 
     <details class="section-details">
@@ -203,13 +208,19 @@
     </section>
 
     <section class="block">
-      <h3 class="block-title">Detection delay vs false-alarm trade-off</h3>
+      <div class="block-head">
+        <h3 class="block-title">Detection delay vs false-alarm trade-off</h3>
+        <span class="block-meta">static benchmark data</span>
+      </div>
       <div id="eval-tradeoff-chart" class="chart-wrap"></div>
       <div id="eval-tradeoff"></div>
     </section>
 
     <section class="block">
-      <h3 class="block-title">Detector power curves</h3>
+      <div class="block-head">
+        <h3 class="block-title">Detector power curves</h3>
+        <span class="block-meta">controlled simulations, not live traffic</span>
+      </div>
       <div id="eval-power-chart" class="chart-wrap"></div>
       <div id="eval-power"></div>
     </section>

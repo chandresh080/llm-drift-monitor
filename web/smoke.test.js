@@ -7,20 +7,26 @@
    Contract list:
    - each data endpoint renders the panel it feeds, independent of the
      other endpoints (no endpoint can block another)
-   - the status pill derives from /health/live alone: Online / Offline,
-     and readiness is never fetched, never blocks, never rewrites it
+   - API liveness and provider availability are separate status pills:
+     a stored cycle never reads as an offline service
+   - recent activity is the first panel: latest three cycles, newest
+     first, with separate shift, availability and guardrail chips
+   - detector history is drawn from stored cycles only, with gaps for
+     missing values, a dashed alpha threshold and flagged points ringed
    - the split signal families render separately: a response availability
      flag can never flip the distribution shift headline
    - redacted safety boundary prompts show their public label and a
      withheld chip, never raw wording
-   - flagged counts read the field the API actually returns
+   - response samples are collapsed by default, preview five changed-first
+     rows, and reveal the rest only through Show all; row text compares the
+     actual stored strings, not character counts
    - missing test values render as an explicit state ("Not evaluated",
      "n/a"), never as "No flag" or zero
    - product CSV string keys ("0.0") resolve against numeric lookups
    - the refusal rate change takes its sign from the delta itself
    - rate limit rejections surface the server's Retry-After message
-   - the information architecture: heavy evidence sections are collapsed
-     <details>, the initial view is verdict + metrics + detectors
+   - the information architecture: activity leads, heavy evidence sections
+     are collapsed <details>, and Monitor and Evaluation stay separate views
 
    Used by CI; run locally with: node web/smoke.test.js */
 
@@ -52,6 +58,7 @@ function makeElement(id) {
       _classes: {},
     },
     setAttribute(name, value) { el.attrs[name] = value; },
+    removeAttribute(name) { delete el.attrs[name]; },
     addEventListener(name, fn) {
       (el.listeners[name] = el.listeners[name] || []).push(fn);
     },
@@ -121,6 +128,80 @@ const latestFull = {
 
 const csvRows = (rows) => rows.map(([delta, power]) =>
   ({ test: "mmd", delta: String(delta), n: "10", power: String(power), n_sims: "50", alpha: "0.05" }));
+
+/* Stored cycles, deliberately served out of order and with one missing
+   adjusted p-value: activity sorts newest first and history must break the
+   line instead of inventing p = 0. */
+const historyRows = [
+  { id: 1, timestamp: "2026-11-10T18:22:00", reference_size: 120, current_size: 40,
+    overall_drift_detected: 0, overall_quality_degradation: 0,
+    ks_adjusted_pvalue: 0.82, ks_significant: 0,
+    proportion_z_adjusted_pvalue: 0.64, proportion_z_significant: 0,
+    mmd_adjusted_pvalue: null, mmd_significant: null },
+  { id: 4, timestamp: "2026-11-18T09:15:00", reference_size: 120, current_size: null,
+    overall_drift_detected: 0, overall_quality_degradation: null,
+    ks_adjusted_pvalue: 0.91, ks_significant: 0,
+    proportion_z_adjusted_pvalue: 0.88, proportion_z_significant: 0,
+    mmd_adjusted_pvalue: 0.77, mmd_significant: 0 },
+  { id: 2, timestamp: "2026-11-16T12:31:00", reference_size: 120, current_size: 40,
+    overall_drift_detected: 0, overall_quality_degradation: 0,
+    ks_adjusted_pvalue: 0.72, ks_significant: 0,
+    proportion_z_adjusted_pvalue: 0.58, proportion_z_significant: 0,
+    mmd_adjusted_pvalue: 0.41, mmd_significant: 0 },
+  { id: 3, timestamp: "2026-11-17T08:05:00", reference_size: 120, current_size: 40,
+    overall_drift_detected: 1, overall_quality_degradation: 0,
+    ks_adjusted_pvalue: 0.048, ks_significant: 1,
+    proportion_z_adjusted_pvalue: 0.031, proportion_z_significant: 1,
+    mmd_adjusted_pvalue: 0.022, mmd_significant: 1 },
+];
+
+const storedAlert = {
+  id: 9, timestamp: "2026-11-17T08:05:00", alert_type: "drift",
+  message: "Semantic shift persisted for two consecutive cycles.",
+};
+
+/* Eight prompts: two genuinely changed, one redacted safety probe, one row
+   whose text is identical but whose stored lengths disagree. Preview must
+   be five, changed first, and the identical text must stay unchanged. */
+const samplesReady = {
+  ready: true, reference_stored: 120, reference_required: 120,
+  current_stored: 40, current_required: 40, tests_start_at: 160,
+  rows: [
+    { prompt_id: "p_alpha", category: "general", label: "Alpha unchanged",
+      prompt_text: "Alpha prompt", prompt_redacted: false,
+      reference: { text: "same answer", length: 11, is_valid: 1 },
+      current: { text: "same answer", length: 11, is_valid: 1 } },
+    { prompt_id: "p_bravo", category: "code", label: "Bravo changed",
+      prompt_text: "Bravo prompt", prompt_redacted: false,
+      reference: { text: "print(1)", length: 8, is_valid: 1 },
+      current: { text: "print(2)", length: 8, is_valid: 1 } },
+    { prompt_id: "p_charlie", category: "general", label: "Charlie unchanged",
+      prompt_text: "Charlie prompt", prompt_redacted: false,
+      reference: { text: "steady", length: 6, is_valid: 1 },
+      current: { text: "steady", length: 6, is_valid: 1 } },
+    { prompt_id: "p_delta", category: "code", label: "Delta changed",
+      prompt_text: "Delta prompt", prompt_redacted: false,
+      reference: { text: "x = 1", length: 5, is_valid: 1 },
+      current: { text: "x = 10", length: 6, is_valid: 1 } },
+    { prompt_id: "p_safety", category: "safety_boundary",
+      label: "Disallowed synthesis request, details withheld",
+      prompt_text: "(withheld: safety boundary prompt)", prompt_redacted: true,
+      reference: { text: "(withheld: safety boundary prompt)", length: 90, is_valid: 1 },
+      current: { text: "(withheld: safety boundary prompt)", length: 90, is_valid: 1 } },
+    { prompt_id: "p_echo", category: "general", label: "Echo unchanged",
+      prompt_text: "Echo prompt", prompt_redacted: false,
+      reference: { text: "echo", length: 4, is_valid: 1 },
+      current: { text: "echo", length: 4, is_valid: 1 } },
+    { prompt_id: "p_foxtrot", category: "general", label: "Foxtrot unchanged",
+      prompt_text: "Foxtrot prompt", prompt_redacted: false,
+      reference: { text: "foxtrot", length: 7, is_valid: 1 },
+      current: { text: "foxtrot", length: 7, is_valid: 1 } },
+    { prompt_id: "p_golf", category: "general", label: "Golf same text",
+      prompt_text: "Golf prompt", prompt_redacted: false,
+      reference: { text: "identical", length: 9, is_valid: 1 },
+      current: { text: "identical", length: 12, is_valid: 1 } },
+  ],
+};
 
 const evaluation = {
   headline: {
@@ -229,10 +310,14 @@ const settle = () => new Promise((r) => setImmediate(r));
 
   console.log("scenario 1: healthy endpoints, full data");
 
-  /* Status derives from /health/live alone, which answered ok. */
-  check("status pill shows Online from the liveness endpoint",
-    getById("health-pill").innerHTML.includes("Online"),
+  /* Liveness and provider availability are separate pills. */
+  check("API pill shows online from the liveness endpoint",
+    getById("health-pill").innerHTML.includes("API online"),
     getById("health-pill").innerHTML);
+
+  check("provider pill shows availability from /config, not liveness",
+    getById("provider-pill").innerHTML.includes("provider available"),
+    getById("provider-pill").innerHTML);
 
   check("readiness (/health) is never fetched",
     !requestedUrls.some((u) => u === "/health" || u.includes("/health?")
@@ -352,6 +437,136 @@ const settle = () => new Promise((r) => setImmediate(r));
     getById("model-label").textContent.includes("gemini-3.1-flash-lite"),
     getById("model-label").textContent);
 
+  console.log("scenario 1b: activity first, stored detector history");
+
+  routeOverrides = {
+    "/drift/results?limit=12": () => resp(historyRows),
+    "/alerts?limit=10": () => resp([storedAlert]),
+  };
+  await loadAll();
+  await settle();
+
+  const actHtml = getById("activity-list").innerHTML;
+  check("activity shows exactly the latest three cycles",
+    (actHtml.match(/data-testid="activity-row"/g) || []).length === 3,
+    actHtml.slice(0, 120));
+  check("activity is newest first",
+    actHtml.indexOf("Cycle #4") < actHtml.indexOf("Cycle #3")
+      && actHtml.indexOf("Cycle #3") < actHtml.indexOf("Cycle #2")
+      && !actHtml.includes("Cycle #1"),
+    actHtml.slice(0, 260));
+  check("activity names completion, response count and shift outcome",
+    actHtml.includes("Completed") && actHtml.includes("40 responses")
+      && actHtml.includes("No shift") && actHtml.includes("Shift flagged"),
+    actHtml.slice(0, 300));
+  check("an incomplete cycle is marked Insufficient data, not completed",
+    /Cycle #4[\s\S]*?Insufficient data/.test(actHtml),
+    actHtml.slice(0, 200));
+  check("availability change is its own activity chip",
+    /Cycle #3[\s\S]*?Availability changed/.test(actHtml),
+    actHtml.slice(0, 320));
+  check("a stored alert decorates its cycle only",
+    /Cycle #3[\s\S]*?1 alert/.test(actHtml)
+      && !/Cycle #2[\s\S]*?1 alert/.test(actHtml),
+    actHtml.slice(0, 400));
+
+  const histHtml = getById("history-chart").innerHTML;
+  check("detector history is browser-rendered svg",
+    histHtml.includes("<svg") && histHtml.includes('class="chart"'),
+    histHtml.slice(0, 160));
+  check("history plots all three stored detector series",
+    histHtml.includes(">KS<") && histHtml.includes(">Availability<")
+      && histHtml.includes(">Paired MMD<"),
+    histHtml.slice(-320));
+  check("history draws the dashed alpha threshold",
+    histHtml.includes('stroke-dasharray="4 3"') && histHtml.includes("alpha 0.05"),
+    "");
+  check("history labels cycles in chronological order",
+    histHtml.indexOf("#1<") < histHtml.indexOf("#2<")
+      && histHtml.indexOf("#2<") < histHtml.indexOf("#3<")
+      && histHtml.indexOf("#3<") < histHtml.indexOf("#4<"),
+    "");
+  check("a missing adjusted p leaves a gap, not a zero point",
+    (histHtml.match(/<circle/g) || []).length === 11
+      && !histHtml.includes("Paired MMD adjusted p 0.000"),
+    String((histHtml.match(/<circle/g) || []).length));
+  check("a flagged cycle is ringed in red",
+    histHtml.includes('stroke="#DC2626" stroke-width="1.6"'),
+    "");
+  check("history tooltips carry cycle, detector and adjusted p",
+    histHtml.includes("Cycle #3 ·") && histHtml.includes("adjusted p 0.022"),
+    "");
+  check("history note labels the source as historical, not live",
+    getById("history-note").textContent.includes("Historical monitoring data"),
+    getById("history-note").textContent);
+
+  routeOverrides = {
+    "/drift/comparison": () => resp(samplesReady),
+  };
+  await loadAll();
+  await settle();
+
+  const samplesHtml = getById("comparison-wrap").innerHTML;
+  check("collapsed summary counts the stored prompts",
+    getById("sample-count").textContent === "· 8 prompts",
+    getById("sample-count").textContent);
+  check("samples preview five rows and count the rest",
+    samplesHtml.includes("5 of 8 shown")
+      && (samplesHtml.match(/class="sample-row"/g) || []).length === 5,
+    samplesHtml.slice(0, 160));
+  check("changed responses are sorted before unchanged ones",
+    samplesHtml.indexOf("Bravo changed") < samplesHtml.indexOf("Delta changed")
+      && samplesHtml.indexOf("Delta changed") < samplesHtml.indexOf("Alpha unchanged")
+      && samplesHtml.indexOf("Delta changed") < samplesHtml.indexOf("Charlie unchanged"),
+    samplesHtml.slice(0, 400));
+  check("sample rows use the aligned Prompt Reference Current Change grid",
+    samplesHtml.includes("sample-head")
+      && samplesHtml.includes("<span>Prompt</span>")
+      && samplesHtml.includes("<span>Reference</span>")
+      && samplesHtml.includes("<span>Current</span>")
+      && samplesHtml.includes("<span>Change</span>"),
+    samplesHtml.slice(0, 220));
+  check("row values carry character counts and validity, not responses",
+    samplesHtml.includes("11 ch") && samplesHtml.includes("non-empty")
+      && samplesHtml.includes("+1 ch"),
+    samplesHtml.slice(0, 400));
+  check("redacted samples keep the withheld chip and never reveal text",
+    samplesHtml.includes("details withheld") && samplesHtml.includes("withheld")
+      && !samplesHtml.includes("(withheld: safety boundary prompt)</code>"),
+    samplesHtml.slice(0, 400));
+  check("the full text lives in the expandable detail, not the row",
+    samplesHtml.includes('class="sample-detail"')
+      && samplesHtml.includes("Safety boundary probe"),
+    "");
+
+  const toggle = getById("samples-toggle");
+  check("Show all names the remaining count",
+    samplesHtml.includes("Show all 8") && toggle.listeners.click != null,
+    samplesHtml.slice(-160));
+  toggle.listeners.click[0]();
+  const allHtml = getById("comparison-wrap").innerHTML;
+  check("Show all reveals every prompt and can be collapsed again",
+    allHtml.includes("8 of 8 shown") && allHtml.includes("Foxtrot unchanged")
+      && allHtml.includes("Show fewer"),
+    allHtml.slice(0, 160));
+  check("identical text stays unchanged even when stored lengths disagree",
+    /Golf same text[\s\S]*?unchanged/.test(allHtml),
+    "");
+
+  const select = getById("samples-category");
+  check("category filter lists the stored categories",
+    allHtml.includes("All categories")
+      && allHtml.includes('value="code"') && allHtml.includes('value="general"'),
+    "");
+  select.listeners.change[0]({ target: { value: "code" } });
+  const codeHtml = getById("comparison-wrap").innerHTML;
+  check("category filter narrows the rows",
+    codeHtml.includes("2 of 2 shown") && !codeHtml.includes("Alpha unchanged"),
+    codeHtml.slice(0, 160));
+
+  vmEval('samplesShowAll = false; samplesCategory = "all";');
+  routeOverrides = {};
+
   console.log("scenario 2: evaluation tab data fidelity");
 
   /* Evaluation loads lazily via the tab; the fixture answers directly. */
@@ -437,9 +652,13 @@ const settle = () => new Promise((r) => setImmediate(r));
   vmEval("state.live = null; loadLive();");
   await settle();
 
-  check("pill shows Offline when liveness fails",
-    getById("health-pill").innerHTML.includes("Offline"),
+  check("pill shows API offline when liveness fails",
+    getById("health-pill").innerHTML.includes("API offline"),
     getById("health-pill").innerHTML);
+
+  check("provider availability survives an API liveness failure",
+    getById("provider-pill").innerHTML.includes("provider available"),
+    getById("provider-pill").innerHTML);
 
   await loadAll();
   await settle();
@@ -514,8 +733,9 @@ const settle = () => new Promise((r) => setImmediate(r));
     cmpHtml.includes("Safety boundary probe")
       && cmpHtml.includes("not published"),
     "");
-  check("samples are per-prompt expandable details, not a full-width table",
-    cmpHtml.includes("<details class=\"sample\"")
+  check("samples are per-prompt expandable grid rows, not a full-width table",
+    cmpHtml.includes('class="sample-row"')
+      && cmpHtml.includes('class="sample-detail"')
       && !cmpHtml.includes("<table"),
     "");
 
@@ -590,6 +810,13 @@ const settle = () => new Promise((r) => setImmediate(r));
   check("no history hides the quality strip",
     getById("quality-strip").hidden === true,
     "");
+  check("no history shows a compact activity empty state",
+    getById("activity-list").innerHTML.includes("No completed cycles stored yet"),
+    getById("activity-list").innerHTML);
+  check("no history shows a compact detector-history empty state",
+    getById("history-chart").innerHTML.includes("No completed evaluations yet")
+      && !getById("history-chart").innerHTML.includes("<svg"),
+    getById("history-chart").innerHTML.slice(0, 160));
 
   routeOverrides = {};
 
@@ -601,6 +828,41 @@ const settle = () => new Promise((r) => setImmediate(r));
   const sectionDetails = (page.match(/<details class="section-details"/g) || []).length;
   check("heavy evidence sections are collapsed details blocks",
     sectionDetails >= 4, `found ${sectionDetails}`);
+  check("recent activity is the first content section in the Monitor view",
+    page.indexOf('class="activity-block"') > page.indexOf('class="tabs"')
+      && page.indexOf('class="activity-block"') < page.indexOf('id="verdict-box"')
+      && page.indexOf('id="verdict-box"') < page.indexOf('data-testid="history-block"')
+      && page.indexOf('data-testid="history-block"') < page.indexOf('data-testid="detector-table"'),
+    "");
+  check("the old bottom activity section is gone",
+    (page.match(/id="activity-list"/g) || []).length === 1
+      && !page.includes("alerts-list"),
+    "");
+  check("Monitor and Evaluation are separate views with Monitor default",
+    page.includes('id="tab-btn-console"') && page.includes("Monitor")
+      && page.includes('id="tab-btn-evaluation"') && page.includes("Evaluation")
+      && page.includes('id="tab-console"') && page.includes('id="tab-evaluation" hidden')
+      && page.includes('class="tab tab-active" id="tab-btn-console"'),
+    "");
+  check("response samples are collapsed by default and labelled with a count slot",
+    page.includes('id="samples-section"') && !page.includes('id="samples-section" open')
+      && page.includes("Response samples")
+      && page.includes('id="sample-count"'),
+    "");
+  check("evaluation graphs are labelled as static benchmark data",
+    page.includes("static benchmark data")
+      && page.includes("controlled simulations, not live traffic"),
+    "");
+  check("no em dash anywhere in the page markup",
+    !page.includes("—"), "");
+  check("mobile rules stack activity and rewrite the sample grid",
+    fs.readFileSync(path.join(__dirname, "app.css"), "utf8")
+      .includes(".act-row { grid-template-columns: 1fr;")
+      && fs.readFileSync(path.join(__dirname, "app.css"), "utf8")
+        .includes(".s-prompt { grid-column: 1 / -1; }")
+      && fs.readFileSync(path.join(__dirname, "app.css"), "utf8")
+        .includes(".sample-head { display: none; }"),
+    "");
   check("initial view has verdict, metrics and detectors",
     page.includes('id="verdict-box"') && page.includes('id="detector-rows"')
       && page.includes('class="metric-row"'),
