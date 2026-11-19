@@ -11,7 +11,7 @@
 <body>
 
 <header class="topbar">
-  <div class="topbar-inner">
+  <div class="shell topbar-inner">
     <div class="brand">
       <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
         <line x1="3" y1="16" x2="10" y2="16" stroke="#A1A1AA" stroke-width="2.5" stroke-linecap="round"/>
@@ -21,15 +21,14 @@
       <span id="model-label" class="brand-model"></span>
     </div>
     <div class="topbar-right">
-      <span id="provider-pill" class="pill"><span class="dot"></span>provider …</span>
-      <span id="health-pill" class="pill"><span class="dot"></span>API …</span>
+      <span id="health-pill" class="status"><span class="dot"></span>API checking</span>
       <a class="gh-link" href="https://github.com/chandresh080/llm-drift-monitor"
          target="_blank" rel="noopener">GitHub</a>
     </div>
   </div>
 </header>
 
-<main class="page">
+<main class="shell page">
 
   <div id="banner" class="banner" hidden></div>
 
@@ -41,203 +40,209 @@
   <!-- ================= MONITOR ================= -->
   <div id="tab-console">
 
-    <section class="activity-block">
-      <div class="activity-head">
-        <div>
-          <h1 class="activity-title">Recent activity</h1>
-          <p class="activity-sub">Latest completed monitoring cycles, newest first.</p>
+    <section class="activity">
+      <div class="section-head">
+        <div class="section-heading">
+          <h1 class="section-title">Recent activity</h1>
+          <span id="activity-count" class="section-meta"></span>
         </div>
         <div class="head-actions">
-          <button id="run-btn" class="btn btn-primary" type="button">Run check</button>
           <p id="run-note" class="run-note">Loading configuration…</p>
+          <button id="run-btn" class="btn btn-primary" type="button">Run check</button>
         </div>
       </div>
       <div id="activity-list" class="activity-list"></div>
     </section>
 
-    <section class="verdict" id="verdict-box" data-testid="verdict">
-      <div>
-        <h2 id="kpi-drift" class="verdict-title">…</h2>
-        <p id="verdict-sub" class="verdict-sub">…</p>
-        <p id="verdict-meta" class="verdict-meta">…</p>
-      </div>
-    </section>
+    <div class="workspace">
 
-    <div id="quality-strip" class="quality-strip" hidden></div>
+      <div class="col-main">
 
-    <section class="metric-row">
-      <div class="metric" data-testid="metric-runs">
-        <span class="metric-label">Responses evaluated</span>
-        <span id="kpi-runs" class="metric-value">…</span>
-      </div>
-      <div class="metric" data-testid="metric-flagged">
-        <span class="metric-label">Significant tests</span>
-        <span id="kpi-flagged" class="metric-value">…</span>
-      </div>
-      <div class="metric" data-testid="metric-lastcheck">
-        <span class="metric-label">Last check</span>
-        <span id="kpi-lastcheck" class="metric-value">…</span>
-      </div>
-    </section>
-
-    <section class="block" data-testid="history-block">
-      <div class="block-head">
-        <h2 class="block-title">Detector history</h2>
-        <span class="block-meta">adjusted p-values · last 12 completed cycles</span>
-      </div>
-      <div id="history-chart" class="chart-wrap"></div>
-      <p id="history-note" class="block-note">Historical monitoring data from stored cycles.</p>
-    </section>
-
-    <section class="block">
-      <table class="detector-table" data-testid="detector-table">
-        <thead>
-          <tr><th>Detector</th><th class="detector-method">Method</th><th class="num">Adjusted p</th><th>Result</th></tr>
-        </thead>
-        <tbody id="detector-rows"></tbody>
-      </table>
-      <details class="disclosure">
-        <summary>How are these tests used?</summary>
-        <div class="disclosure-body">
-          <p>Three statistical tests compare the latest cycle with the reference window:
-            a Kolmogorov–Smirnov test on response lengths, a Fisher exact (or z) test on the
-            non-empty response rate, and a paired Maximum Mean Discrepancy permutation on
-            sentence embeddings. Benjamini–Hochberg correction controls the false discovery
-            rate across the family; an alert additionally requires the same verdict on
-            consecutive cycles.</p>
-          <p>Response availability is a quality signal, not a distribution verdict: its flag
-            is reported separately and never changes the shift headline above. The semantic
-            test permutes complete response sets per matched prompt, because the panel probes
-            the same prompts every cycle. Full methodology and measured performance are in
-            the repository's <a href="https://github.com/chandresh080/llm-drift-monitor/blob/main/METRICS.md"
-              target="_blank" rel="noopener">METRICS.md</a>.</p>
-          <div class="effect-row paired-row">
-            <div class="effect"><span class="effect-label">Paired MMD statistic</span>
-              <span id="paired-stat" class="effect-value">n/a</span></div>
-            <div class="effect"><span class="effect-label">Raw permutation p</span>
-              <span id="paired-p" class="effect-value">n/a</span></div>
-            <div class="effect"><span class="effect-label">Matched prompts</span>
-              <span id="paired-pairs" class="effect-value">n/a</span></div>
-            <div class="effect"><span class="effect-label">Swap patterns</span>
-              <span id="paired-patterns" class="effect-value">n/a</span></div>
+        <section class="panel" data-testid="history-block">
+          <div class="section-head">
+            <h2 class="section-title">Distribution history</h2>
+            <span class="section-meta">Adjusted p-values · historical cycles</span>
           </div>
-        </div>
-      </details>
-    </section>
+          <div id="history-chart" class="chart-wrap"></div>
+          <p id="history-note" class="section-note"></p>
+        </section>
 
-    <section class="effect-row" id="effect-row" data-testid="effects">
-      <div class="effect"><span class="effect-label">Mean response length change</span>
-        <span id="eff-length" class="effect-value">n/a</span></div>
-      <div class="effect"><span class="effect-label">Embedding centroid distance</span>
-        <span id="eff-centroid" class="effect-value">n/a</span></div>
-      <div class="effect"><span class="effect-label">Refusal rate change</span>
-        <span id="eff-refusal" class="effect-value">n/a</span></div>
-    </section>
+        <section class="panel">
+          <div class="section-head">
+            <h2 class="section-title">Detector results</h2>
+            <span class="section-meta">Latest cycle</span>
+          </div>
+          <table class="detector-table" data-testid="detector-table">
+            <thead>
+              <tr><th>Detector</th><th class="num">Adjusted p</th><th>Decision</th></tr>
+            </thead>
+            <tbody id="detector-rows"></tbody>
+          </table>
+          <details class="disclosure">
+            <summary>Methodology</summary>
+            <div class="disclosure-body">
+              <p>Three tests compare the latest cycle with the reference window: a
+                Kolmogorov–Smirnov test on response lengths, a Fisher exact (or z) test on
+                the non-empty response rate, and a paired Maximum Mean Discrepancy
+                permutation on sentence embeddings. Benjamini–Hochberg controls the false
+                discovery rate across the family. Response availability is a quality
+                signal, not a distribution verdict.</p>
+              <div class="effect-row paired-row">
+                <div class="effect"><span class="effect-label">Paired MMD statistic</span>
+                  <span id="paired-stat" class="effect-value">n/a</span></div>
+                <div class="effect"><span class="effect-label">Raw permutation p</span>
+                  <span id="paired-p" class="effect-value">n/a</span></div>
+                <div class="effect"><span class="effect-label">Matched prompts</span>
+                  <span id="paired-pairs" class="effect-value">n/a</span></div>
+                <div class="effect"><span class="effect-label">Swap patterns</span>
+                  <span id="paired-patterns" class="effect-value">n/a</span></div>
+              </div>
+              <p class="section-note">Full methodology and measured performance are in the
+                repository's <a href="https://github.com/chandresh080/llm-drift-monitor/blob/main/METRICS.md"
+                  target="_blank" rel="noopener">METRICS.md</a>.</p>
+            </div>
+          </details>
+        </section>
 
-    <details class="section-details" id="samples-section">
-      <summary>Response samples <span id="sample-count" class="summary-count"></span></summary>
-      <div id="comparison-wrap" class="section-body"></div>
-    </details>
+        <details class="panel-disclosure" id="samples-section">
+          <summary>Response samples <span id="sample-count" class="summary-count"></span></summary>
+          <div id="comparison-wrap" class="section-body"></div>
+        </details>
 
-    <details class="section-details">
-      <summary>Category analysis</summary>
-      <div id="categories-wrap" class="section-body"></div>
-    </details>
+        <details class="panel-disclosure" id="categories-section" hidden>
+          <summary>Category analysis</summary>
+          <div id="categories-wrap" class="section-body"></div>
+        </details>
 
-    <details class="section-details">
-      <summary>Run configuration</summary>
-      <div class="section-body">
-        <div class="config-cols">
-          <div>
-            <p class="act-subhead">Monitoring setup</p>
-            <dl class="config-grid">
+      </div>
+
+      <aside class="col-side">
+
+        <section class="panel latest">
+          <div class="section-head">
+            <h2 class="section-title">Latest result</h2>
+            <span id="verdict-meta" class="section-meta">…</span>
+          </div>
+          <p id="kpi-drift" class="verdict">…</p>
+          <p id="verdict-sub" class="verdict-sub">…</p>
+          <div id="quality-strip" class="quality-signal" hidden></div>
+
+          <div class="counts">
+            <div class="count">
+              <span class="count-label">Reference</span>
+              <span id="count-ref" class="count-value">…</span>
+            </div>
+            <div class="count">
+              <span class="count-label">Current</span>
+              <span id="count-cur" class="count-value">…</span>
+            </div>
+          </div>
+
+          <div class="effect-list" id="effect-row" data-testid="effects">
+            <div class="effect"><span class="effect-label">Mean length change</span>
+              <span id="eff-length" class="effect-value">n/a</span></div>
+            <div class="effect"><span class="effect-label">Centroid distance</span>
+              <span id="eff-centroid" class="effect-value">n/a</span></div>
+            <div class="effect"><span class="effect-label">Refusal rate change</span>
+              <span id="eff-refusal" class="effect-value">n/a</span></div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
+            <h2 class="section-title">Alerts</h2>
+            <span id="alert-count" class="section-meta"></span>
+          </div>
+          <div id="alerts-list"></div>
+        </section>
+
+        <details class="panel-disclosure" id="config-section">
+          <summary>Configuration</summary>
+          <div class="section-body">
+            <dl class="config-list">
               <div><dt>Target model</dt><dd id="cfg-model">…</dd></div>
               <div><dt>Prompt panel</dt><dd id="cfg-panel">…</dd></div>
               <div><dt>Reference window</dt><dd id="cfg-ref">…</dd></div>
               <div><dt>Current window</dt><dd id="cfg-cur">…</dd></div>
               <div><dt>Significance threshold</dt><dd id="cfg-alpha">…</dd></div>
               <div><dt>Alert persistence</dt><dd id="cfg-persist">…</dd></div>
-            </dl>
-          </div>
-          <div>
-            <p class="act-subhead">Latest run</p>
-            <dl class="config-grid">
+              <div><dt>Probes evaluated</dt><dd id="kpi-runs">…</dd></div>
               <div><dt>Last completed cycle</dt><dd id="cfg-last-run">…</dd></div>
               <div><dt>Provider latency</dt><dd id="cfg-latency">…</dd></div>
               <div><dt>Provider tokens</dt><dd id="cfg-tokens">…</dd></div>
             </dl>
+            <p class="config-meta">
+              <span id="cfg-embedding"></span>
+              <span id="cfg-manifest"></span>
+            </p>
           </div>
-        </div>
-        <p class="config-meta">
-          <span id="cfg-embedding"></span>
-          <span id="cfg-manifest"></span>
-        </p>
-      </div>
-    </details>
+        </details>
+
+      </aside>
+
+    </div>
 
   </div>
 
   <!-- ================= EVALUATION ================= -->
   <div id="tab-evaluation" hidden>
 
-    <section class="head-row">
-      <div class="head-copy">
-        <h1>Evaluation</h1>
-        <p class="head-sub">Benchmark results from controlled simulations with known shifts,
-          not measurements from the hosted demo.</p>
+    <section class="eval-head">
+      <h1 class="page-title">Evaluation</h1>
+      <p class="page-sub">Benchmark results from controlled simulations with known shifts,
+        not measurements from the hosted demo.</p>
+    </section>
+
+    <section class="stat-strip" id="evaluation-body" data-testid="eval-metrics">
+      <div class="stat">
+        <span class="stat-label">Detection delay</span>
+        <span id="ev-delay" class="stat-value">…</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">False alarms / 100 quiet days</span>
+        <span id="ev-fa" class="stat-value">…</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Detection rate</span>
+        <span id="ev-detect" class="stat-value">…</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">p95 overhead</span>
+        <span id="ev-overhead" class="stat-value">…</span>
       </div>
     </section>
 
-    <section class="metric-row four" id="evaluation-body" data-testid="eval-metrics">
-      <div class="metric">
-        <span class="metric-label">Detection delay</span>
-        <span id="ev-delay" class="metric-value">…</span>
-      </div>
-      <div class="metric">
-        <span class="metric-label">False alarms / 100 quiet days</span>
-        <span id="ev-fa" class="metric-value">…</span>
-      </div>
-      <div class="metric">
-        <span class="metric-label">Detection rate</span>
-        <span id="ev-detect" class="metric-value">…</span>
-      </div>
-      <div class="metric">
-        <span class="metric-label">p95 overhead</span>
-        <span id="ev-overhead" class="metric-value">…</span>
-      </div>
-    </section>
-
-    <section class="block">
-      <div class="block-head">
-        <h3 class="block-title">Detection delay vs false-alarm trade-off</h3>
-        <span class="block-meta">static benchmark data</span>
+    <section class="panel">
+      <div class="section-head">
+        <h2 class="section-title">Detection delay vs false-alarm trade-off</h2>
+        <span class="section-meta">static benchmark data</span>
       </div>
       <div id="eval-tradeoff-chart" class="chart-wrap"></div>
       <div id="eval-tradeoff"></div>
     </section>
 
-    <section class="block">
-      <div class="block-head">
-        <h3 class="block-title">Detector power curves</h3>
-        <span class="block-meta">controlled simulations, not live traffic</span>
+    <section class="panel">
+      <div class="section-head">
+        <h2 class="section-title">Detector power curves</h2>
+        <span class="section-meta">controlled simulations, not live traffic</span>
       </div>
       <div id="eval-power-chart" class="chart-wrap"></div>
       <div id="eval-power"></div>
     </section>
 
-    <details class="disclosure">
+    <details class="panel-disclosure">
       <summary>Methodology and limitations</summary>
-      <div class="disclosure-body">
+      <div class="section-body">
         <p id="ev-methodology">…</p>
       </div>
     </details>
 
-    <details class="section-details">
+    <details class="panel-disclosure">
       <summary>Distribution shift vs quality regression</summary>
       <div id="eval-reliability" class="section-body"></div>
     </details>
 
-    <details class="section-details">
+    <details class="panel-disclosure">
       <summary>Recorded provider comparison: Groq vs Gemini</summary>
       <div id="prov-cmp" class="section-body"></div>
       <p id="prov-cmp-verdict" class="section-note"></p>

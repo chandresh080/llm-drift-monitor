@@ -2,15 +2,17 @@
    Vanilla JS, no dependencies; every displayed value comes from the REST
    API on the same origin. Nothing is computed client side except formatting.
 
-   Layout contract: the initial viewport holds the verdict, three summary
-   metrics, three detector rows and the effect sizes. Everything else is
-   collapsed or lives on the Evaluation tab, so a visitor reads the state
-   of the monitor within seconds.
+   Layout contract: recent activity is the first section, followed by a
+   two-column workspace. Distribution history, detector results and response
+   samples occupy the main column; the verdict, window counts, effect sizes,
+   alerts and configuration occupy the side column. Evaluation is a separate
+   view.
 
    Loading contract: every data endpoint is fetched and rendered
    independently, so each panel appears at the earliest moment its own
-   data is available. Status is derived only from /health/live (fast);
-   the slow readiness check never blocks or rewrites the pill. */
+   data is available. API status combines /health/live with evidence from
+   the data endpoints: a failed liveness probe while data still answers is
+   degraded, not offline. */
 
 const state = {
   live: null,         // /health/live payload (fast liveness)
@@ -25,6 +27,8 @@ const state = {
   providerComparison: null,  // recorded Groq vs Gemini comparison (static asset)
   failed: new Set(),  // data endpoints that did not answer
   awake: false,       // at least one data endpoint has answered
+  dataOk: false,      // at least one data endpoint returned a payload
+  dataFailed: false,  // at least one data endpoint failed
   wakeStartedAt: null,
 };
 
@@ -96,57 +100,68 @@ async function fetchJson(url, opts = {}) {
   }
 }
 
-/* ---------- status pills ---------- */
+/* ---------- service status ---------- */
 
-function setPill(id, cls, text, title) {
-  const pill = $(id);
-  if (!pill) return;
-  pill.className = "pill";
-  if (cls) pill.classList.add(cls);
-  pill.innerHTML = `<span class="dot"></span>${escapeHtml(text)}`;
-  if (title) pill.title = title;
-  else pill.removeAttribute("title");
+/* API reachability has more than two states. A failed liveness probe on a
+   page that is already receiving data is a degraded probe, not an offline
+   service, and a liveness failure before any data has answered is unknown
+   rather than offline. Provider availability is a separate fact and lives
+   on the model label, so a temporary provider problem never rewrites the
+   API state. */
+function apiState() {
+  const liveOk = state.live != null && state.live.status === "ok";
+  if (liveOk) return state.dataFailed && !state.dataOk ? "degraded" : "online";
+  if (state.dataOk) return state.live == null ? "online" : "degraded";
+  if (state.live != null) return state.dataFailed ? "offline" : "unknown";
+  return "checking";
 }
 
-/* API liveness answers one question: is the service up right now. It is
-   derived from /health/live alone, so a slow readiness check can never
-   produce a confusing intermediate wording. Provider availability is a
-   different fact about the target model and is rendered as its own pill:
-   a stored cycle can exist while the provider is temporarily unavailable,
-   and that must never read as "offline service". */
+const API_STATES = {
+  online: ["status-ok", "API online", "The API answered its liveness check."],
+  degraded: ["status-warn", "API degraded",
+    "Data endpoints are answering, but /health/live did not."],
+  offline: ["status-bad", "API offline", "The API is not answering."],
+  unknown: ["status-warn", "API unknown",
+    "The liveness check failed before any data endpoint answered."],
+  checking: ["", "API checking", "Waiting for the first response."],
+};
+
 function renderHealthPill() {
-  if (state.live == null) {
-    setPill("health-pill", null, "API …");
-    return;
-  }
-  const ok = state.live.status === "ok";
-  setPill("health-pill", ok ? "pill-ok" : "pill-bad",
-    ok ? "API online" : "API offline");
-}
-
-function renderProviderPill() {
-  const c = state.config;
-  if (!c) {
-    setPill("provider-pill", null, "provider …");
-    return;
-  }
-  const ok = c.provider_available !== false;
-  setPill("provider-pill", ok ? "pill-ok" : "pill-bad",
-    ok ? "provider available" : "provider unavailable",
-    ok ? `Target model ${c.target_model} can run new cycles`
-      : (c.provider_error || "The target provider cannot run new cycles"));
+  const pill = $("health-pill");
+  if (!pill) return;
+  const found = API_STATES[apiState()] || API_STATES.checking;
+  pill.className = `status ${found[0]}`.trim();
+  pill.innerHTML = `<span class="dot"></span>${escapeHtml(found[1])}`;
+  pill.title = found[2];
 }
 
 /* ---------- model label in the header ---------- */
+
+/* Human label for known Gemini ids; unknown ids stay exactly as served. */
+function prettyModel(id) {
+  return String(id || "")
+    .replace(/^gemini-/, "Gemini ")
+    .replace(/-flash-lite$/, " Flash-Lite");
+}
 
 function renderModelLabel() {
   const c = state.config;
   const el = $("model-label");
   if (!c || !c.target_model) {
     el.textContent = "";
+    el.className = "brand-model";
+    el.removeAttribute("title");
     return;
   }
-  el.textContent = c.target_model;
+  if (c.provider_available === false) {
+    el.className = "brand-model provider-down";
+    el.textContent = `${prettyModel(c.target_model)} · provider unavailable`;
+    el.title = c.provider_error || "The target provider cannot run new cycles.";
+  } else {
+    el.className = "brand-model";
+    el.textContent = prettyModel(c.target_model);
+    el.removeAttribute("title");
+  }
 }
 
 function initTabs() {
@@ -182,101 +197,89 @@ function latestSignals(l) {
 
 /* ---------- verdict ---------- */
 
+function flaggedCount(latest) {
+  if (!latest) return null;
+  const raw = latest.flagged_tests;
+  if (Array.isArray(raw)) return raw.length;
+  if (typeof raw === "string") return raw ? raw.split(",").filter(Boolean).length : 0;
+  const flags = [latest.ks_significant, latest.proportion_z_significant,
+    latest.mmd_significant];
+  if (flags.some((v) => v != null)) {
+    return flags.filter((v) => Number(v) === 1).length;
+  }
+  return null;
+}
+
 function renderVerdict() {
   const latest = state.latest;
   const title = $("kpi-drift");
   const sub = $("verdict-sub");
   const meta = $("verdict-meta");
   const strip = $("quality-strip");
+  const refEl = $("count-ref");
+  const curEl = $("count-cur");
   const evaluated = latest && (latest.drift_detected != null
     || latest.distribution_shift_detected != null);
 
   if (!evaluated) {
-    title.textContent = "Not evaluated yet";
-    title.className = "verdict-title";
-    sub.textContent = "Statistical evaluation starts once a full reference "
-      + "window and one current cycle are stored.";
-    meta.textContent = "No completed cycle yet.";
+    title.textContent = "Not evaluated";
+    title.className = "verdict";
+    sub.textContent = "No completed cycle yet.";
+    meta.textContent = "";
+    if (refEl) refEl.textContent = "n/a";
+    if (curEl) curEl.textContent = "n/a";
     strip.hidden = true;
+    strip.innerHTML = "";
     return;
   }
 
   const sig = latestSignals(latest);
-  if (sig.dist === 1) {
-    title.textContent = "Shift detected";
-    title.className = "verdict-title verdict-alert";
-    sub.textContent = "A distributional detector flagged after "
-      + "Benjamini-Hochberg correction in the latest evaluation.";
-  } else {
-    title.textContent = "No shift detected";
-    title.className = "verdict-title verdict-ok";
-    sub.textContent = "No statistically significant distributional change "
-      + "was detected in the latest evaluation.";
+  const fired = flaggedCount(latest);
+  title.textContent = sig.dist === 1 ? "Shift detected" : "No shift";
+  title.className = "verdict" + (sig.dist === 1 ? " verdict-alert" : "");
+  sub.textContent = fired == null
+    ? `${NUM_TESTS} detector family`
+    : `${fired} of ${NUM_TESTS} tests flagged`;
+
+  meta.textContent = latest.timestamp ? `Last checked ${fmtTime(latest.timestamp)}` : "";
+  if (refEl) {
+    refEl.textContent = latest.reference_size == null
+      ? "n/a" : Number(latest.reference_size).toLocaleString();
+  }
+  if (curEl) {
+    curEl.textContent = latest.current_size == null
+      ? "n/a" : Number(latest.current_size).toLocaleString();
   }
 
-  meta.textContent =
-    `Reference: ${Number(latest.reference_size)} responses · `
-    + `Current: ${Number(latest.current_size)} responses · `
-    + `Last checked: ${fmtTime(latest.timestamp)}`;
-
-  /* Quality signals stay separate: chips only when one actually fired. */
+  /* Quality signals stay separate from the distribution verdict. */
   const parts = [];
-  if (sig.qualityChange) {
-    parts.push('<span class="chip chip-alert">Response availability changed</span>');
-  }
-  if (sig.guardrail) {
-    parts.push('<span class="chip chip-alert">Invalid-response guardrail tripped</span>');
-  }
+  if (sig.qualityChange) parts.push("Response availability changed");
+  if (sig.guardrail) parts.push("Invalid-response guardrail tripped");
   if (parts.length) {
-    parts.push('<span class="chip-note">quality signal, not a distribution verdict</span>');
     strip.hidden = false;
-    strip.innerHTML = parts.join("");
+    strip.innerHTML = `<span class="quality-label">Quality signal</span>`
+      + escapeHtml(parts.join(" · "));
   } else {
     strip.hidden = true;
     strip.innerHTML = "";
   }
 }
 
-/* ---------- summary metrics ---------- */
+/* ---------- stored response count ---------- */
 
 function renderMetrics() {
-  const latest = state.latest;
-
   const runsEl = $("kpi-runs");
-  if (state.stats && state.stats.probe_runs != null) {
-    runsEl.textContent = Number(state.stats.probe_runs).toLocaleString();
-    runsEl.className = "metric-value";
-  } else {
-    runsEl.textContent = "n/a";
-    runsEl.className = "metric-value effect-missing";
-  }
-
-  const fired = (latest && Array.isArray(latest.flagged_tests))
-    ? latest.flagged_tests.length : null;
-  const flaggedEl = $("kpi-flagged");
-  if (latest && fired != null) {
-    flaggedEl.textContent = `${fired} / ${NUM_TESTS}`;
-    flaggedEl.className = "metric-value" + (fired > 0 ? " kpi-alert" : "");
-  } else {
-    flaggedEl.textContent = "n/a";
-    flaggedEl.className = "metric-value effect-missing";
-  }
-
-  const lastEl = $("kpi-lastcheck");
-  if (latest && latest.timestamp) {
-    lastEl.textContent = fmtTime(latest.timestamp);
-    lastEl.className = "metric-value";
-  } else {
-    lastEl.textContent = "n/a";
-    lastEl.className = "metric-value effect-missing";
-  }
+  if (!runsEl) return;
+  runsEl.textContent = state.stats && state.stats.probe_runs != null
+    ? Number(state.stats.probe_runs).toLocaleString() : "n/a";
 }
 
 /* ---------- detector table ---------- */
 
-/* One row per detector: name, method, adjusted p-value, decision. The
-   full string is built from the data in one pass; absent values decide
-   as "Not evaluated", never as "No flag". */
+/* One row per detector: name with its method as secondary text, adjusted
+   p-value, decision. Absent values decide as "Not evaluated", never as
+   "No flag". Availability remains its own row, separate from the shift
+   headline. */
 function renderDetectors() {
   const l = state.latest;
   const rows = [
@@ -302,19 +305,24 @@ function renderDetectors() {
   ];
   $("detector-rows").innerHTML = rows.map((r) => {
     let decision;
+    let cls = "decision";
     if (r.p == null && r.sig == null) {
-      decision = '<span class="chip chip-warn">Not evaluated</span>';
+      decision = "Not evaluated";
+      cls += " decision-muted";
     } else if (Number(r.sig) === 1) {
-      decision = '<span class="chip chip-alert">Flagged</span>';
+      decision = "Flagged";
+      cls += " decision-alert";
     } else {
-      decision = '<span class="chip chip-ok">No flag</span>';
+      decision = "No flag";
     }
     return `
       <tr data-testid="detector-row">
-        <td class="detector-name">${escapeHtml(r.name)}</td>
-        <td class="detector-method">${escapeHtml(r.method)}</td>
+        <td>
+          <span class="detector-name">${escapeHtml(r.name)}</span>
+          <span class="detector-method">${escapeHtml(r.method)}</span>
+        </td>
         <td class="num">${r.p == null ? "n/a" : fmtP(r.p)}</td>
-        <td>${decision}</td>
+        <td class="${cls}">${decision}</td>
       </tr>`;
   }).join("");
 }
@@ -378,18 +386,16 @@ function renderConfig() {
   if (!c) {
     $("cfg-model").textContent = state.failed.has("config")
       ? "unavailable" : "…";
-    renderProviderPill();
+    renderModelLabel();
     return;
   }
-  $("cfg-model").textContent = c.provider_available === false
-    ? `${c.target_model} (unavailable)`
-    : c.target_model;
+  $("cfg-model").textContent = c.target_model;
   $("cfg-panel").textContent =
     `v${c.prompt_panel_version} · ${c.probes_per_cycle} prompts per cycle`;
   const cyclesForWindow = c.probes_per_cycle
     ? Math.round(c.reference_window / c.probes_per_cycle) : null;
   $("cfg-ref").textContent = cyclesForWindow
-    ? `${c.reference_window} responses (${cyclesForWindow} complete cycles)`
+    ? `${c.reference_window} responses (${cyclesForWindow} cycles)`
     : `${c.reference_window} responses`;
   $("cfg-cur").textContent = `${c.current_window} responses`;
   $("cfg-alpha").textContent = `${Number(c.alpha).toFixed(2)} · Benjamini–Hochberg`;
@@ -397,7 +403,6 @@ function renderConfig() {
 
   const l = state.latest || {};
   const ts = state.latest && state.latest.timestamp;
-  /* Window sizes already appear above; the timestamp is the new fact. */
   $("cfg-last-run").textContent = ts ? fmtTime(ts) : "none yet";
   $("cfg-latency").textContent = l.provider_latency_mean_seconds == null
     ? "not recorded"
@@ -414,7 +419,6 @@ function renderConfig() {
       + `temperature ${m.temperature} · collected ${fmtTime(m.collected_at)}`
     : "";
   renderRunNote();
-  renderProviderPill();
   renderModelLabel();
 }
 
@@ -541,7 +545,7 @@ function renderComparison() {
           <span class="s-prompt">
             <span class="s-label">${escapeHtml(label)}</span>
             ${r.category ? `<span class="s-cat">${escapeHtml(r.category)}</span>` : ""}
-            ${redacted ? '<span class="chip chip-warn">withheld</span>' : ""}
+            ${redacted ? '<span class="s-flag">withheld</span>' : ""}
           </span>
           <span class="s-num">${cells.ref}</span>
           <span class="s-num">${cells.current}</span>
@@ -594,25 +598,27 @@ function renderComparison() {
 
 function renderCategories() {
   const wrap = $("categories-wrap");
+  const section = $("categories-section");
   const c = state.categories;
   if (c == null || !Array.isArray(c.rows) || c.rows.length === 0) {
-    wrap.innerHTML = `<p class="empty-state">Not reported for the stored window: `
-      + `category tests need ${c && c.min_samples_per_category
-        ? c.min_samples_per_category : 8} distinct samples per category per side.</p>`;
+    /* No empty disclosure in the workspace. */
+    if (section) section.hidden = true;
+    wrap.innerHTML = "";
     return;
   }
+  if (section) section.hidden = false;
   const rows = c.rows.map((r) => {
     const tested = r.decision === "tested";
     const decision = tested
-      ? `<span class="chip ${r.significant ? "chip-alert" : "chip-ok"}">
-           ${r.significant ? "Flagged" : "No flag"}</span>
-         <span class="muted">p ${fmtP(r.adjusted_pvalue)}</span>`
-      : `<span class="chip chip-warn">Not tested</span>
-         <span class="muted">${escapeHtml(r.reason || "insufficient distinct samples")}</span>`;
+      ? `<span class="cat-decision${r.significant ? " is-alert" : ""}">`
+        + `${r.significant ? "Flagged" : "No flag"}</span>`
+        + ` <span class="muted">p ${fmtP(r.adjusted_pvalue)}</span>`
+      : `<span class="muted">Not tested · `
+        + `${escapeHtml(r.reason || "insufficient distinct samples")}</span>`;
     return `
       <div class="cat-row">
         <span class="cat-name">${escapeHtml(r.category)}</span>
-        ${decision}
+        <span>${decision}</span>
         <span class="cat-counts muted">${r.unique_reference}/${r.n_reference} ·
           ${r.unique_current}/${r.n_current} distinct</span>
       </div>`;
@@ -624,7 +630,7 @@ function renderCategories() {
 
 /* The latest completed cycles answer "what happened recently" before any
    other panel. Distribution shift, availability and guardrail stay
-   separate chips; an alert badge appears only when one was persisted for
+   separate columns; an alert count appears only when it was persisted for
    that cycle. */
 function cycleState(r) {
   const dist = r.overall_drift_detected != null
@@ -647,53 +653,102 @@ function alertsForCycle(timestamp) {
 
 function renderActivity() {
   const el = $("activity-list");
+  const count = $("activity-count");
   if (state.failed.has("results")) {
+    if (count) count.textContent = "";
     el.innerHTML = '<p class="empty-state">Recent cycles unavailable.</p>';
     return;
   }
   const rows = [...(state.results || [])]
     .sort((a, b) => String(b.timestamp || "").localeCompare(String(a.timestamp || "")))
-    .slice(0, 3);
+    .slice(0, 5);
+  if (count) {
+    count.textContent = rows.length
+      ? `${rows.length} ${rows.length === 1 ? "cycle" : "cycles"}` : "";
+  }
   if (!rows.length) {
-    el.innerHTML = '<p class="empty-state">No completed cycles stored yet.</p>';
+    el.innerHTML = '<p class="empty-state">No completed cycles recorded yet.</p>';
     return;
   }
-  el.innerHTML = rows.map((r) => {
+  const body = rows.map((r) => {
     const s = cycleState(r);
-    const status = s.insufficient
-      ? '<span class="chip chip-warn">Insufficient data</span>'
-      : '<span class="chip chip-ok">Completed</span>';
-    const outcome = s.dist === 1
-      ? '<span class="chip chip-alert">Shift flagged</span>'
-      : '<span class="chip chip-ok">No shift</span>';
-    const quality = [
-      s.availability ? '<span class="chip chip-alert">Availability changed</span>' : "",
-      s.guardrail ? '<span class="chip chip-alert">Guardrail tripped</span>' : "",
-    ].filter(Boolean).join("");
+    let result = "No shift";
+    let resultCls = "act-result";
+    if (s.insufficient) {
+      result = "Insufficient data";
+      resultCls += " is-muted";
+    } else if (s.dist === 1) {
+      result = "Shift flagged";
+      resultCls += " is-alert";
+    }
+    const quality = [];
+    if (s.availability) quality.push("Availability changed");
+    if (s.guardrail) quality.push("Guardrail tripped");
     const alerts = alertsForCycle(r.timestamp);
-    const alertChip = alerts.length
-      ? `<span class="chip chip-alert">${alerts.length} alert${alerts.length > 1 ? "s" : ""}</span>`
-      : "";
+    if (alerts.length) {
+      quality.push(`${alerts.length} alert${alerts.length > 1 ? "s" : ""}`);
+    }
+    const qualityCell = quality.length
+      ? `<span class="act-signal">${escapeHtml(quality.join(" · "))}</span>`
+      : '<span class="muted">n/a</span>';
     return `
-      <div class="act-row" data-testid="activity-row">
-        <div class="act-ident">
-          <span class="act-cycle">Cycle #${escapeHtml(r.id)}</span>
-          ${status}
-        </div>
-        <div class="act-when">
-          <span>${fmtTime(r.timestamp)}</span>
-          <span class="act-resp">${
-            r.current_size != null ? Number(r.current_size) : "n/a"} responses</span>
-        </div>
-        <div class="act-outcome">${outcome}${quality}${alertChip}</div>
-      </div>`;
+      <tr data-testid="activity-row">
+        <td class="act-cycle">#${escapeHtml(r.id)}</td>
+        <td class="act-time">${fmtTime(r.timestamp)}</td>
+        <td class="num act-probes">${
+          r.current_size != null ? Number(r.current_size) : "n/a"}</td>
+        <td class="${resultCls}">${result}</td>
+        <td class="act-quality">${qualityCell}</td>
+      </tr>`;
   }).join("");
+  el.innerHTML = `
+    <table class="activity-table">
+      <thead>
+        <tr>
+          <th>Cycle</th>
+          <th>Time</th>
+          <th class="num">Responses</th>
+          <th>Distribution result</th>
+          <th>Quality signal</th>
+        </tr>
+      </thead>
+      <tbody>${body}</tbody>
+    </table>`;
+}
+
+/* ---------- alerts ---------- */
+
+function renderAlerts() {
+  const el = $("alerts-list");
+  const count = $("alert-count");
+  if (!el) return;
+  if (state.failed.has("alerts")) {
+    if (count) count.textContent = "";
+    el.innerHTML = '<p class="empty-state">Alerts unavailable.</p>';
+    return;
+  }
+  const rows = (state.alerts || []).slice(0, 3);
+  if (count) count.textContent = rows.length
+    ? `${rows.length} recent` : "";
+  if (!rows.length) {
+    el.innerHTML = '<p class="empty-state">No alerts.</p>';
+    return;
+  }
+  el.innerHTML = rows.map((a) => `
+    <div class="alert-item">
+      <span class="alert-time">${fmtTime(a.timestamp)}</span>
+      <span class="alert-msg">${escapeHtml(a.message || "")}</span>
+    </div>`).join("");
 }
 
 /* ---------- detector history ---------- */
 
 /* Actual stored cycles only, latest 12, chronological. Null adjusted
-   p-values break the line: a gap means "not measured", never p = 0. */
+   p-values break the line: a gap means "not measured", never p = 0. A
+   trend needs at least three cycles; one or two points are a message, not
+   a mostly empty chart. */
+const MIN_HISTORY = 3;
+
 function renderHistory() {
   const el = $("history-chart");
   if (!el) return;
@@ -701,7 +756,7 @@ function renderHistory() {
   const alpha = state.config && state.config.alpha != null
     ? Number(state.config.alpha) : 0.05;
   if (state.failed.has("results")) {
-    if (note) note.textContent = "Detector history is unavailable.";
+    if (note) note.textContent = "";
     el.innerHTML = '<p class="empty-state">Detector history unavailable.</p>';
     return;
   }
@@ -711,55 +766,57 @@ function renderHistory() {
       || r.mmd_adjusted_pvalue != null))
     .sort((a, b) => String(a.timestamp || "").localeCompare(String(b.timestamp || "")))
     .slice(-12);
-  if (!rows.length) {
-    if (note) {
-      note.textContent = "Historical monitoring data appears after the first "
-        + "completed cycle.";
-    }
-    el.innerHTML = '<p class="empty-state">No completed evaluations yet. '
-      + 'History appears after the first stored cycle.</p>';
+  if (rows.length < MIN_HISTORY) {
+    if (note) note.textContent = "";
+    el.innerHTML = `<p class="chart-empty">${rows.length
+      ? `Only ${rows.length} recorded ${rows.length === 1 ? "cycle" : "cycles"}. `
+        + "More history is needed for a meaningful trend."
+      : "No completed cycles to chart yet."}</p>`;
     return;
   }
   if (note) {
-    note.textContent = `Historical monitoring data from stored cycles. `
-      + `Dashed line: ${alpha} threshold. Flagged points ringed in red.`;
+    note.textContent = "Historical monitoring data from stored cycles.";
   }
   el.innerHTML = svgHistory(rows, alpha);
 }
 
 function svgHistory(rows, alpha) {
-  const w = 520, h = 220, m = { top: 16, right: 18, bottom: 48, left: 40 };
+  const w = 560, h = 190, m = { top: 12, right: 14, bottom: 34, left: 34 };
   const iw = w - m.left - m.right;
   const ih = h - m.top - m.bottom;
   const n = rows.length;
-  const sx = (i) => m.left + (n === 1 ? iw / 2 : (i / (n - 1)) * iw);
+  const last = n - 1;
+  const sx = (i) => m.left + (i / last) * iw;
   const sy = (v) => m.top + ih - Math.max(0, Math.min(1, v)) * ih;
   const series = [
     { key: "ks_adjusted_pvalue", sig: "ks_significant", name: "KS", color: "#4F46E5" },
     { key: "proportion_z_adjusted_pvalue", sig: "proportion_z_significant",
       name: "Availability", color: "#0F766E" },
     { key: "mmd_adjusted_pvalue", sig: "mmd_significant",
-      name: "Paired MMD", color: "#71717A" },
+      name: "Paired MMD", color: "#A1A1AA" },
   ];
   const parts = [];
 
   for (const v of [0, 0.25, 0.5, 0.75, 1]) {
     const y = sy(v);
-    parts.push(`<line x1="${m.left}" y1="${y}" x2="${w - m.right}" y2="${y}" stroke="#F0F0F2"/>`);
+    parts.push(`<line x1="${m.left}" y1="${y}" x2="${w - m.right}" y2="${y}" stroke="#F1F1F3"/>`);
     parts.push(`<text x="${m.left - 6}" y="${y + 3}" font-size="10" fill="#71717A" text-anchor="end">${v}</text>`);
   }
   const ty = sy(alpha);
   parts.push(`<line x1="${m.left}" y1="${ty}" x2="${w - m.right}" y2="${ty}" stroke="#DC2626" stroke-width="1" stroke-dasharray="4 3"/>`);
   parts.push(`<text x="${w - m.right}" y="${ty - 5}" font-size="10" fill="#DC2626" text-anchor="end">alpha ${alpha}</text>`);
 
-  const stride = Math.max(1, Math.ceil(n / 5));
+  /* The latest cycle is a distinct column, not another anonymous point. */
+  parts.push(`<line x1="${sx(last).toFixed(1)}" y1="${m.top}" x2="${sx(last).toFixed(1)}" y2="${h - m.bottom}" stroke="#E4E4E7" stroke-dasharray="2 3"/>`);
+
+  const stride = Math.max(1, Math.ceil(n / 6));
   rows.forEach((r, i) => {
-    if (i % stride !== 0 && i !== n - 1) return;
+    if (i % stride !== 0 && i !== last) return;
     const x = sx(i);
     parts.push(`<line x1="${x}" y1="${h - m.bottom}" x2="${x}" y2="${h - m.bottom + 4}" stroke="#D4D4D8"/>`);
     parts.push(`<text x="${x}" y="${h - m.bottom + 15}" font-size="10" fill="#71717A" text-anchor="middle">#${escapeHtml(r.id)}</text>`);
   });
-  parts.push(`<text x="${m.left + iw / 2}" y="${h - 6}" font-size="10" fill="#71717A" text-anchor="middle">completed cycle</text>`);
+  parts.push(`<text x="${m.left + iw / 2}" y="${h - 4}" font-size="10" fill="#71717A" text-anchor="middle">completed cycle</text>`);
 
   for (const s of series) {
     let path = "";
@@ -771,18 +828,22 @@ function svgHistory(rows, alpha) {
       open = true;
     });
     if (path) {
-      parts.push(`<path d="${path.trim()}" fill="none" stroke="${s.color}" stroke-width="1.8"/>`);
+      parts.push(`<path d="${path.trim()}" fill="none" stroke="${s.color}" stroke-width="1.6"/>`);
     }
     rows.forEach((r, i) => {
       const v = r[s.key];
       if (v == null) return;
       const flagged = Number(r[s.sig]) === 1;
+      if (i === last) {
+        parts.push(`<circle cx="${sx(i).toFixed(1)}" cy="${sy(Number(v)).toFixed(1)}" `
+          + `r="5.4" fill="none" stroke="${s.color}" stroke-width="1" opacity="0.4"/>`);
+      }
       parts.push(
         `<circle cx="${sx(i).toFixed(1)}" cy="${sy(Number(v)).toFixed(1)}" `
-        + `r="${flagged ? 4.2 : 2.8}" fill="${s.color}" `
-        + `stroke="${flagged ? "#DC2626" : "none"}" stroke-width="${flagged ? "1.6" : "0"}">`
-        + `<title>Cycle #${escapeHtml(r.id)} · ${fmtTime(r.timestamp)} · `
-        + `${s.name} adjusted p ${fmtP(Number(v))}${flagged ? " (flagged)" : ""}</title>`
+        + `r="${flagged ? 4 : i === last ? 3.6 : 2.4}" fill="${s.color}" `
+        + `stroke="${flagged ? "#DC2626" : "none"}" stroke-width="${flagged ? "1.5" : "0"}">`
+        + `<title>${fmtTime(r.timestamp)} · ${s.name} adjusted p ${fmtP(Number(v))}`
+        + `${flagged ? " (flagged)" : ""}</title>`
         + `</circle>`);
     });
   }
@@ -791,6 +852,7 @@ function svgHistory(rows, alpha) {
     + series.map((s) => `<span class="legend-item">`
       + `<span class="legend-swatch" style="background:${s.color}"></span>`
       + `${s.name}</span>`).join("")
+    + `<span class="legend-item"><span class="legend-latest"></span>latest cycle</span>`
     + `<span class="legend-item"><span class="legend-dash"></span>${alpha} threshold</span>`
     + `</div>`;
 
@@ -827,8 +889,9 @@ const DATA_LOADERS = [
   },
   { key: "results", url: "/drift/results?limit=12",
     render: () => { renderActivity(); renderHistory(); } },
-  /* Alerts decorate activity rows; loading them re-renders activity. */
-  { key: "alerts", url: "/alerts?limit=10", render: renderActivity },
+  /* Alerts decorate activity rows and fill the alerts panel. */
+  { key: "alerts", url: "/alerts?limit=10",
+    render: () => { renderActivity(); renderAlerts(); } },
   { key: "comparison", url: "/drift/comparison", render: renderComparison },
   { key: "categories", url: "/drift/categories", render: renderCategories },
 ];
@@ -837,9 +900,11 @@ async function loadOne(def) {
   try {
     state[def.key] = await fetchJson(def.url);
     state.failed.delete(def.key);
+    state.dataOk = true;
   } catch (err) {
     state[def.key] = null;
     state.failed.add(def.key);
+    state.dataFailed = true;
   }
   try {
     def.render();
@@ -847,15 +912,17 @@ async function loadOne(def) {
   if (state[def.key] != null && !state.awake) {
     state.awake = true;
   }
+  /* Data evidence changes the service state even when /health/live failed. */
+  renderHealthPill();
 }
 
 function loadAll() {
   return Promise.allSettled(DATA_LOADERS.map((def) => loadOne(def)));
 }
 
-/* Fast liveness probe: the single source of the status pill. A failure
-   means the instance is unreachable, which is an Offline state, distinct
-   from the pre-answer "connecting" state. */
+/* Fast liveness probe. A failure on its own is not proof that the service
+   is down: the data endpoints are the stronger evidence, and apiState()
+   resolves the two. */
 async function loadLive() {
   try {
     state.live = await fetchJson("/health/live");

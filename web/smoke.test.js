@@ -7,26 +7,26 @@
    Contract list:
    - each data endpoint renders the panel it feeds, independent of the
      other endpoints (no endpoint can block another)
-   - API liveness and provider availability are separate status pills:
-     a stored cycle never reads as an offline service
-   - recent activity is the first panel: latest three cycles, newest
-     first, with separate shift, availability and guardrail chips
-   - detector history is drawn from stored cycles only, with gaps for
-     missing values, a dashed alpha threshold and flagged points ringed
+   - API reachability is its own state: online, degraded, unknown, offline
+   - provider availability is a separate fact on the model label, never a
+     second competing service badge
+   - recent activity is a real table: five newest cycles, newest first
+   - detector history needs at least three stored cycles; fewer is a compact
+     message, never an empty chart or fabricated data
+   - history breaks the line for missing adjusted p-values, marks the latest
+     cycle, and draws the alpha threshold
    - the split signal families render separately: a response availability
      flag can never flip the distribution shift headline
    - redacted safety boundary prompts show their public label and a
-     withheld chip, never raw wording
-   - response samples are collapsed by default, preview five changed-first
-     rows, and reveal the rest only through Show all; row text compares the
-     actual stored strings, not character counts
+     withheld marker, never raw wording
+   - response samples preview five changed-first rows and reveal the rest
+     only through Show all; row text compares actual stored strings
    - missing test values render as an explicit state ("Not evaluated",
      "n/a"), never as "No flag" or zero
    - product CSV string keys ("0.0") resolve against numeric lookups
    - the refusal rate change takes its sign from the delta itself
    - rate limit rejections surface the server's Retry-After message
-   - the information architecture: activity leads, heavy evidence sections
-     are collapsed <details>, and Monitor and Evaluation stay separate views
+   - Monitor and Evaluation stay separate views
 
    Used by CI; run locally with: node web/smoke.test.js */
 
@@ -129,9 +129,9 @@ const latestFull = {
 const csvRows = (rows) => rows.map(([delta, power]) =>
   ({ test: "mmd", delta: String(delta), n: "10", power: String(power), n_sims: "50", alpha: "0.05" }));
 
-/* Stored cycles, deliberately served out of order and with one missing
-   adjusted p-value: activity sorts newest first and history must break the
-   line instead of inventing p = 0. */
+/* Six stored cycles, deliberately served out of order and with one missing
+   adjusted p-value: activity shows the five newest newest-first, and history
+   must break the line instead of inventing p = 0. */
 const historyRows = [
   { id: 1, timestamp: "2026-11-10T18:22:00", reference_size: 120, current_size: 40,
     overall_drift_detected: 0, overall_quality_degradation: 0,
@@ -153,7 +153,21 @@ const historyRows = [
     ks_adjusted_pvalue: 0.048, ks_significant: 1,
     proportion_z_adjusted_pvalue: 0.031, proportion_z_significant: 1,
     mmd_adjusted_pvalue: 0.022, mmd_significant: 1 },
+  { id: 6, timestamp: "2026-11-18T20:25:00", reference_size: 120, current_size: 40,
+    overall_drift_detected: 0, overall_quality_degradation: 0,
+    ks_adjusted_pvalue: 0.97, ks_significant: 0,
+    proportion_z_adjusted_pvalue: 0.96, proportion_z_significant: 0,
+    mmd_adjusted_pvalue: 0.88, mmd_significant: 0 },
+  { id: 5, timestamp: "2026-11-18T14:40:00", reference_size: 120, current_size: 40,
+    overall_drift_detected: 0, overall_quality_degradation: 0,
+    ks_adjusted_pvalue: 0.95, ks_significant: 0,
+    proportion_z_adjusted_pvalue: 0.93, proportion_z_significant: 0,
+    mmd_adjusted_pvalue: 0.81, mmd_significant: 0 },
 ];
+
+/* Only two completed cycles: enough for the activity table, not enough for
+   a trend. */
+const twoCycles = historyRows.filter((r) => r.id === 1 || r.id === 2);
 
 const storedAlert = {
   id: 9, timestamp: "2026-11-17T08:05:00", alert_type: "drift",
@@ -310,14 +324,10 @@ const settle = () => new Promise((r) => setImmediate(r));
 
   console.log("scenario 1: healthy endpoints, full data");
 
-  /* Liveness and provider availability are separate pills. */
-  check("API pill shows online from the liveness endpoint",
-    getById("health-pill").innerHTML.includes("API online"),
+  check("header shows one compact API status",
+    getById("health-pill").innerHTML.includes("API online")
+      && getById("health-pill").className.includes("status-ok"),
     getById("health-pill").innerHTML);
-
-  check("provider pill shows availability from /config, not liveness",
-    getById("provider-pill").innerHTML.includes("provider available"),
-    getById("provider-pill").innerHTML);
 
   check("readiness (/health) is never fetched",
     !requestedUrls.some((u) => u === "/health" || u.includes("/health?")
@@ -329,23 +339,18 @@ const settle = () => new Promise((r) => setImmediate(r));
     getById("kpi-drift").textContent);
 
   check("flagged count reads the canonical API field",
-    getById("kpi-flagged").textContent.trim() === "1 / 3",
-    getById("kpi-flagged").textContent);
+    getById("verdict-sub").textContent === "1 of 3 tests flagged",
+    getById("verdict-sub").textContent);
 
-  check("responses evaluated metric from /stats",
-    getById("kpi-runs").textContent === "320",
-    getById("kpi-runs").textContent);
-
-  check("last check metric shows the latest cycle timestamp",
-    getById("kpi-lastcheck").textContent !== "n/a"
-      && getById("kpi-lastcheck").textContent !== "",
-    getById("kpi-lastcheck").textContent);
-
-  check("verdict meta names both window sizes and the check time",
-    getById("verdict-meta").textContent.includes("Reference: 120 responses")
-      && getById("verdict-meta").textContent.includes("Current: 40 responses")
-      && getById("verdict-meta").textContent.includes("Last checked:"),
+  check("verdict meta is the check time only",
+    getById("verdict-meta").textContent.startsWith("Last checked ")
+      && !getById("verdict-meta").textContent.includes("Reference:"),
     getById("verdict-meta").textContent);
+
+  check("reference and current counts live in their own cells",
+    getById("count-ref").textContent === "120"
+      && getById("count-cur").textContent === "40",
+    `${getById("count-ref").textContent} / ${getById("count-cur").textContent}`);
 
   check("quality guardrail reported separately and not conflated with shift",
     getById("quality-strip").hidden === false
@@ -353,16 +358,19 @@ const settle = () => new Promise((r) => setImmediate(r));
     getById("quality-strip").innerHTML.slice(0, 80));
 
   const detHtml = getById("detector-rows").innerHTML;
-  check("detector table renders all three rows with methods",
+  check("detector table renders all three rows with methods as secondary text",
     detHtml.includes("Response length") && detHtml.includes("KS")
       && detHtml.includes("Response availability") && detHtml.includes("Fisher / z")
-      && detHtml.includes("Semantic shift") && detHtml.includes("Paired MMD"),
+      && detHtml.includes("Semantic shift") && detHtml.includes("Paired MMD")
+      && detHtml.includes('class="detector-method"'),
     detHtml.slice(0, 200));
   check("flagged detector shows Flagged with its adjusted p",
     detHtml.includes("Flagged") && detHtml.includes("0.030"),
     detHtml.slice(0, 400));
   check("unflagged detectors show No flag",
     detHtml.includes("No flag"), detHtml.slice(0, 400));
+  check("detector decisions are plain text, not chips",
+    !detHtml.includes("chip"), detHtml.slice(0, 300));
 
   check("refusal rate change takes its sign from the delta, not the reference",
     getById("eff-refusal").textContent.startsWith("-5.0"),
@@ -399,14 +407,18 @@ const settle = () => new Promise((r) => setImmediate(r));
     getById("cfg-tokens").textContent.includes("960"),
     getById("cfg-tokens").textContent);
 
+  check("total probes from /stats stays available in configuration",
+    getById("kpi-runs").textContent === "320",
+    getById("kpi-runs").textContent);
+
   check("embedding model and baseline manifest survive as secondary metadata",
     getById("cfg-embedding").textContent.includes("all-MiniLM-L6-v2")
       && getById("cfg-manifest").textContent.includes("Baseline: gemini"),
     `${getById("cfg-embedding").textContent} / ${getById("cfg-manifest").textContent}`);
 
-  check("run configuration section is renamed and collapsed by default",
+  check("configuration is a collapsed disclosure",
     fs.readFileSync(path.join(__dirname, "index.html"), "utf8")
-      .includes("<summary>Run configuration</summary>"),
+      .includes('<summary>Configuration</summary>'),
     "");
 
   check("run note uses the configured cycle size and interval",
@@ -428,16 +440,21 @@ const settle = () => new Promise((r) => setImmediate(r));
      "cfg-panel", "cfg-ref", "cfg-cur", "cfg-alpha", "cfg-persist",
      "cfg-last-run", "cfg-latency", "cfg-tokens", "cfg-embedding",
      "cfg-manifest", "eff-length", "eff-centroid", "eff-refusal",
-     "detector-rows"]
+     "detector-rows", "activity-list", "alerts-list"]
       .every((id) => !getById(id).textContent.includes("—")
         && !getById(id).innerHTML.includes("—")),
     "");
 
-  check("header model label comes from /config",
-    getById("model-label").textContent.includes("gemini-3.1-flash-lite"),
+  check("header model label is an understated model name",
+    getById("model-label").textContent === "Gemini 3.1 Flash-Lite"
+      && getById("model-label").className === "brand-model",
     getById("model-label").textContent);
 
-  console.log("scenario 1b: activity first, stored detector history");
+  check("there is no second provider badge competing with the service status",
+    !fs.readFileSync(path.join(__dirname, "index.html"), "utf8").includes("provider-pill"),
+    "");
+
+  console.log("scenario 1b: activity table, stored detector history, alerts");
 
   routeOverrides = {
     "/drift/results?limit=12": () => resp(historyRows),
@@ -447,28 +464,41 @@ const settle = () => new Promise((r) => setImmediate(r));
   await settle();
 
   const actHtml = getById("activity-list").innerHTML;
-  check("activity shows exactly the latest three cycles",
-    (actHtml.match(/data-testid="activity-row"/g) || []).length === 3,
-    actHtml.slice(0, 120));
-  check("activity is newest first",
-    actHtml.indexOf("Cycle #4") < actHtml.indexOf("Cycle #3")
-      && actHtml.indexOf("Cycle #3") < actHtml.indexOf("Cycle #2")
-      && !actHtml.includes("Cycle #1"),
+  check("activity is a real table with the required columns",
+    actHtml.includes('class="activity-table"')
+      && actHtml.includes("<th>Cycle</th>")
+      && actHtml.includes("<th>Time</th>")
+      && actHtml.includes("<th class=\"num\">Responses</th>")
+      && actHtml.includes("<th>Distribution result</th>")
+      && actHtml.includes("<th>Quality signal</th>"),
     actHtml.slice(0, 260));
-  check("activity names completion, response count and shift outcome",
-    actHtml.includes("Completed") && actHtml.includes("40 responses")
-      && actHtml.includes("No shift") && actHtml.includes("Shift flagged"),
+  check("activity shows exactly the five most recent cycles",
+    (actHtml.match(/data-testid="activity-row"/g) || []).length === 5,
+    actHtml.slice(0, 120));
+  check("activity is newest first and drops the oldest cycle",
+    actHtml.indexOf("#6") < actHtml.indexOf("#5")
+      && actHtml.indexOf("#5") < actHtml.indexOf("#4")
+      && actHtml.indexOf("#4") < actHtml.indexOf("#3")
+      && actHtml.indexOf("#3") < actHtml.indexOf("#2")
+      && !actHtml.includes("#1"),
     actHtml.slice(0, 300));
-  check("an incomplete cycle is marked Insufficient data, not completed",
-    /Cycle #4[\s\S]*?Insufficient data/.test(actHtml),
+  check("activity names response count and shift outcome without badges",
+    actHtml.includes("No shift") && actHtml.includes("Shift flagged")
+      && actHtml.includes(">40<") && !actHtml.includes("chip"),
+    actHtml.slice(0, 300));
+  check("an incomplete cycle is marked Insufficient data",
+    /#4[\s\S]*?Insufficient data/.test(actHtml),
     actHtml.slice(0, 200));
-  check("availability change is its own activity chip",
-    /Cycle #3[\s\S]*?Availability changed/.test(actHtml),
+  check("availability change is its own quality signal column",
+    /#3[\s\S]*?Availability changed/.test(actHtml),
     actHtml.slice(0, 320));
   check("a stored alert decorates its cycle only",
-    /Cycle #3[\s\S]*?1 alert/.test(actHtml)
-      && !/Cycle #2[\s\S]*?1 alert/.test(actHtml),
+    /#3[\s\S]*?1 alert/.test(actHtml)
+      && !/#2[\s\S]*?1 alert/.test(actHtml),
     actHtml.slice(0, 400));
+  check("activity header counts the cycles shown",
+    getById("activity-count").textContent === "5 cycles",
+    getById("activity-count").textContent);
 
   const histHtml = getById("history-chart").innerHTML;
   check("detector history is browser-rendered svg",
@@ -484,21 +514,34 @@ const settle = () => new Promise((r) => setImmediate(r));
   check("history labels cycles in chronological order",
     histHtml.indexOf("#1<") < histHtml.indexOf("#2<")
       && histHtml.indexOf("#2<") < histHtml.indexOf("#3<")
-      && histHtml.indexOf("#3<") < histHtml.indexOf("#4<"),
+      && histHtml.indexOf("#3<") < histHtml.indexOf("#4<")
+      && histHtml.indexOf("#4<") < histHtml.indexOf("#5<")
+      && histHtml.indexOf("#5<") < histHtml.indexOf("#6<"),
     "");
   check("a missing adjusted p leaves a gap, not a zero point",
-    (histHtml.match(/<circle/g) || []).length === 11
+    (histHtml.match(/<circle/g) || []).length === 20
       && !histHtml.includes("Paired MMD adjusted p 0.000"),
     String((histHtml.match(/<circle/g) || []).length));
-  check("a flagged cycle is ringed in red",
-    histHtml.includes('stroke="#DC2626" stroke-width="1.6"'),
+  check("the latest cycle has a dashed guide and a halo point",
+    histHtml.includes('stroke-dasharray="2 3"')
+      && histHtml.includes('r="5.4"')
+      && histHtml.includes("latest cycle"),
     "");
-  check("history tooltips carry cycle, detector and adjusted p",
-    histHtml.includes("Cycle #3 ·") && histHtml.includes("adjusted p 0.022"),
+  check("a flagged cycle is ringed in red",
+    histHtml.includes('stroke="#DC2626" stroke-width="1.5"'),
+    "");
+  check("history tooltips carry detector, adjusted p and flag state",
+    histHtml.includes("adjusted p 0.022") && histHtml.includes("(flagged)"),
     "");
   check("history note labels the source as historical, not live",
     getById("history-note").textContent.includes("Historical monitoring data"),
     getById("history-note").textContent);
+
+  const alertsHtml = getById("alerts-list").innerHTML;
+  check("alerts panel renders the persisted alert",
+    alertsHtml.includes("Semantic shift persisted")
+      && getById("alert-count").textContent === "1 recent",
+    alertsHtml.slice(0, 160));
 
   routeOverrides = {
     "/drift/comparison": () => resp(samplesReady),
@@ -530,7 +573,7 @@ const settle = () => new Promise((r) => setImmediate(r));
     samplesHtml.includes("11 ch") && samplesHtml.includes("non-empty")
       && samplesHtml.includes("+1 ch"),
     samplesHtml.slice(0, 400));
-  check("redacted samples keep the withheld chip and never reveal text",
+  check("redacted samples keep the withheld marker and never reveal text",
     samplesHtml.includes("details withheld") && samplesHtml.includes("withheld")
       && !samplesHtml.includes("(withheld: safety boundary prompt)</code>"),
     samplesHtml.slice(0, 400));
@@ -586,6 +629,8 @@ const settle = () => new Promise((r) => setImmediate(r));
     powerHtml.includes("24%"), "");
   check("power chart is drawn as svg",
     getById("eval-power-chart").innerHTML.includes("<svg"), "");
+  check("trade-off chart is drawn as svg",
+    getById("eval-tradeoff-chart").innerHTML.includes("<svg"), "");
 
   const tradeoffHtml = getById("eval-tradeoff").innerHTML;
   check("persist2 marked shipped in the trade-off table",
@@ -642,23 +687,24 @@ const settle = () => new Promise((r) => setImmediate(r));
     getById("prov-cmp").innerHTML.slice(0, 120));
   routeOverrides = {};
 
-  console.log("scenario 3: liveness failure shows Offline; data still renders");
+  console.log("scenario 3: liveness failure is degraded, not offline");
 
-  /* The pill is the only thing /health/live drives: when it fails the
-     instance is Offline, and stored data panels are untouched. */
+  /* Successful data endpoints are the stronger evidence. A failed liveness
+     probe must not contradict the activity table on screen. */
   routeOverrides = { "/health/live": () => {
     throw new Error("connection refused");
   } };
   vmEval("state.live = null; loadLive();");
   await settle();
 
-  check("pill shows API offline when liveness fails",
-    getById("health-pill").innerHTML.includes("API offline"),
+  check("successful data keeps a failed liveness probe at degraded",
+    getById("health-pill").innerHTML.includes("API degraded")
+      && !getById("health-pill").innerHTML.includes("offline"),
     getById("health-pill").innerHTML);
 
-  check("provider availability survives an API liveness failure",
-    getById("provider-pill").innerHTML.includes("provider available"),
-    getById("provider-pill").innerHTML);
+  check("provider availability is unaffected by a liveness probe failure",
+    getById("model-label").textContent === "Gemini 3.1 Flash-Lite",
+    getById("model-label").textContent);
 
   await loadAll();
   await settle();
@@ -671,12 +717,58 @@ const settle = () => new Promise((r) => setImmediate(r));
     getById("detector-rows").innerHTML.includes("Flagged"),
     "");
 
+  /* Before any data endpoint answers, a failed liveness probe is unknown,
+     not offline. Offline needs both signals to fail. */
+  vmEval('state.dataOk = false; state.dataFailed = false; '
+    + 'state.live = { status: "unreachable" }; renderHealthPill();');
+  check("liveness failure before data answers is unknown",
+    getById("health-pill").innerHTML.includes("API unknown"),
+    getById("health-pill").innerHTML);
+
+  vmEval('state.dataFailed = true; renderHealthPill();');
+  check("offline only when data endpoints failed too",
+    getById("health-pill").innerHTML.includes("API offline"),
+    getById("health-pill").innerHTML);
+
+  vmEval('state.live = { status: "ok" }; state.dataOk = false; '
+    + 'state.dataFailed = true; renderHealthPill();');
+  check("liveness alone with failing data is degraded, not fully online",
+    getById("health-pill").innerHTML.includes("API degraded"),
+    getById("health-pill").innerHTML);
+
   routeOverrides = {};
+  vmEval("state.dataOk = true; state.dataFailed = false;");
+  await loadLive();
+  await settle();
+
+  console.log("scenario 3b: provider failure is visible without rewriting API state");
+
+  routeOverrides = { "/config": () => resp({
+    target_model: "gemini-3.1-flash-lite", adapter_type: "GeminiAdapter",
+    provider_available: false, provider_error: "quota exhausted",
+    embedding_model: "all-MiniLM-L6-v2", reference_window: 120, current_window: 40,
+    prompt_panel_version: "3.0.0", probes_per_cycle: 40, alpha: 0.05,
+    min_consecutive_cycles: 2,
+  }) };
+  await loadAll();
+  await settle();
+
+  check("provider failure appears as a suffix on the model label",
+    getById("model-label").textContent.includes("provider unavailable")
+      && getById("model-label").className.includes("provider-down"),
+    getById("model-label").textContent);
+  check("provider failure does not rewrite the API state",
+    getById("health-pill").innerHTML.includes("API online"),
+    getById("health-pill").innerHTML);
+
+  routeOverrides = {};
+  await loadAll();
+  await settle();
 
   console.log("scenario 4: split signals, redacted prompts, rate limits");
 
   /* availability fires, distribution does not: the headline must stay
-     "No shift detected" and the quality strip must name the real source. */
+     "No shift" and the quality strip must name the real source. */
   routeOverrides = { "/drift/latest": () => resp({
     ...latestFull,
     drift_detected: 0, distribution_shift_detected: 0,
@@ -688,7 +780,7 @@ const settle = () => new Promise((r) => setImmediate(r));
   await settle();
 
   check("availability flag cannot flip the distribution headline",
-    getById("kpi-drift").textContent === "No shift detected",
+    getById("kpi-drift").textContent === "No shift",
     getById("kpi-drift").textContent);
 
   check("availability change is reported as its own quality signal",
@@ -723,7 +815,7 @@ const settle = () => new Promise((r) => setImmediate(r));
   await settle();
 
   const cmpHtml = getById("comparison-wrap").innerHTML;
-  check("redacted row shows the public label and the withheld chip",
+  check("redacted row shows the public label and the withheld marker",
     cmpHtml.includes("Disallowed synthesis request, details withheld")
       && cmpHtml.includes("withheld"),
     cmpHtml.slice(0, 200));
@@ -780,14 +872,11 @@ const settle = () => new Promise((r) => setImmediate(r));
     getById("detector-rows").innerHTML.includes("Not evaluated")
       && !getById("detector-rows").innerHTML.includes("No flag"),
     getById("detector-rows").innerHTML.slice(0, 300));
-  check("missing effect size renders an em dash, not zero",
+  check("missing effect size renders n/a, not zero",
     getById("eff-refusal").textContent === "n/a"
       && getById("eff-length").textContent === "n/a",
     `${getById("eff-refusal").textContent} / ${getById("eff-length").textContent}`);
-  check("flagged metric degrades to an em dash without the field",
-    getById("kpi-flagged").textContent === "n/a",
-    getById("kpi-flagged").textContent);
-  check("paired section degrades to an em dash",
+  check("paired section degrades to n/a",
     getById("paired-stat").textContent === "n/a",
     getById("paired-stat").textContent);
   check("missing latency degrades to an explicit not recorded",
@@ -800,43 +889,96 @@ const settle = () => new Promise((r) => setImmediate(r));
   routeOverrides = {
     "/drift/latest": () => resp({ drift_detected: null,
       distribution_shift_detected: null, timestamp: null }),
+    "/drift/results?limit=12": () => resp([]),
+    "/alerts?limit=10": () => resp([]),
   };
   await loadAll();
   await settle();
 
   check("no history shows the explicit not-evaluated verdict",
-    getById("kpi-drift").textContent === "Not evaluated yet",
+    getById("kpi-drift").textContent === "Not evaluated",
     getById("kpi-drift").textContent);
   check("no history hides the quality strip",
     getById("quality-strip").hidden === true,
     "");
   check("no history shows a compact activity empty state",
-    getById("activity-list").innerHTML.includes("No completed cycles stored yet"),
+    getById("activity-list").innerHTML.includes("No completed cycles recorded yet"),
     getById("activity-list").innerHTML);
   check("no history shows a compact detector-history empty state",
-    getById("history-chart").innerHTML.includes("No completed evaluations yet")
+    getById("history-chart").innerHTML.includes("No completed cycles to chart yet")
       && !getById("history-chart").innerHTML.includes("<svg"),
     getById("history-chart").innerHTML.slice(0, 160));
+  check("no alerts is a compact line, not an empty list",
+    getById("alerts-list").innerHTML.includes("No alerts."),
+    getById("alerts-list").innerHTML);
+
+  console.log("scenario 6b: two cycles are not a trend");
+
+  routeOverrides = {
+    "/drift/results?limit=12": () => resp(twoCycles),
+  };
+  await loadAll();
+  await settle();
+
+  check("two cycles show a compact message instead of an empty chart",
+    getById("history-chart").innerHTML.includes("Only 2 recorded cycles")
+      && getById("history-chart").innerHTML.includes("meaningful trend")
+      && !getById("history-chart").innerHTML.includes("<svg"),
+    getById("history-chart").innerHTML.slice(0, 200));
+  check("the compact message does not invent points",
+    !getById("history-chart").innerHTML.includes("<circle"),
+    "");
+  check("activity still lists the two stored cycles",
+    (getById("activity-list").innerHTML.match(/data-testid="activity-row"/g) || []).length === 2,
+    "");
 
   routeOverrides = {};
 
-  console.log("scenario 7: information architecture of the shipped page");
+  console.log("scenario 7: composition and shipped page contracts");
 
-  /* The page itself (not the stub DOM) must put heavy evidence behind
-     collapsed details and keep the initial view compact. */
   const page = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
-  const sectionDetails = (page.match(/<details class="section-details"/g) || []).length;
-  check("heavy evidence sections are collapsed details blocks",
-    sectionDetails >= 4, `found ${sectionDetails}`);
+  const css = fs.readFileSync(path.join(__dirname, "app.css"), "utf8");
+
   check("recent activity is the first content section in the Monitor view",
-    page.indexOf('class="activity-block"') > page.indexOf('class="tabs"')
-      && page.indexOf('class="activity-block"') < page.indexOf('id="verdict-box"')
-      && page.indexOf('id="verdict-box"') < page.indexOf('data-testid="history-block"')
-      && page.indexOf('data-testid="history-block"') < page.indexOf('data-testid="detector-table"'),
+    page.indexOf('class="activity"') > page.indexOf('class="tabs"')
+      && page.indexOf('class="activity"') < page.indexOf('class="workspace"'),
     "");
-  check("the old bottom activity section is gone",
-    (page.match(/id="activity-list"/g) || []).length === 1
-      && !page.includes("alerts-list"),
+  check("Run check sits in the activity section header, aligned right",
+    page.indexOf('id="run-btn"') > page.indexOf('class="activity"')
+      && page.indexOf('id="run-btn"') < page.indexOf('id="activity-list"')
+      && page.indexOf('id="run-btn"') < page.indexOf('class="workspace"'),
+    "");
+  check("a real two-column workspace follows the activity table",
+    page.includes('class="workspace"')
+      && page.indexOf('class="col-main"') < page.indexOf('class="col-side"'),
+    "");
+  check("main column carries history, detectors and samples",
+    page.indexOf('data-testid="history-block"') < page.indexOf('data-testid="detector-table"')
+      && page.indexOf('data-testid="detector-table"') < page.indexOf('id="samples-section"')
+      && page.indexOf('id="samples-section"') < page.indexOf('class="col-side"'),
+    "");
+  check("side column carries verdict, counts, effects, alerts and configuration",
+    page.indexOf('id="kpi-drift"') > page.indexOf('class="col-side"')
+      && page.indexOf('id="count-ref"') > page.indexOf('id="kpi-drift"')
+      && page.indexOf('id="effect-row"') > page.indexOf('id="count-ref"')
+      && page.indexOf('id="alerts-list"') > page.indexOf('id="effect-row"')
+      && page.indexOf('id="config-section"') > page.indexOf('id="alerts-list"'),
+    "");
+  check("the CSS collapses the workspace to one column below 900px",
+    css.includes("@media (max-width: 900px)")
+      && /\.workspace\s*\{\s*grid-template-columns:\s*1fr;/.test(css),
+    "");
+  check("mobile rules reflow the activity table and sample grid",
+    css.includes(".activity-table thead { display: none; }")
+      && css.includes(".sample-head { display: none; }")
+      && css.includes(".s-prompt { grid-column: 1 / -1; }"),
+    "");
+  check("no decorative chip, badge or uppercase label system remains",
+    !css.includes("text-transform: uppercase")
+      && !page.includes("chip") && !css.includes(".chip"),
+    "");
+  check("the phrase No shift detected is not repeated across sections",
+    !page.includes("No shift detected") && !script.includes("No shift detected"),
     "");
   check("Monitor and Evaluation are separate views with Monitor default",
     page.includes('id="tab-btn-console"') && page.includes("Monitor")
@@ -844,10 +986,13 @@ const settle = () => new Promise((r) => setImmediate(r));
       && page.includes('id="tab-console"') && page.includes('id="tab-evaluation" hidden')
       && page.includes('class="tab tab-active" id="tab-btn-console"'),
     "");
-  check("response samples are collapsed by default and labelled with a count slot",
+  check("response samples and configuration are collapsed disclosures",
     page.includes('id="samples-section"') && !page.includes('id="samples-section" open')
       && page.includes("Response samples")
       && page.includes('id="sample-count"'),
+    "");
+  check("category analysis has no empty disclosure when unavailable",
+    page.includes('id="categories-section" hidden'),
     "");
   check("evaluation graphs are labelled as static benchmark data",
     page.includes("static benchmark data")
@@ -855,18 +1000,6 @@ const settle = () => new Promise((r) => setImmediate(r));
     "");
   check("no em dash anywhere in the page markup",
     !page.includes("—"), "");
-  check("mobile rules stack activity and rewrite the sample grid",
-    fs.readFileSync(path.join(__dirname, "app.css"), "utf8")
-      .includes(".act-row { grid-template-columns: 1fr;")
-      && fs.readFileSync(path.join(__dirname, "app.css"), "utf8")
-        .includes(".s-prompt { grid-column: 1 / -1; }")
-      && fs.readFileSync(path.join(__dirname, "app.css"), "utf8")
-        .includes(".sample-head { display: none; }"),
-    "");
-  check("initial view has verdict, metrics and detectors",
-    page.includes('id="verdict-box"') && page.includes('id="detector-rows"')
-      && page.includes('class="metric-row"'),
-    "");
   check("the old full-width API directory is gone from the footer",
     !page.includes("api-list") && !page.includes("GET /drift/latest"),
     "");
