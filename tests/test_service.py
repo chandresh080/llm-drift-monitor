@@ -983,6 +983,17 @@ class TestHealthDependencies:
                             {"at": 0.0, "ok": None, "status": None,
                              "error": None})
 
+    def test_readiness_responses_are_not_cacheable(self):
+        from fastapi.testclient import TestClient
+
+        from api import app as api_app
+
+        with TestClient(api_app, raise_server_exceptions=False) as client:
+            for url in ("/health/live", "/health?probe=false"):
+                response = client.get(url)
+                assert response.status_code == 200
+                assert response.headers["cache-control"] == "no-store"
+
     def test_database_and_provider_are_reported_independently(self, tmp_path, monkeypatch):
         from api import health
 
@@ -1034,7 +1045,9 @@ class TestHealthDependencies:
         assert d["db_ready"] is True
         assert d["provider_ready"] is False
         assert d["timeout"] is True
-        assert d["http_status"] == 200
+        # Request-level HTTP status is captured by the browser, never faked
+        # by the handler that is producing this payload.
+        assert "http_status" not in d
         assert d["error_type"] == "TimeoutError"
         assert "timed out" in d["error_detail"]
         assert d["duration_ms"] >= 0

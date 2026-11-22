@@ -419,6 +419,10 @@ async def request_context(request: Request, call_next):
     started = time.perf_counter()
     response = await call_next(request)
     response.headers["X-Request-ID"] = request_id
+    # Readiness must never be served from a browser cache: a stale provider
+    # verdict is worse than a slow check. Static assets already opt out too.
+    if request.url.path in ("/health", "/health/live"):
+        response.headers["Cache-Control"] = "no-store"
     logger.info(json.dumps({
         "event": "http_request",
         "request_id": request_id,
@@ -1261,13 +1265,15 @@ def health(probe: bool = True) -> Dict[str, Any]:
     blocks its first render on this; it treats the result as status context.
 
     The response always carries a diagnostics object so a failed dependency
-    is explainable from one request: HTTP status, whether a ping timed out,
-    sanitised error detail, and each readiness result. Errors are redacted
-    before they leave the process; no key or token is ever echoed.
+    is explainable from one request: whether a ping timed out, sanitised error
+    detail, and each readiness result. It deliberately has no `http_status`
+    field: a handler cannot know the HTTP status of its own response, and the
+    browser records transport/non-2xx failures on the client side instead.
+    Errors are redacted before they leave the process; no key or token is
+    ever echoed.
     """
     started = time.monotonic()
     diagnostics: Dict[str, Any] = {
-        "http_status": 200,
         "timeout": False,
         "error_type": None,
         "error_detail": None,

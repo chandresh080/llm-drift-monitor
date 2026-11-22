@@ -217,8 +217,9 @@ function providerState() {
   if (state.health) {
     const status = state.health.provider_status;
     if (status === "ok") return "available";
+    // Only these two are measured provider failures. `unchecked` and any
+    // future value are unknown, never a confirmed inability to run cycles.
     if (status === "unreachable" || status === "not_configured") return "unavailable";
-    // unchecked (and any future unknown value) is not a measured failure.
     return "unknown";
   }
   if (state.config && state.config.provider_available === false) return "unavailable";
@@ -226,19 +227,59 @@ function providerState() {
   return "checking";
 }
 
+/* One shared explanation backs both the provider pill tooltip and the model
+   label tooltip, so the header cannot say two different things. The reason is
+   built from fixed vocabulary plus sanitised values: a client timeout, the
+   numeric HTTP status, `unchecked`, or the literal unrecognised status. No
+   response body or credential-bearing text is repeated here. */
+function providerTooltip() {
+  const h = state.health;
+  const status = h && h.provider_status;
+  const err = state.healthError;
+
+  if (err) {
+    if (err.timeout) {
+      return "Provider readiness timed out before a response arrived; "
+        + "no provider status was returned.";
+    }
+    if (err.httpStatus) {
+      return `Provider readiness request returned HTTP ${err.httpStatus}; `
+        + "no provider status was available.";
+    }
+    const kind = String(err.kind || "network error")
+      .replace(/[^A-Za-z0-9 ._-]/g, "").slice(0, 48);
+    return `Provider readiness request failed (${kind}); no provider status was available.`;
+  }
+
+  if (status === "ok") return "The target provider answered its readiness ping.";
+  if (status === "unchecked") {
+    return "The readiness response reported provider_status 'unchecked'; "
+      + "the provider was not pinged.";
+  }
+  if (status === "unreachable" || status === "not_configured") {
+    return (h && h.provider_error)
+      || (state.config && state.config.provider_error)
+      || "The target provider cannot run new cycles.";
+  }
+  if (status) {
+    const shown = String(status).replace(/[^A-Za-z0-9._:-]/g, "").slice(0, 40);
+    return `The readiness response reported an unrecognised provider status: '${shown}'.`;
+  }
+  if (state.config && state.config.provider_available === false) {
+    return (state.config && state.config.provider_error)
+      || "The target provider cannot run new cycles.";
+  }
+  return "Waiting for the readiness check.";
+}
+
 function providerStates() {
   const name = providerName();
+  const detail = providerTooltip();
   return {
-    available: ["status-ok", `${name} Available`,
-      "The target provider answered its readiness ping."],
-    unavailable: ["status-bad", `${name} Unavailable`,
-      (state.health && state.health.provider_error)
-        || (state.config && state.config.provider_error)
-        || "The target provider cannot run new cycles."],
-    unknown: ["status-muted", `${name} Unknown`,
-      "Readiness did not check the provider, or the check did not answer."],
-    checking: ["status-muted", `${name} Checking`,
-      "Waiting for the readiness check."],
+    available: ["status-ok", `${name} Available`, detail],
+    unavailable: ["status-bad", `${name} Unavailable`, detail],
+    unknown: ["status-muted", `${name} Unknown`, detail],
+    checking: ["status-muted", `${name} Checking`, detail],
   };
 }
 
@@ -294,16 +335,11 @@ function renderModelLabel() {
     return;
   }
   /* Provider availability has its own header indicator; the model label
-     stays a label instead of repeating the same state twice. */
-  const health = state.health || {};
-  const unavailable = (c && c.provider_available === false)
-    || (health.provider_status && health.provider_status !== "ok");
+     stays a label. Its tooltip always reuses the exact readiness explanation
+     shown on the pill, so `unchecked` is never presented as a failure. */
   el.className = "brand-model";
   el.textContent = prettyModel(id);
-  el.title = unavailable
-    ? (health.provider_error || (c && c.provider_error)
-      || "The target provider cannot run new cycles.")
-    : "";
+  el.title = providerTooltip();
 }
 
 function initTabs() {
@@ -1182,17 +1218,19 @@ async function loadHealth() {
   const now = Date.now();
   if (state.health && now - state.healthCheckedAt < HEALTH_REFRESH_MS) return;
   try {
-    const payload = await fetchJson("/health");
+    // Readiness must be fresh: never let a browser heuristic reuse an old
+    // dependency snapshot. The API also sends Cache-Control: no-store.
+    const payload = await fetchJson("/health", { cache: "no-store" });
     state.health = payload;
     state.healthError = null;
     state.healthCheckedAt = now;
-    // Surface the API's own readiness detail without echoing secrets.
+    // Surface the API's dependency detail without echoing secrets. The
+    // request's own HTTP status lives on state.healthError, not here.
     const d = payload && payload.diagnostics;
     if (d && (d.timeout || d.error_detail)) {
       console.warn("readiness diagnostics", {
-        httpStatus: d.http_status, timeout: d.timeout,
-        dbReady: d.db_ready, providerReady: d.provider_ready,
-        detail: d.error_detail,
+        timeout: d.timeout, dbReady: d.db_ready,
+        providerReady: d.provider_ready, detail: d.error_detail,
       });
     }
   } catch (err) {
@@ -1225,7 +1263,7 @@ function loadAll() {
    resolves the two. */
 async function loadLive() {
   try {
-    state.live = await fetchJson("/health/live");
+    state.live = await fetchJson("/health/live", { cache: "no-store" });
   } catch (err) {
     state.live = { status: "unreachable" };
   }

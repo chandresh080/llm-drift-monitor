@@ -1018,6 +1018,78 @@ const settle = () => new Promise((r) => setImmediate(r));
       && !getById("provider-pill").innerHTML.includes("Gemini Unavailable"),
     getById("provider-pill").innerHTML);
 
+  console.log("scenario 3d: readiness request outcomes explain the provider pill");
+
+  const healthyHealth = () => resp({
+    status: "ok", db: "ok", database: "available", db_error: null,
+    provider: "gemini-3.1-flash-lite", provider_status: "ok",
+    provider_error: null,
+    diagnostics: { timeout: false, db_ready: true, provider_ready: true,
+      error_type: null, error_detail: null },
+  });
+  const uncheckedHealth = () => resp({
+    status: "degraded", db: "ok", database: "available", db_error: null,
+    provider: "gemini-3.1-flash-lite", provider_status: "unchecked",
+    provider_error: null,
+  });
+  const reloadHealth = () => vmEval(
+    "state.health = null; state.healthCheckedAt = 0; loadHealth();");
+
+  routeOverrides = { "/health": healthyHealth };
+  reloadHealth();
+  await settle();
+  check("200 with provider_status ok is Gemini Available",
+    getById("provider-pill").innerHTML.includes("Gemini Available")
+      && getById("provider-pill").className.includes("status-ok")
+      && getById("provider-pill").title.includes("answered its readiness ping")
+      && getById("model-label").title === getById("provider-pill").title,
+    `${getById("provider-pill").innerHTML} / ${getById("provider-pill").title}`);
+
+  routeOverrides = { "/health": uncheckedHealth };
+  reloadHealth();
+  await settle();
+  check("unchecked is Gemini Unknown with the reason in both tooltips",
+    getById("provider-pill").innerHTML.includes("Gemini Unknown")
+      && !getById("provider-pill").innerHTML.includes("Gemini Unavailable")
+      && getById("provider-pill").title.includes("provider_status 'unchecked'")
+      && getById("model-label").title === getById("provider-pill").title,
+    getById("provider-pill").title);
+
+  routeOverrides = { "/health": () => resp(
+    { detail: "Service Unavailable" }, { ok: false, status: 503 }) };
+  reloadHealth();
+  await settle();
+  check("HTTP 503 is Gemini Unknown and shows the actual status",
+    getById("provider-pill").innerHTML.includes("Gemini Unknown")
+      && getById("provider-pill").title.includes("HTTP 503")
+      && getById("model-label").title === getById("provider-pill").title,
+    getById("provider-pill").title);
+  check("readiness HTTP failure does not rewrite database availability",
+    getById("db-pill").innerHTML.includes("Database Available"),
+    getById("db-pill").innerHTML);
+
+  routeOverrides = { "/health": () => {
+    const err = new Error("deadline exceeded");
+    err.name = "AbortError";
+    throw err;
+  } };
+  reloadHealth();
+  await settle();
+  check("timed-out readiness is Gemini Unknown and shows the timeout",
+    getById("provider-pill").innerHTML.includes("Gemini Unknown")
+      && getById("provider-pill").title.includes("timed out")
+      && getById("model-label").title === getById("provider-pill").title,
+    getById("provider-pill").title);
+
+  routeOverrides = { "/health": healthyHealth };
+  reloadHealth();
+  await settle();
+  vmEval("globalThis.__recoveredHealth = state.healthError;");
+  check("a subsequent healthy response recovers Gemini Available",
+    getById("provider-pill").innerHTML.includes("Gemini Available")
+      && globalThis.__recoveredHealth === null,
+    `${getById("provider-pill").innerHTML} / ${JSON.stringify(globalThis.__recoveredHealth)}`);
+
   /* PostgreSQL with a durable backend is the only persistent claim. */
   routeOverrides = { "/config": () => resp({
     target_model: "gemini-3.1-flash-lite", adapter_type: "GeminiAdapter",
