@@ -16,10 +16,14 @@
 
 const state = {
   live: null,         // /health/live payload (fast liveness)
+  liveError: null,    // last liveness failure, if any
+  health: null,       // /health payload (DB + provider readiness)
+  healthError: null,  // readiness request failed; dependencies unknown
+  healthCheckedAt: 0,
   config: null,       // /config payload
-  stats: null,        // {probe_runs, test_results, alerts}
+  stats: null,        // diagnostics: probe/cycle/test-result counts
   latest: null,       // /drift/latest payload
-  results: [],        // recent stored cycles
+  cycles: [],         // /cycles: one row per monitoring cycle
   alerts: [],         // recent persisted alerts
   comparison: null,   // /drift/comparison
   categories: null,   // /drift/categories
@@ -29,11 +33,13 @@ const state = {
   awake: false,       // at least one data endpoint has answered
   dataOk: false,      // at least one data endpoint returned a payload
   dataFailed: false,  // at least one data endpoint failed
+  lastLoad: null,     // {ok, failed, at} for the latest full refresh
   wakeStartedAt: null,
 };
 
 const WAKE_WAIT_MS = 5000;
 const REQUEST_TIMEOUT_MS = 15000;
+const HEALTH_REFRESH_MS = 300000;
 const NUM_TESTS = 3;      // detector family: KS, availability, MMD
 
 const $ = (id) => document.getElementById(id);
@@ -102,37 +108,116 @@ async function fetchJson(url, opts = {}) {
 
 /* ---------- service status ---------- */
 
-/* API reachability has more than two states. A failed liveness probe on a
-   page that is already receiving data is a degraded probe, not an offline
-   service, and a liveness failure before any data has answered is unknown
-   rather than offline. Provider availability is a separate fact and lives
-   on the model label, so a temporary provider problem never rewrites the
-   API state. */
+/* Three independent facts, three separate indicators:
+   - API reachability: liveness plus the stronger evidence of data endpoints.
+     A timed-out liveness probe while data still answers is not degradation.
+   - Database availability: /health's db field.
+   - Provider availability: /health's provider_status (Gemini).
+   A transient liveness failure before any data answers stays unknown until
+   there is enough evidence to classify the service. */
 function apiState() {
   const liveOk = state.live != null && state.live.status === "ok";
-  if (liveOk) return state.dataFailed && !state.dataOk ? "degraded" : "online";
-  if (state.dataOk) return state.live == null ? "online" : "degraded";
-  if (state.live != null) return state.dataFailed ? "offline" : "unknown";
+  const liveKnown = state.live != null;
+  if (liveOk) {
+    return state.dataFailed && !state.dataOk ? "degraded" : "online";
+  }
+  if (state.dataOk) return "online";
+  if (liveKnown && state.dataFailed) return "offline";
+  if (liveKnown) return "unknown";
+  if (state.dataFailed) return "unknown";
   return "checking";
 }
 
 const API_STATES = {
-  online: ["status-ok", "API online", "The API answered its liveness check."],
-  degraded: ["status-warn", "API degraded",
-    "Data endpoints are answering, but /health/live did not."],
-  offline: ["status-bad", "API offline", "The API is not answering."],
-  unknown: ["status-warn", "API unknown",
+  online: ["status-ok", "API Online", "The API is answering."],
+  degraded: ["status-warn", "API Degraded",
+    "The API process answered, but its data endpoints did not."],
+  offline: ["status-bad", "API Offline", "The API is not answering."],
+  unknown: ["status-muted", "API Unknown",
     "The liveness check failed before any data endpoint answered."],
-  checking: ["", "API checking", "Waiting for the first response."],
+  checking: ["status-muted", "API Checking", "Waiting for the first response."],
 };
 
-function renderHealthPill() {
-  const pill = $("health-pill");
+function dbState() {
+  if (state.healthError) return "unknown";
+  if (!state.health) return "checking";
+  return (state.health.database === "available" || state.health.db === "ok")
+    ? "available" : "unavailable";
+}
+
+const DB_STATES = {
+  available: ["status-ok", "Database Available",
+    "The storage backend answered a query."],
+  unavailable: ["status-bad", "Database Unavailable",
+    "The storage backend did not answer."],
+  unknown: ["status-muted", "Database Unknown",
+    "Readiness did not answer, so database state is unknown."],
+  checking: ["status-muted", "Database Checking",
+    "Waiting for the readiness check."],
+};
+
+function providerName() {
+  const model = modelId();
+  if (model && /gemini/i.test(model)) return "Gemini";
+  if (state.config && state.config.adapter_type) {
+    return String(state.config.adapter_type).replace(/Adapter$/, "") || "Provider";
+  }
+  return "Gemini";
+}
+
+/* The model is normally on /config. A deployment without provider
+   credentials cannot build the adapter, so /config has no target_model;
+   readiness still names the configured model, and the header keeps it. */
+function modelId() {
+  const c = state.config;
+  if (c && c.target_model) return c.target_model;
+  if (state.health && state.health.provider) return state.health.provider;
+  return "";
+}
+
+function providerState() {
+  if (state.health) {
+    return state.health.provider_status === "ok" ? "available" : "unavailable";
+  }
+  if (state.config && state.config.provider_available === false) return "unavailable";
+  if (state.healthError) return "unknown";
+  return "checking";
+}
+
+function providerStates() {
+  const name = providerName();
+  return {
+    available: ["status-ok", `${name} Available`,
+      "The target provider answered its readiness ping."],
+    unavailable: ["status-bad", `${name} Unavailable`,
+      (state.health && state.health.provider_error)
+        || (state.config && state.config.provider_error)
+        || "The target provider cannot run new cycles."],
+    unknown: ["status-muted", `${name} Unknown`,
+      "Readiness did not answer, so provider state is unknown."],
+    checking: ["status-muted", `${name} Checking`,
+      "Waiting for the readiness check."],
+  };
+}
+
+function renderPill(id, found) {
+  const pill = $(id);
   if (!pill) return;
-  const found = API_STATES[apiState()] || API_STATES.checking;
   pill.className = `status ${found[0]}`.trim();
   pill.innerHTML = `<span class="dot"></span>${escapeHtml(found[1])}`;
   pill.title = found[2];
+}
+
+function renderStatusGroup() {
+  renderPill("health-pill", API_STATES[apiState()] || API_STATES.checking);
+  renderPill("db-pill", DB_STATES[dbState()] || DB_STATES.checking);
+  const states = providerStates();
+  renderPill("provider-pill", states[providerState()] || states.checking);
+}
+
+/* Kept as the single render entry point used by data loaders. */
+function renderHealthPill() {
+  renderStatusGroup();
 }
 
 /* ---------- model label in the header ---------- */
@@ -147,21 +232,25 @@ function prettyModel(id) {
 function renderModelLabel() {
   const c = state.config;
   const el = $("model-label");
-  if (!c || !c.target_model) {
+  if (!el) return;
+  const id = modelId();
+  if (!id) {
     el.textContent = "";
     el.className = "brand-model";
     el.removeAttribute("title");
     return;
   }
-  if (c.provider_available === false) {
-    el.className = "brand-model provider-down";
-    el.textContent = `${prettyModel(c.target_model)} · provider unavailable`;
-    el.title = c.provider_error || "The target provider cannot run new cycles.";
-  } else {
-    el.className = "brand-model";
-    el.textContent = prettyModel(c.target_model);
-    el.removeAttribute("title");
-  }
+  /* Provider availability has its own header indicator; the model label
+     stays a label instead of repeating the same state twice. */
+  const health = state.health || {};
+  const unavailable = (c && c.provider_available === false)
+    || (health.provider_status && health.provider_status !== "ok");
+  el.className = "brand-model";
+  el.textContent = prettyModel(id);
+  el.title = unavailable
+    ? (health.provider_error || (c && c.provider_error)
+      || "The target provider cannot run new cycles.")
+    : "";
 }
 
 function initTabs() {
@@ -170,7 +259,13 @@ function initTabs() {
     $("tab-evaluation").hidden = view !== "evaluation";
     $("tab-btn-console").classList.toggle("tab-active", view === "console");
     $("tab-btn-evaluation").classList.toggle("tab-active", view === "evaluation");
-    if (view === "evaluation" && !state.evaluation) loadEvaluation();
+    if (view === "evaluation") {
+      if (state.evaluation) {
+        try { renderEvaluation(); } catch (err) { /* blocks render independently */ }
+      } else {
+        loadEvaluation();
+      }
+    }
   };
   $("tab-btn-console").addEventListener("click", () => show("console"));
   $("tab-btn-evaluation").addEventListener("click", () => show("evaluation"));
@@ -389,7 +484,7 @@ function renderConfig() {
     renderModelLabel();
     return;
   }
-  $("cfg-model").textContent = c.target_model;
+  $("cfg-model").textContent = modelId() || "unavailable";
   $("cfg-panel").textContent =
     `v${c.prompt_panel_version} · ${c.probes_per_cycle} prompts per cycle`;
   const cyclesForWindow = c.probes_per_cycle
@@ -441,11 +536,35 @@ function sampleLength(data) {
   return data.length != null ? Number(data.length) : String(data.text).length;
 }
 
+/* Inline 16px status icon: green check for a non-empty response, red cross
+   for an empty/failed one, neutral dash when validity was never recorded.
+   The icon carries its own accessible label and tooltip, so the meaning does
+   not depend on colour alone. */
+function validityIcon(kind) {
+  const icons = {
+    ok: '<circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.4"/>'
+      + '<path d="M5.1 8.2 L7 10.1 L10.9 6.1" fill="none" stroke="currentColor" '
+      + 'stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>',
+    bad: '<circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.4"/>'
+      + '<path d="M5.7 5.7 L10.3 10.3 M10.3 5.7 L5.7 10.3" fill="none" '
+      + 'stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>',
+    neutral: '<circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.4"/>'
+      + '<path d="M5.5 8 L10.5 8" fill="none" stroke="currentColor" '
+      + 'stroke-width="1.5" stroke-linecap="round"/>',
+  };
+  const labels = {
+    ok: "Non-empty response",
+    bad: "Empty response",
+    neutral: "Validity not recorded",
+  };
+  return `<span class="s-icon s-${kind}" role="img" aria-label="${labels[kind]}" `
+    + `title="${labels[kind]}"><svg viewBox="0 0 16 16" width="16" height="16" `
+    + `aria-hidden="true" focusable="false">${icons[kind]}</svg></span>`;
+}
+
 function sampleValidity(data) {
-  if (!data || data.is_valid == null) return "";
-  return data.is_valid
-    ? '<span class="s-state s-ok">non-empty</span>'
-    : '<span class="s-state s-bad">empty</span>';
+  if (!data || data.is_valid == null) return validityIcon("neutral");
+  return validityIcon(Number(data.is_valid) === 1 ? "ok" : "bad");
 }
 
 /* Stored text can be null (not captured) or the empty string (the provider
@@ -459,12 +578,10 @@ function sampleCells(r) {
   const refLen = sampleLength(r.reference);
   const curLen = sampleLength(r.current);
   return {
-    ref: refLen == null
-      ? '<span class="s-missing">n/a</span>'
-      : `${refLen} ch ${sampleValidity(r.reference)}`,
-    current: curLen == null
-      ? '<span class="s-missing">n/a</span>'
-      : `${curLen} ch ${sampleValidity(r.current)}`,
+    ref: `${refLen == null
+      ? '<span class="s-missing">n/a</span>' : `${refLen} ch`} ${sampleValidity(r.reference)}`,
+    current: `${curLen == null
+      ? '<span class="s-missing">n/a</span>' : `${curLen} ch`} ${sampleValidity(r.current)}`,
     changed: !sameResponse(r.reference, r.current),
     delta: (refLen != null && curLen != null) ? curLen - refLen : null,
   };
@@ -531,11 +648,17 @@ function renderComparison() {
         <div class="sample-cols">
           <div class="sample-col">
             <h4>Reference</h4>
-            <code class="resp-text">${escapeHtml(respText(r.reference))}</code>
+            <div class="resp-line">
+              <code class="resp-text">${escapeHtml(respText(r.reference))}</code>
+              <span class="resp-icon">${sampleValidity(r.reference)}</span>
+            </div>
           </div>
           <div class="sample-col">
             <h4>Current</h4>
-            <code class="resp-text">${escapeHtml(respText(r.current))}</code>
+            <div class="resp-line">
+              <code class="resp-text">${escapeHtml(respText(r.current))}</code>
+              <span class="resp-icon">${sampleValidity(r.current)}</span>
+            </div>
           </div>
         </div>`;
     return `
@@ -628,23 +751,41 @@ function renderCategories() {
 
 /* ---------- recent activity ---------- */
 
-/* The latest completed cycles answer "what happened recently" before any
-   other panel. Distribution shift, availability and guardrail stay
-   separate columns; an alert count appears only when it was persisted for
-   that cycle. */
-function cycleState(r) {
-  const dist = r.overall_drift_detected != null
-    ? Number(r.overall_drift_detected)
-    : (Number(r.ks_significant) === 1 || Number(r.mmd_significant) === 1 ? 1 : 0);
+/* One row per real monitoring cycle, grouped from probe records by cycle id
+   in the API. The old feed listed detector results, so a cycle that stored
+   probes but was never evaluated simply vanished. Here a cycle without a
+   result is still visible and says it is awaiting evaluation; a cycle with
+   failed probes is not silently presented as a successful one. */
+function cycleSignals(result) {
+  if (!result) return { dist: null, availability: false, guardrail: false };
   return {
-    dist,
-    availability: Number(r.proportion_z_significant) === 1,
-    guardrail: Number(r.overall_quality_degradation) === 1,
-    insufficient: !r.reference_size || !r.current_size,
+    dist: result.overall_drift_detected != null
+      ? Number(result.overall_drift_detected)
+      : (Number(result.ks_significant) === 1
+        || Number(result.mmd_significant) === 1 ? 1 : 0),
+    availability: Number(result.proportion_z_significant) === 1,
+    guardrail: Number(result.overall_quality_degradation) === 1,
   };
 }
 
-function alertsForCycle(timestamp) {
+function cycleStatus(c) {
+  switch (c.status) {
+    case "evaluated": return ["Evaluated", "act-status is-ok"];
+    case "awaiting_evaluation": return ["Awaiting evaluation", "act-status is-wait"];
+    case "failed": return ["Failed", "act-status is-bad"];
+    case "interrupted": return ["Interrupted", "act-status is-warn"];
+    default: return [String(c.status || "Unknown"), "act-status"];
+  }
+}
+
+function alertsForCycle(cycle) {
+  if (!cycle) return [];
+  if (cycle.cycle_id) {
+    const exact = (state.alerts || []).filter(
+      (a) => a.cycle_id && a.cycle_id === cycle.cycle_id);
+    if (exact.length) return exact;
+  }
+  const timestamp = cycle.ended_at || cycle.started_at || cycle.timestamp;
   if (!timestamp) return [];
   const key = String(timestamp).slice(0, 19);
   return (state.alerts || []).filter((a) =>
@@ -654,51 +795,55 @@ function alertsForCycle(timestamp) {
 function renderActivity() {
   const el = $("activity-list");
   const count = $("activity-count");
-  if (state.failed.has("results")) {
+  if (!el) return;
+  if (state.failed.has("cycles")) {
     if (count) count.textContent = "";
     el.innerHTML = '<p class="empty-state">Recent cycles unavailable.</p>';
     return;
   }
-  const rows = [...(state.results || [])]
-    .sort((a, b) => String(b.timestamp || "").localeCompare(String(a.timestamp || "")))
-    .slice(0, 5);
+  const all = [...(state.cycles || [])]
+    .sort((a, b) => Number(b.cycle_number) - Number(a.cycle_number));
+  const rows = all.slice(0, 5);
   if (count) {
     count.textContent = rows.length
-      ? `${rows.length} ${rows.length === 1 ? "cycle" : "cycles"}` : "";
+      ? `${rows.length} of ${all.length} ${all.length === 1 ? "cycle" : "cycles"}`
+      : "";
   }
   if (!rows.length) {
-    el.innerHTML = '<p class="empty-state">No completed cycles recorded yet.</p>';
+    el.innerHTML = '<p class="empty-state">No monitoring cycles recorded yet.</p>';
     return;
   }
-  const body = rows.map((r) => {
-    const s = cycleState(r);
-    let result = "No shift";
-    let resultCls = "act-result";
-    if (s.insufficient) {
-      result = "Insufficient data";
-      resultCls += " is-muted";
-    } else if (s.dist === 1) {
-      result = "Shift flagged";
-      resultCls += " is-alert";
+  const body = rows.map((c) => {
+    const s = cycleSignals(c.result);
+    const [statusText, statusCls] = cycleStatus(c);
+    const alerts = alertsForCycle(c);
+    const probes = Number(c.probe_count || 0);
+    const failed = Number(c.failed_count || 0);
+    const probeCell = `${probes}`
+      + (failed ? `<span class="act-failed"> · ${failed} failed</span>` : "");
+    let outcome;
+    if (!c.result) {
+      outcome = '<span class="muted">Not evaluated</span>';
+    } else {
+      const quality = [];
+      if (s.availability) quality.push("Availability changed");
+      if (s.guardrail) quality.push("Guardrail tripped");
+      if (alerts.length) {
+        quality.push(`${alerts.length} alert${alerts.length > 1 ? "s" : ""}`);
+      }
+      outcome = `<span class="act-result${s.dist === 1 ? " is-alert" : ""}">`
+        + `${s.dist === 1 ? "Shift flagged" : "No shift"}</span>`
+        + (quality.length
+          ? `<span class="act-signal">${escapeHtml(quality.join(" · "))}</span>`
+          : "");
     }
-    const quality = [];
-    if (s.availability) quality.push("Availability changed");
-    if (s.guardrail) quality.push("Guardrail tripped");
-    const alerts = alertsForCycle(r.timestamp);
-    if (alerts.length) {
-      quality.push(`${alerts.length} alert${alerts.length > 1 ? "s" : ""}`);
-    }
-    const qualityCell = quality.length
-      ? `<span class="act-signal">${escapeHtml(quality.join(" · "))}</span>`
-      : '<span class="muted">n/a</span>';
     return `
-      <tr data-testid="activity-row">
-        <td class="act-cycle">#${escapeHtml(r.id)}</td>
-        <td class="act-time">${fmtTime(r.timestamp)}</td>
-        <td class="num act-probes">${
-          r.current_size != null ? Number(r.current_size) : "n/a"}</td>
-        <td class="${resultCls}">${result}</td>
-        <td class="act-quality">${qualityCell}</td>
+      <tr data-testid="activity-row" title="Cycle id ${escapeHtml(c.cycle_id || "unknown")}">
+        <td class="act-cycle">#${escapeHtml(c.cycle_number)}</td>
+        <td class="act-time">${fmtTime(c.ended_at || c.started_at || c.timestamp)}</td>
+        <td class="num act-probes">${probeCell}</td>
+        <td class="${statusCls}">${statusText}</td>
+        <td class="act-outcome">${outcome}</td>
       </tr>`;
   }).join("");
   el.innerHTML = `
@@ -707,9 +852,9 @@ function renderActivity() {
         <tr>
           <th>Cycle</th>
           <th>Time</th>
-          <th class="num">Responses</th>
-          <th>Distribution result</th>
-          <th>Quality signal</th>
+          <th class="num">Probes</th>
+          <th>Status</th>
+          <th>Detector outcome</th>
         </tr>
       </thead>
       <tbody>${body}</tbody>
@@ -743,11 +888,24 @@ function renderAlerts() {
 
 /* ---------- detector history ---------- */
 
-/* Actual stored cycles only, latest 12, chronological. Null adjusted
-   p-values break the line: a gap means "not measured", never p = 0. A
-   trend needs at least three cycles; one or two points are a message, not
-   a mostly empty chart. */
-const MIN_HISTORY = 3;
+/* Actual evaluated cycles only, latest 12, chronological. One cycle is a
+   point, two are a connected pair, three or more form a trend: the graph
+   never hides itself waiting for an arbitrary minimum. Null adjusted
+   p-values break the line, so a gap means "not measured", never p = 0. */
+const HISTORY_POINTS = 12;
+
+function historyRows() {
+  return (state.cycles || [])
+    .filter((c) => c && c.result)
+    .sort((a, b) => Number(a.cycle_number) - Number(b.cycle_number))
+    .slice(-HISTORY_POINTS)
+    .map((c) => ({
+      ...c.result,
+      cycle_number: c.cycle_number,
+      cycle_id: c.cycle_id,
+      cycle_time: c.ended_at || c.started_at || c.timestamp,
+    }));
+}
 
 function renderHistory() {
   const el = $("history-chart");
@@ -755,29 +913,48 @@ function renderHistory() {
   const note = $("history-note");
   const alpha = state.config && state.config.alpha != null
     ? Number(state.config.alpha) : 0.05;
-  if (state.failed.has("results")) {
+  if (state.failed.has("cycles")) {
     if (note) note.textContent = "";
     el.innerHTML = '<p class="empty-state">Detector history unavailable.</p>';
     return;
   }
-  const rows = (state.results || [])
-    .filter((r) => r && (r.ks_adjusted_pvalue != null
-      || r.proportion_z_adjusted_pvalue != null
-      || r.mmd_adjusted_pvalue != null))
-    .sort((a, b) => String(a.timestamp || "").localeCompare(String(b.timestamp || "")))
-    .slice(-12);
-  if (rows.length < MIN_HISTORY) {
-    if (note) note.textContent = "";
-    el.innerHTML = `<p class="chart-empty">${rows.length
-      ? `Only ${rows.length} recorded ${rows.length === 1 ? "cycle" : "cycles"}. `
-        + "More history is needed for a meaningful trend."
-      : "No completed cycles to chart yet."}</p>`;
+  const rows = historyRows();
+  if (!rows.length) {
+    if (note) note.textContent = "No evaluated cycles yet.";
+    el.innerHTML = '<p class="chart-empty chart-empty-compact">'
+      + 'No evaluated cycles yet. The first completed cycle appears here.'
+      + '</p>';
     return;
   }
   if (note) {
-    note.textContent = "Historical monitoring data from stored cycles.";
+    const label = rows.length === 1 ? "1 evaluated cycle"
+      : `${rows.length} evaluated cycles`;
+    note.textContent = `${label} · adjusted p-values from stored detector results.`;
   }
   el.innerHTML = svgHistory(rows, alpha);
+}
+
+/* Distinct marker shapes keep the three detectors apart even in greyscale:
+   KS circle, availability square, paired MMD triangle. */
+function historyMarker(shape, x, y, color, size, title, flagged) {
+  const stroke = flagged ? "#DC2626" : color;
+  const strokeWidth = flagged ? "1.6" : "0";
+  const common = `fill="${color}" stroke="${stroke}" stroke-width="${strokeWidth}"`;
+  let mark;
+  if (shape === "square") {
+    const d = size * 1.7;
+    mark = `<rect x="${(x - d / 2).toFixed(1)}" y="${(y - d / 2).toFixed(1)}" `
+      + `width="${d.toFixed(1)}" height="${d.toFixed(1)}" rx="0.8" ${common}>`;
+  } else if (shape === "triangle") {
+    const d = size * 1.9;
+    mark = `<polygon points="${x.toFixed(1)},${(y - d / 2).toFixed(1)} `
+      + `${(x - d / 2).toFixed(1)},${(y + d / 2).toFixed(1)} `
+      + `${(x + d / 2).toFixed(1)},${(y + d / 2).toFixed(1)}" ${common}>`;
+  } else {
+    mark = `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${size}" ${common}>`;
+  }
+  return mark + `<title>${escapeHtml(title)}</title>`
+    + (shape === "circle" ? "</circle>" : shape === "square" ? "</rect>" : "</polygon>");
 }
 
 function svgHistory(rows, alpha) {
@@ -786,14 +963,19 @@ function svgHistory(rows, alpha) {
   const ih = h - m.top - m.bottom;
   const n = rows.length;
   const last = n - 1;
-  const sx = (i) => m.left + (i / last) * iw;
+  /* A single cycle sits in the middle of the plot rather than on the left
+     edge, which would imply missing history to its left. */
+  const sx = (i) => n === 1
+    ? m.left + iw / 2
+    : m.left + (i / last) * iw;
   const sy = (v) => m.top + ih - Math.max(0, Math.min(1, v)) * ih;
   const series = [
-    { key: "ks_adjusted_pvalue", sig: "ks_significant", name: "KS", color: "#4F46E5" },
+    { key: "ks_adjusted_pvalue", sig: "ks_significant", name: "KS",
+      shape: "circle", color: "#4F46E5" },
     { key: "proportion_z_adjusted_pvalue", sig: "proportion_z_significant",
-      name: "Availability", color: "#0F766E" },
-    { key: "mmd_adjusted_pvalue", sig: "mmd_significant",
-      name: "Paired MMD", color: "#A1A1AA" },
+      name: "Availability", shape: "square", color: "#0F766E" },
+    { key: "mmd_adjusted_pvalue", sig: "mmd_significant", name: "Paired MMD",
+      shape: "triangle", color: "#A1A1AA" },
   ];
   const parts = [];
 
@@ -807,16 +989,18 @@ function svgHistory(rows, alpha) {
   parts.push(`<text x="${w - m.right}" y="${ty - 5}" font-size="10" fill="#DC2626" text-anchor="end">alpha ${alpha}</text>`);
 
   /* The latest cycle is a distinct column, not another anonymous point. */
-  parts.push(`<line x1="${sx(last).toFixed(1)}" y1="${m.top}" x2="${sx(last).toFixed(1)}" y2="${h - m.bottom}" stroke="#E4E4E7" stroke-dasharray="2 3"/>`);
+  if (n > 1) {
+    parts.push(`<line x1="${sx(last).toFixed(1)}" y1="${m.top}" x2="${sx(last).toFixed(1)}" y2="${h - m.bottom}" stroke="#E4E4E7" stroke-dasharray="2 3"/>`);
+  }
 
   const stride = Math.max(1, Math.ceil(n / 6));
   rows.forEach((r, i) => {
-    if (i % stride !== 0 && i !== last) return;
+    if (n > 1 && i % stride !== 0 && i !== last) return;
     const x = sx(i);
     parts.push(`<line x1="${x}" y1="${h - m.bottom}" x2="${x}" y2="${h - m.bottom + 4}" stroke="#D4D4D8"/>`);
-    parts.push(`<text x="${x}" y="${h - m.bottom + 15}" font-size="10" fill="#71717A" text-anchor="middle">#${escapeHtml(r.id)}</text>`);
+    parts.push(`<text x="${x}" y="${h - m.bottom + 15}" font-size="10" fill="#71717A" text-anchor="middle">#${escapeHtml(r.cycle_number)}</text>`);
   });
-  parts.push(`<text x="${m.left + iw / 2}" y="${h - 4}" font-size="10" fill="#71717A" text-anchor="middle">completed cycle</text>`);
+  parts.push(`<text x="${m.left + iw / 2}" y="${h - 4}" font-size="10" fill="#71717A" text-anchor="middle">evaluated cycle</text>`);
 
   for (const s of series) {
     let path = "";
@@ -827,37 +1011,37 @@ function svgHistory(rows, alpha) {
       path += `${open ? "L" : "M"}${sx(i).toFixed(1)} ${sy(Number(v)).toFixed(1)} `;
       open = true;
     });
-    if (path) {
+    if (path && n > 1) {
       parts.push(`<path d="${path.trim()}" fill="none" stroke="${s.color}" stroke-width="1.6"/>`);
     }
     rows.forEach((r, i) => {
       const v = r[s.key];
       if (v == null) return;
       const flagged = Number(r[s.sig]) === 1;
-      if (i === last) {
+      const title = `Cycle #${r.cycle_number} · ${fmtTime(r.cycle_time)} · `
+        + `${s.name} adjusted p ${fmtP(Number(v))}${flagged ? " (flagged)" : ""}`;
+      if (i === last && n > 1 && s.shape === "circle") {
         parts.push(`<circle cx="${sx(i).toFixed(1)}" cy="${sy(Number(v)).toFixed(1)}" `
           + `r="5.4" fill="none" stroke="${s.color}" stroke-width="1" opacity="0.4"/>`);
       }
-      parts.push(
-        `<circle cx="${sx(i).toFixed(1)}" cy="${sy(Number(v)).toFixed(1)}" `
-        + `r="${flagged ? 4 : i === last ? 3.6 : 2.4}" fill="${s.color}" `
-        + `stroke="${flagged ? "#DC2626" : "none"}" stroke-width="${flagged ? "1.5" : "0"}">`
-        + `<title>${fmtTime(r.timestamp)} · ${s.name} adjusted p ${fmtP(Number(v))}`
-        + `${flagged ? " (flagged)" : ""}</title>`
-        + `</circle>`);
+      const size = i === last ? 3.6 : 2.8;
+      parts.push(historyMarker(s.shape, sx(i), sy(Number(v)), s.color,
+        size, title, flagged));
     });
   }
 
   const legend = `<div class="chart-legend">`
     + series.map((s) => `<span class="legend-item">`
-      + `<span class="legend-swatch" style="background:${s.color}"></span>`
+      + `<span class="legend-marker mk-${s.shape}" style="color:${s.color}"></span>`
       + `${s.name}</span>`).join("")
-    + `<span class="legend-item"><span class="legend-latest"></span>latest cycle</span>`
+    + (n > 1
+      ? `<span class="legend-item"><span class="legend-latest"></span>latest cycle</span>`
+      : "")
     + `<span class="legend-item"><span class="legend-dash"></span>${alpha} threshold</span>`
     + `</div>`;
 
   return `<svg viewBox="0 0 ${w} ${h}" class="chart" role="img"
-    aria-label="Adjusted p-values per completed cycle">${parts.join("")}</svg>${legend}`;
+    aria-label="Adjusted p-values per evaluated cycle">${parts.join("")}</svg>${legend}`;
 }
 
 /* ---------- data loading ---------- */
@@ -887,7 +1071,7 @@ const DATA_LOADERS = [
       renderPairedDiagnostic();
     },
   },
-  { key: "results", url: "/drift/results?limit=12",
+  { key: "cycles", url: "/cycles?limit=24",
     render: () => { renderActivity(); renderHistory(); } },
   /* Alerts decorate activity rows and fill the alerts panel. */
   { key: "alerts", url: "/alerts?limit=10",
@@ -902,10 +1086,10 @@ async function loadOne(def) {
     state.failed.delete(def.key);
     state.dataOk = true;
   } catch (err) {
-    state[def.key] = null;
+    state[def.key] = (def.key === "cycles" || def.key === "alerts") ? [] : null;
     state.failed.add(def.key);
-    state.dataFailed = true;
   }
+  state.dataFailed = state.failed.size > 0;
   try {
     def.render();
   } catch (err) { /* a renderer must never take the page down */ }
@@ -914,6 +1098,29 @@ async function loadOne(def) {
   }
   /* Data evidence changes the service state even when /health/live failed. */
   renderHealthPill();
+}
+
+/* Readiness is separate from liveness and never blocks the first render.
+   The provider ping costs quota, so a fresh answer is reused briefly. A
+   failed readiness call leaves the dependency states unknown instead of
+   claiming they are down. */
+async function loadHealth() {
+  const now = Date.now();
+  if (state.health && now - state.healthCheckedAt < HEALTH_REFRESH_MS) return;
+  try {
+    state.health = await fetchJson("/health");
+    state.healthError = null;
+    state.healthCheckedAt = now;
+  } catch (err) {
+    state.health = null;
+    state.healthError = err;
+    state.healthCheckedAt = now;
+  }
+  renderStatusGroup();
+  renderModelLabel();
+  /* A deployment without provider credentials has no target_model on
+     /config; readiness supplies the model name, so refresh the label. */
+  if (state.config && !state.config.target_model) renderConfig();
 }
 
 function loadAll() {
@@ -1091,104 +1298,157 @@ function renderProviderComparison() {
 function powerLookup(rows) {
   const map = new Map();
   for (const r of rows) {
-    map.set(Number(Number(r.delta).toFixed(1)), Number(r.power));
+    const delta = Number(r && r.delta);
+    const power = Number(r && r.power);
+    if (!Number.isFinite(delta) || !Number.isFinite(power)) continue;
+    map.set(Number(delta.toFixed(1)), power);
   }
   return map;
 }
 
-function renderEvaluation() {
-  const ev = state.evaluation;
-  const h = ev.headline || {};
-  const sigma = h.evaluated_shift_sigma;
-  $("ev-delay").textContent =
-    h.mean_detection_delay_days == null ? "n/a" : `${Number(h.mean_detection_delay_days).toFixed(2)} d`;
-  $("ev-fa").textContent =
-    h.false_alarms_per_100_days == null ? "n/a" : Number(h.false_alarms_per_100_days).toFixed(2);
-  $("ev-detect").textContent =
-    h.detection_rate_pct == null ? "n/a" : `${Number(h.detection_rate_pct).toFixed(0)}%`;
-  $("ev-overhead").textContent =
-    h.overhead_p95_seconds == null ? "n/a" : `${Math.round(h.overhead_p95_seconds * 1000)} ms`;
-
-  const table = (headers, rows) => `
+function plainTable(headers, rows) {
+  return `
     <table class="plain-table"><thead><tr>
       ${headers.map((x) => `<th>${x}</th>`).join("")}
     </tr></thead><tbody>
       ${rows.map((r) => `<tr>${r.map((x) => `<td>${x}</td>`).join("")}</tr>`).join("")}
     </tbody></table>`;
+}
 
-  const tradeoffPts = ev.tradeoff
-    .filter((r) => r.mean_detection_delay_days != null
-      && r.false_alarms_per_100_days != null)
-    .map((r) => ({
-      x: Number(r.mean_detection_delay_days),
-      y: Number(r.false_alarms_per_100_days),
-      label: r.rule,
-      shipped: r.rule === h.default_rule,
-    }));
-  $("eval-tradeoff-chart").innerHTML = svgScatter(tradeoffPts, {
-    xLabel: "Mean detection delay (days)",
-    yLabel: "False alarms per 100 quiet days",
+/* Every evaluation block renders independently. A malformed or missing
+   array in one block must not erase the metrics or the other charts: the
+   failing block states that it is unavailable and the rest still draw. */
+function evalSafe(id, label, fn) {
+  try {
+    fn();
+  } catch (err) {
+    const el = $(id);
+    if (el) {
+      el.innerHTML = `<p class="empty-state">${escapeHtml(label)} unavailable.</p>`;
+    }
+  }
+}
+
+function renderTradeoff(ev, h) {
+  const rows = Array.isArray(ev.tradeoff) ? ev.tradeoff : [];
+  evalSafe("eval-tradeoff-chart", "Trade-off chart", () => {
+    const points = rows
+      .map((r) => ({
+        x: Number(r.mean_detection_delay_days),
+        y: Number(r.false_alarms_per_100_days),
+        label: r.rule || "policy",
+        shipped: r.rule === h.default_rule,
+      }))
+      .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+    $("eval-tradeoff-chart").innerHTML = svgScatter(points, {
+      xLabel: "Mean detection delay (days)",
+      yLabel: "False alarms per 100 quiet days",
+    });
   });
-  $("eval-tradeoff").innerHTML = table(
-    ["Alert policy", "Delay (days)", "Detection rate", "False alarms / 100 d"],
-    ev.tradeoff.map((r) => [
-      `${escapeHtml(r.rule)}${r.rule === h.default_rule ? " (shipped)" : ""}`,
-      Number(r.mean_detection_delay_days).toFixed(2),
-      Number(r.detection_rate_pct).toFixed(1) + "%",
-      Number(r.false_alarms_per_100_days).toFixed(2),
-    ]));
-
-  const mmd = powerLookup(ev.power_curves.mmd_n10);
-  const ks = powerLookup(ev.power_curves.ks_n10);
-  const deltas = Array.from(new Set([...mmd.keys(), ...ks.keys()])).sort((a, b) => a - b);
-  $("eval-power-chart").innerHTML = svgLines(deltas, [
-    { name: "MMD", color: "#4F46E5", values: deltas.map((d) => (mmd.has(d) ? mmd.get(d) : null)) },
-    { name: "KS", color: "#71717A", values: deltas.map((d) => (ks.has(d) ? ks.get(d) : null)) },
-  ], {
-    xLabel: "Shift magnitude (sigma)",
-    yLabel: "Detection power",
-    yMax: 1,
+  evalSafe("eval-tradeoff", "Trade-off table", () => {
+    $("eval-tradeoff").innerHTML = rows.length ? plainTable(
+      ["Alert policy", "Delay (days)", "Detection rate", "False alarms / 100 d"],
+      rows.map((r) => [
+        `${escapeHtml(r.rule || "policy")}${r.rule === h.default_rule ? " (shipped)" : ""}`,
+        Number(r.mean_detection_delay_days).toFixed(2),
+        Number(r.detection_rate_pct).toFixed(1) + "%",
+        Number(r.false_alarms_per_100_days).toFixed(2),
+      ])) : '<p class="empty-state">Trade-off data unavailable.</p>';
   });
-  const trials = ev.power_curves.trials_per_point;
-  $("eval-power").innerHTML = table(
-    ["Shift (sigma)", "MMD power (n=10)", "KS power (n=10)"],
-    deltas.map((d) => [
-      d.toFixed(1),
-      mmd.has(d) ? Math.round(100 * mmd.get(d)) + "%" : "n/a",
-      ks.has(d) ? Math.round(100 * ks.get(d)) + "%" : "n/a",
-    ]));
+}
 
+function renderPower(ev) {
+  const curves = ev.power_curves || {};
+  const mmd = powerLookup(Array.isArray(curves.mmd_n10) ? curves.mmd_n10 : []);
+  const ks = powerLookup(Array.isArray(curves.ks_n10) ? curves.ks_n10 : []);
+  const deltas = Array.from(new Set([...mmd.keys(), ...ks.keys()]))
+    .sort((a, b) => a - b);
+  evalSafe("eval-power-chart", "Power chart", () => {
+    $("eval-power-chart").innerHTML = svgLines(deltas, [
+      { name: "MMD", color: "#4F46E5",
+        values: deltas.map((d) => (mmd.has(d) ? mmd.get(d) : null)) },
+      { name: "KS", color: "#71717A",
+        values: deltas.map((d) => (ks.has(d) ? ks.get(d) : null)) },
+    ], {
+      xLabel: "Shift magnitude (sigma)",
+      yLabel: "Detection power",
+      yMax: 1,
+    });
+  });
+  evalSafe("eval-power", "Power table", () => {
+    $("eval-power").innerHTML = deltas.length ? plainTable(
+      ["Shift (sigma)", "MMD power (n=10)", "KS power (n=10)"],
+      deltas.map((d) => [
+        d.toFixed(1),
+        mmd.has(d) ? Math.round(100 * mmd.get(d)) + "%" : "n/a",
+        ks.has(d) ? Math.round(100 * ks.get(d)) + "%" : "n/a",
+      ])) : '<p class="empty-state">Power curve data unavailable.</p>';
+  });
+  return curves.trials_per_point;
+}
+
+function renderReliability(ev) {
+  const conditions = Array.isArray(ev.reliability_conditions)
+    ? ev.reliability_conditions : [];
   const condNames = {
     null: "Quiet (nothing changed)", drift_only: "Distribution shift only",
     invalid_only: "Quality regression only", both: "Shift and regression",
   };
-  const relRows = ev.reliability_conditions
-    .filter((r) => ["drift_only", "invalid_only", "both"].includes(r.condition)
+  evalSafe("eval-reliability", "Reliability table", () => {
+    const relRows = conditions.filter((r) =>
+      ["drift_only", "invalid_only", "both"].includes(r.condition)
       && ["pooled_bh", "dist_bh", "validity"].includes(r.signal));
-  const grouped = relRows.reduce((acc, r) => {
-    acc[r.condition] = acc[r.condition] || {}; acc[r.condition][r.signal] = r;
-    return acc;
-  }, {});
-  $("eval-reliability").innerHTML = table(
-    ["Simulated condition", "Pooled BH family", "Distribution-only family", "Validity family"],
-    Object.keys(grouped).map((cond) => [
-      condNames[cond] || cond,
-      pct(grouped[cond].pooled_bh),
-      pct(grouped[cond].dist_bh),
-      pct(grouped[cond].validity),
-    ]));
+    const grouped = relRows.reduce((acc, r) => {
+      acc[r.condition] = acc[r.condition] || {};
+      acc[r.condition][r.signal] = r;
+      return acc;
+    }, {});
+    $("eval-reliability").innerHTML = Object.keys(grouped).length ? plainTable(
+      ["Simulated condition", "Pooled BH family", "Distribution-only family",
+        "Validity family"],
+      Object.keys(grouped).map((cond) => [
+        condNames[cond] || cond,
+        pct(grouped[cond].pooled_bh),
+        pct(grouped[cond].dist_bh),
+        pct(grouped[cond].validity),
+      ])) : '<p class="empty-state">Reliability data unavailable.</p>';
+  });
+}
 
-  $("ev-methodology").innerHTML =
-    `Results come from controlled simulations with predefined shifts, sample sizes `
-    + `and alert policies (sources: <code>experiments/</code>, <code>results/</code>). `
-    + `The delay and power numbers were produced by pooled, iid simulation: they `
-    + `characterise the persistence policy and each statistic's behaviour, not the `
-    + `production paired alert path. Detection rate ${sigma} sigma is estimated from `
-    + `a limited number of trials${trials ? ` (${trials} per power point)` : ""}, `
-    + `not a guarantee across all shifts. Category-level localization is weak at the `
-    + `evaluated sample sizes. The provider comparison below is a real hosted call `
-    + `experiment comparing different models, so it cannot establish temporal drift `
-    + `within one model. Full methodology: <a href="https://github.com/chandresh080/llm-drift-monitor/blob/main/METRICS.md" target="_blank" rel="noopener">METRICS.md</a>.`;
+function renderEvaluation() {
+  const ev = state.evaluation;
+  const h = (ev && ev.headline) || {};
+  const sigma = h.evaluated_shift_sigma;
+  const setMetric = (id, value) => {
+    const el = $(id);
+    if (el) el.textContent = value;
+  };
+  setMetric("ev-delay", h.mean_detection_delay_days == null
+    ? "n/a" : `${Number(h.mean_detection_delay_days).toFixed(2)} d`);
+  setMetric("ev-fa", h.false_alarms_per_100_days == null
+    ? "n/a" : Number(h.false_alarms_per_100_days).toFixed(2));
+  setMetric("ev-detect", h.detection_rate_pct == null
+    ? "n/a" : `${Number(h.detection_rate_pct).toFixed(0)}%`);
+  setMetric("ev-overhead", h.overhead_p95_seconds == null
+    ? "n/a" : `${Math.round(h.overhead_p95_seconds * 1000)} ms`);
+
+  renderTradeoff(ev, h);
+  const trials = renderPower(ev);
+  renderReliability(ev);
+
+  evalSafe("ev-methodology", "Methodology", () => {
+    $("ev-methodology").innerHTML =
+      `Results come from controlled simulations with predefined shifts, sample sizes `
+      + `and alert policies (sources: <code>experiments/</code>, <code>results/</code>). `
+      + `The delay and power numbers were produced by pooled, iid simulation: they `
+      + `characterise the persistence policy and each statistic's behaviour, not the `
+      + `production paired alert path. Detection rate ${sigma} sigma is estimated from `
+      + `a limited number of trials${trials ? ` (${trials} per power point)` : ""}, `
+      + `not a guarantee across all shifts. Category-level localization is weak at the `
+      + `evaluated sample sizes. The provider comparison below is a real hosted call `
+      + `experiment comparing different models, so it cannot establish temporal drift `
+      + `within one model. Full methodology: <a href="https://github.com/chandresh080/llm-drift-monitor/blob/main/METRICS.md" target="_blank" rel="noopener">METRICS.md</a>.`;
+  });
 }
 
 function pct(row) {
@@ -1409,7 +1669,8 @@ async function runCheck() {
 
 $("run-btn").addEventListener("click", runCheck);
 initTabs();
-loadLive();        // pill: Online / Offline as soon as liveness answers
+loadLive();        // API reachability as soon as liveness answers
+loadHealth();      // database + provider readiness, non-blocking
 ensureAwake();     // data panels, each rendering individually as they land
 /* Periodic refresh only when connected and visible; failed endpoints are
    retried here. If nothing answers anymore, resume the wake loop. */
@@ -1417,6 +1678,7 @@ setInterval(() => {
   if (!runInFlight && document.visibilityState === "visible" && state.awake) {
     loadAll();
     loadLive();
+    loadHealth();
     if (state.failed.size >= DATA_LOADERS.length) {
       state.awake = false;
       ensureAwake();

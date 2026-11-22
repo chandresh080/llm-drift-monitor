@@ -165,9 +165,26 @@ const historyRows = [
     mmd_adjusted_pvalue: 0.81, mmd_significant: 0 },
 ];
 
-/* Only two completed cycles: enough for the activity table, not enough for
-   a trend. */
-const twoCycles = historyRows.filter((r) => r.id === 1 || r.id === 2);
+/* /cycles is the activity source: one row per monitoring cycle, with the
+   detector result attached by exact cycle id. Cycle 4 is deliberately
+   interrupted so the activity table has to say so. */
+const cycleRows = historyRows.map((r) => ({
+  cycle_id: `cycle-${r.id}`,
+  cycle_number: r.id,
+  started_at: r.timestamp,
+  ended_at: r.timestamp,
+  timestamp: r.timestamp,
+  probe_count: r.id === 4 ? 23 : 40,
+  success_count: r.id === 4 ? 23 : 40,
+  failed_count: r.id === 4 ? 0 : 0,
+  expected_probes: 40,
+  status: r.id === 4 ? "interrupted" : "evaluated",
+  result: r,
+}));
+
+/* Only two completed cycles: enough for activity and for a connected
+   two-point history, not enough for a trend. */
+const twoCycles = cycleRows.filter((r) => r.cycle_number === 1 || r.cycle_number === 2);
 
 const storedAlert = {
   id: 9, timestamp: "2026-11-17T08:05:00", alert_type: "drift",
@@ -204,7 +221,7 @@ const samplesReady = {
       current: { text: "(withheld: safety boundary prompt)", length: 90, is_valid: 1 } },
     { prompt_id: "p_echo", category: "general", label: "Echo unchanged",
       prompt_text: "Echo prompt", prompt_redacted: false,
-      reference: { text: "echo", length: 4, is_valid: 1 },
+      reference: { text: "echo", length: 4, is_valid: null },
       current: { text: "echo", length: 4, is_valid: 1 } },
     { prompt_id: "p_foxtrot", category: "general", label: "Foxtrot unchanged",
       prompt_text: "Foxtrot prompt", prompt_redacted: false,
@@ -213,7 +230,7 @@ const samplesReady = {
     { prompt_id: "p_golf", category: "general", label: "Golf same text",
       prompt_text: "Golf prompt", prompt_redacted: false,
       reference: { text: "identical", length: 9, is_valid: 1 },
-      current: { text: "identical", length: 12, is_valid: 1 } },
+      current: { text: "identical", length: 12, is_valid: 0 } },
   ],
 };
 
@@ -260,6 +277,11 @@ function fixtureResponse(url) {
 
 const fixtures = {
   "/health/live": () => resp({ status: "ok" }),
+  "/health": () => resp({
+    status: "ok", db: "ok", database: "available", db_error: null,
+    provider: "gemini-3.1-flash-lite", provider_status: "ok",
+    provider_error: null, storage_backend: "sqlite", storage_durable: false,
+  }),
   "/config": () => resp({
     target_model: "gemini-3.1-flash-lite", adapter_type: "GeminiAdapter",
     provider_available: true, provider_error: null,
@@ -278,9 +300,13 @@ const fixtures = {
       daily_cycles_used_today: 4,
     },
   }),
-  "/stats": () => resp({ probe_runs: 320, test_results: 12, alerts: 2 }),
+  "/stats": () => resp({
+    probe_runs: 320, test_results: 12, alerts: 2, cycles: 8,
+    successful_probe_runs: 318, failed_probe_runs: 2,
+    complete_cycles: 8, evaluated_cycles: 8, awaiting_evaluation_cycles: 0,
+  }),
   "/drift/latest": () => resp(latestFull),
-  "/drift/results?limit=12": () => resp([]),
+  "/cycles?limit=24": () => resp([]),
   "/alerts?limit=10": () => resp([]),
   "/drift/comparison": () => resp({
     ready: false, reference_stored: 120, reference_required: 120,
@@ -324,15 +350,20 @@ const settle = () => new Promise((r) => setImmediate(r));
 
   console.log("scenario 1: healthy endpoints, full data");
 
-  check("header shows one compact API status",
-    getById("health-pill").innerHTML.includes("API online")
-      && getById("health-pill").className.includes("status-ok"),
-    getById("health-pill").innerHTML);
+  check("header shows API, database and provider as separate states",
+    getById("health-pill").innerHTML.includes("API Online")
+      && getById("health-pill").className.includes("status-ok")
+      && getById("db-pill").innerHTML.includes("Database Available")
+      && getById("db-pill").className.includes("status-ok")
+      && getById("provider-pill").innerHTML.includes("Gemini Available")
+      && getById("provider-pill").className.includes("status-ok"),
+    `${getById("health-pill").innerHTML} / ${getById("db-pill").innerHTML} / `
+      + getById("provider-pill").innerHTML);
 
-  check("readiness (/health) is never fetched",
-    !requestedUrls.some((u) => u === "/health" || u.includes("/health?")
-      || u.startsWith("/health/") && u !== "/health/live"),
-    requestedUrls.filter((u) => u.startsWith("/health") && u !== "/health/live").join(", "));
+  check("readiness (/health) is fetched independently of liveness",
+    requestedUrls.some((u) => u === "/health")
+      && requestedUrls.some((u) => u === "/health/live"),
+    requestedUrls.filter((u) => u.startsWith("/health")).join(", "));
 
   check("distribution headline follows the distribution family field",
     getById("kpi-drift").textContent === "Shift detected",
@@ -450,27 +481,30 @@ const settle = () => new Promise((r) => setImmediate(r));
       && getById("model-label").className === "brand-model",
     getById("model-label").textContent);
 
-  check("there is no second provider badge competing with the service status",
-    !fs.readFileSync(path.join(__dirname, "index.html"), "utf8").includes("provider-pill"),
+  check("header groups status with subtle vertical dividers",
+    fs.readFileSync(path.join(__dirname, "index.html"), "utf8")
+      .includes('class="status-sep"')
+      && fs.readFileSync(path.join(__dirname, "app.css"), "utf8")
+        .includes(".status-sep"),
     "");
 
   console.log("scenario 1b: activity table, stored detector history, alerts");
 
   routeOverrides = {
-    "/drift/results?limit=12": () => resp(historyRows),
+    "/cycles?limit=24": () => resp(cycleRows),
     "/alerts?limit=10": () => resp([storedAlert]),
   };
   await loadAll();
   await settle();
 
   const actHtml = getById("activity-list").innerHTML;
-  check("activity is a real table with the required columns",
+  check("activity is a real table with cycle, probes, status and outcome",
     actHtml.includes('class="activity-table"')
       && actHtml.includes("<th>Cycle</th>")
       && actHtml.includes("<th>Time</th>")
-      && actHtml.includes("<th class=\"num\">Responses</th>")
-      && actHtml.includes("<th>Distribution result</th>")
-      && actHtml.includes("<th>Quality signal</th>"),
+      && actHtml.includes("<th class=\"num\">Probes</th>")
+      && actHtml.includes("<th>Status</th>")
+      && actHtml.includes("<th>Detector outcome</th>"),
     actHtml.slice(0, 260));
   check("activity shows exactly the five most recent cycles",
     (actHtml.match(/data-testid="activity-row"/g) || []).length === 5,
@@ -482,14 +516,14 @@ const settle = () => new Promise((r) => setImmediate(r));
       && actHtml.indexOf("#3") < actHtml.indexOf("#2")
       && !actHtml.includes("#1"),
     actHtml.slice(0, 300));
-  check("activity names response count and shift outcome without badges",
+  check("activity names probe count and shift outcome without badges",
     actHtml.includes("No shift") && actHtml.includes("Shift flagged")
       && actHtml.includes(">40<") && !actHtml.includes("chip"),
     actHtml.slice(0, 300));
-  check("an incomplete cycle is marked Insufficient data",
-    /#4[\s\S]*?Insufficient data/.test(actHtml),
+  check("an incomplete cycle is marked Interrupted",
+    /#4[\s\S]*?Interrupted/.test(actHtml),
     actHtml.slice(0, 200));
-  check("availability change is its own quality signal column",
+  check("availability change is part of the detector outcome",
     /#3[\s\S]*?Availability changed/.test(actHtml),
     actHtml.slice(0, 320));
   check("a stored alert decorates its cycle only",
@@ -497,7 +531,7 @@ const settle = () => new Promise((r) => setImmediate(r));
       && !/#2[\s\S]*?1 alert/.test(actHtml),
     actHtml.slice(0, 400));
   check("activity header counts the cycles shown",
-    getById("activity-count").textContent === "5 cycles",
+    getById("activity-count").textContent === "5 of 6 cycles",
     getById("activity-count").textContent);
 
   const histHtml = getById("history-chart").innerHTML;
@@ -507,6 +541,11 @@ const settle = () => new Promise((r) => setImmediate(r));
   check("history plots all three stored detector series",
     histHtml.includes(">KS<") && histHtml.includes(">Availability<")
       && histHtml.includes(">Paired MMD<"),
+    histHtml.slice(-320));
+  check("history uses distinct marker shapes per series",
+    histHtml.includes("mk-circle") && histHtml.includes("mk-square")
+      && histHtml.includes("mk-triangle")
+      && histHtml.includes("<rect") && histHtml.includes("<polygon"),
     histHtml.slice(-320));
   check("history draws the dashed alpha threshold",
     histHtml.includes('stroke-dasharray="4 3"') && histHtml.includes("alpha 0.05"),
@@ -519,22 +558,24 @@ const settle = () => new Promise((r) => setImmediate(r));
       && histHtml.indexOf("#5<") < histHtml.indexOf("#6<"),
     "");
   check("a missing adjusted p leaves a gap, not a zero point",
-    (histHtml.match(/<circle/g) || []).length === 20
-      && !histHtml.includes("Paired MMD adjusted p 0.000"),
-    String((histHtml.match(/<circle/g) || []).length));
+    (histHtml.match(/<title>Cycle #/g) || []).length === 17
+      && !histHtml.includes("adjusted p 0.000"),
+    String((histHtml.match(/<title>Cycle #/g) || []).length));
   check("the latest cycle has a dashed guide and a halo point",
     histHtml.includes('stroke-dasharray="2 3"')
       && histHtml.includes('r="5.4"')
       && histHtml.includes("latest cycle"),
     "");
   check("a flagged cycle is ringed in red",
-    histHtml.includes('stroke="#DC2626" stroke-width="1.5"'),
+    histHtml.includes('stroke="#DC2626"'),
     "");
-  check("history tooltips carry detector, adjusted p and flag state",
-    histHtml.includes("adjusted p 0.022") && histHtml.includes("(flagged)"),
+  check("history tooltips carry cycle, timestamp, detector and flag state",
+    histHtml.includes("Cycle #3") && histHtml.includes("adjusted p 0.022")
+      && histHtml.includes("(flagged)"),
     "");
-  check("history note labels the source as historical, not live",
-    getById("history-note").textContent.includes("Historical monitoring data"),
+  check("history note labels the source as evaluated stored cycles",
+    getById("history-note").textContent.includes("6 evaluated cycles")
+      && getById("history-note").textContent.includes("stored detector results"),
     getById("history-note").textContent);
 
   const alertsHtml = getById("alerts-list").innerHTML;
@@ -569,8 +610,10 @@ const settle = () => new Promise((r) => setImmediate(r));
       && samplesHtml.includes("<span>Current</span>")
       && samplesHtml.includes("<span>Change</span>"),
     samplesHtml.slice(0, 220));
-  check("row values carry character counts and validity, not responses",
-    samplesHtml.includes("11 ch") && samplesHtml.includes("non-empty")
+  check("row values carry character counts and 16px validity icons",
+    samplesHtml.includes("11 ch") && samplesHtml.includes('class="s-icon s-ok"')
+      && samplesHtml.includes('width="16" height="16"')
+      && samplesHtml.includes('aria-label="Non-empty response"')
       && samplesHtml.includes("+1 ch"),
     samplesHtml.slice(0, 400));
   check("redacted samples keep the withheld marker and never reveal text",
@@ -581,6 +624,11 @@ const settle = () => new Promise((r) => setImmediate(r));
     samplesHtml.includes('class="sample-detail"')
       && samplesHtml.includes("Safety boundary probe"),
     "");
+  check("expanded reference and current responses repeat the validity icons",
+    (samplesHtml.match(/class="resp-line"/g) || []).length >= 8
+      && samplesHtml.includes('class="resp-icon"')
+      && samplesHtml.includes('aria-label="Non-empty response"'),
+    String((samplesHtml.match(/class="resp-line"/g) || []).length));
 
   const toggle = getById("samples-toggle");
   check("Show all names the remaining count",
@@ -595,6 +643,12 @@ const settle = () => new Promise((r) => setImmediate(r));
   check("identical text stays unchanged even when stored lengths disagree",
     /Golf same text[\s\S]*?unchanged/.test(allHtml),
     "");
+  check("empty and unrecorded validity use distinct accessible icons",
+    allHtml.includes('class="s-icon s-bad"')
+      && allHtml.includes('aria-label="Empty response"')
+      && allHtml.includes('class="s-icon s-neutral"')
+      && allHtml.includes('aria-label="Validity not recorded"'),
+    allHtml.slice(0, 300));
 
   const select = getById("samples-category");
   check("category filter lists the stored categories",
@@ -645,6 +699,27 @@ const settle = () => new Promise((r) => setImmediate(r));
     getById("ev-methodology").innerHTML.includes("limited"),
     getById("ev-methodology").innerHTML.slice(0, 200));
 
+  console.log("scenario 2a: one malformed evaluation block cannot erase the rest");
+  routeOverrides = { "/evaluation": () => resp({
+    ...evaluation,
+    power_curves: { mmd_n10: "not-an-array", ks_n10: null, trials_per_point: 50 },
+  }) };
+  await loadEvaluation();
+  await settle();
+  check("trade-off chart still renders when power data is malformed",
+    getById("eval-tradeoff-chart").innerHTML.includes("<svg")
+      && getById("eval-tradeoff").innerHTML.includes("persist2"),
+    getById("eval-tradeoff-chart").innerHTML.slice(0, 120));
+  check("malformed power block states unavailable instead of crashing",
+    getById("eval-power-chart").innerHTML.includes("unavailable"),
+    getById("eval-power-chart").innerHTML.slice(0, 120));
+  routeOverrides = {};
+  await loadEvaluation();
+  await settle();
+  check("evaluation charts recover after the malformed payload",
+    getById("eval-power-chart").innerHTML.includes("<svg"),
+    getById("eval-power-chart").innerHTML.slice(0, 120));
+
   console.log("scenario 2b: recorded provider comparison renders from the committed artifact");
 
   await settle();
@@ -687,7 +762,7 @@ const settle = () => new Promise((r) => setImmediate(r));
     getById("prov-cmp").innerHTML.slice(0, 120));
   routeOverrides = {};
 
-  console.log("scenario 3: liveness failure is degraded, not offline");
+  console.log("scenario 3: liveness failure is not API degradation when data answers");
 
   /* Successful data endpoints are the stronger evidence. A failed liveness
      probe must not contradict the activity table on screen. */
@@ -697,14 +772,18 @@ const settle = () => new Promise((r) => setImmediate(r));
   vmEval("state.live = null; loadLive();");
   await settle();
 
-  check("successful data keeps a failed liveness probe at degraded",
-    getById("health-pill").innerHTML.includes("API degraded")
-      && !getById("health-pill").innerHTML.includes("offline"),
+  check("successful data keeps a failed liveness probe at API Online",
+    getById("health-pill").innerHTML.includes("API Online")
+      && !getById("health-pill").innerHTML.includes("Degraded"),
     getById("health-pill").innerHTML);
 
   check("provider availability is unaffected by a liveness probe failure",
-    getById("model-label").textContent === "Gemini 3.1 Flash-Lite",
-    getById("model-label").textContent);
+    getById("provider-pill").innerHTML.includes("Gemini Available"),
+    getById("provider-pill").innerHTML);
+
+  check("database availability is unaffected by a liveness probe failure",
+    getById("db-pill").innerHTML.includes("Database Available"),
+    getById("db-pill").innerHTML);
 
   await loadAll();
   await settle();
@@ -721,19 +800,19 @@ const settle = () => new Promise((r) => setImmediate(r));
      not offline. Offline needs both signals to fail. */
   vmEval('state.dataOk = false; state.dataFailed = false; '
     + 'state.live = { status: "unreachable" }; renderHealthPill();');
-  check("liveness failure before data answers is unknown",
-    getById("health-pill").innerHTML.includes("API unknown"),
+  check("liveness failure before data answers is API Unknown",
+    getById("health-pill").innerHTML.includes("API Unknown"),
     getById("health-pill").innerHTML);
 
   vmEval('state.dataFailed = true; renderHealthPill();');
-  check("offline only when data endpoints failed too",
-    getById("health-pill").innerHTML.includes("API offline"),
+  check("API Offline only when data endpoints failed too",
+    getById("health-pill").innerHTML.includes("API Offline"),
     getById("health-pill").innerHTML);
 
   vmEval('state.live = { status: "ok" }; state.dataOk = false; '
     + 'state.dataFailed = true; renderHealthPill();');
-  check("liveness alone with failing data is degraded, not fully online",
-    getById("health-pill").innerHTML.includes("API degraded"),
+  check("liveness alone with failing data is API Degraded, not fully online",
+    getById("health-pill").innerHTML.includes("API Degraded"),
     getById("health-pill").innerHTML);
 
   routeOverrides = {};
@@ -741,25 +820,97 @@ const settle = () => new Promise((r) => setImmediate(r));
   await loadLive();
   await settle();
 
+  console.log("scenario 3a: database and provider readiness are independent");
+
+  routeOverrides = { "/health": () => resp({
+    status: "degraded", db: "unavailable", database: "unavailable",
+    db_error: "disk I/O error", provider_status: "ok", provider_error: null,
+    provider: "gemini-3.1-flash-lite",
+  }) };
+  vmEval("state.health = null; state.healthCheckedAt = 0; loadHealth();");
+  await settle();
+  check("database failure does not rewrite provider availability",
+    getById("db-pill").innerHTML.includes("Database Unavailable")
+      && getById("db-pill").className.includes("status-bad")
+      && getById("provider-pill").innerHTML.includes("Gemini Available"),
+    `${getById("db-pill").innerHTML} / ${getById("provider-pill").innerHTML}`);
+
+  routeOverrides = { "/health": () => resp({
+    status: "degraded", db: "ok", database: "available", db_error: null,
+    provider_status: "unreachable", provider_error: "quota exhausted",
+    provider: "gemini-3.1-flash-lite",
+  }) };
+  vmEval("state.health = null; state.healthCheckedAt = 0; loadHealth();");
+  await settle();
+  check("provider failure does not rewrite database availability",
+    getById("provider-pill").innerHTML.includes("Gemini Unavailable")
+      && getById("provider-pill").className.includes("status-bad")
+      && getById("db-pill").innerHTML.includes("Database Available"),
+    `${getById("db-pill").innerHTML} / ${getById("provider-pill").innerHTML}`);
+
+  routeOverrides = {};
+  vmEval("state.health = null; state.healthCheckedAt = 0; loadHealth();");
+  await settle();
+
   console.log("scenario 3b: provider failure is visible without rewriting API state");
 
-  routeOverrides = { "/config": () => resp({
-    target_model: "gemini-3.1-flash-lite", adapter_type: "GeminiAdapter",
-    provider_available: false, provider_error: "quota exhausted",
-    embedding_model: "all-MiniLM-L6-v2", reference_window: 120, current_window: 40,
-    prompt_panel_version: "3.0.0", probes_per_cycle: 40, alpha: 0.05,
-    min_consecutive_cycles: 2,
-  }) };
+  routeOverrides = {
+    "/config": () => resp({
+      target_model: "gemini-3.1-flash-lite", adapter_type: "GeminiAdapter",
+      provider_available: false, provider_error: "quota exhausted",
+      embedding_model: "all-MiniLM-L6-v2", reference_window: 120, current_window: 40,
+      prompt_panel_version: "3.0.0", probes_per_cycle: 40, alpha: 0.05,
+      min_consecutive_cycles: 2,
+    }),
+    "/health": () => resp({
+      status: "degraded", db: "ok", database: "available",
+      provider_status: "unreachable", provider_error: "quota exhausted",
+      provider: "gemini-3.1-flash-lite",
+    }),
+  };
+  vmEval("state.health = null; state.healthCheckedAt = 0;");
   await loadAll();
   await settle();
 
-  check("provider failure appears as a suffix on the model label",
-    getById("model-label").textContent.includes("provider unavailable")
-      && getById("model-label").className.includes("provider-down"),
-    getById("model-label").textContent);
+  check("provider failure appears as Gemini Unavailable, not as a model suffix",
+    getById("provider-pill").innerHTML.includes("Gemini Unavailable")
+      && getById("model-label").textContent === "Gemini 3.1 Flash-Lite",
+    `${getById("provider-pill").innerHTML} / ${getById("model-label").textContent}`);
   check("provider failure does not rewrite the API state",
-    getById("health-pill").innerHTML.includes("API online"),
+    getById("health-pill").innerHTML.includes("API Online"),
     getById("health-pill").innerHTML);
+
+  /* Without credentials the API cannot construct the adapter, so /config
+     serves no target_model. Readiness still knows the configured model;
+     the header must not go blank. */
+  routeOverrides = {
+    "/config": () => resp({
+      target_model: null, adapter_type: null,
+      provider_available: false,
+      provider_error: "Gemini API key is required.",
+      embedding_model: "all-MiniLM-L6-v2", reference_window: 120, current_window: 40,
+      prompt_panel_version: "3.0.0", probes_per_cycle: 40, alpha: 0.05,
+      min_consecutive_cycles: 2,
+    }),
+    "/health": () => resp({
+      status: "degraded", db: "ok", database: "available",
+      provider_status: "not_configured",
+      provider_error: "Gemini API key is required.",
+      provider: "gemini-3.1-flash-lite",
+    }),
+  };
+  vmEval("state.health = null; state.healthCheckedAt = 0; state.config = null;");
+  await loadAll();
+  vmEval("loadHealth();");
+  await settle();
+  check("header names the model when /config cannot build the adapter",
+    getById("model-label").textContent === "Gemini 3.1 Flash-Lite"
+      && getById("provider-pill").innerHTML.includes("Gemini Unavailable"),
+    `${getById("model-label").textContent} / ${getById("provider-pill").innerHTML}`);
+  check("configuration panel names the same model instead of null",
+    getById("cfg-model").textContent === "gemini-3.1-flash-lite",
+    getById("cfg-model").textContent);
+  vmEval("state.health = null; state.healthCheckedAt = 0; state.config = null;");
 
   routeOverrides = {};
   await loadAll();
@@ -889,7 +1040,7 @@ const settle = () => new Promise((r) => setImmediate(r));
   routeOverrides = {
     "/drift/latest": () => resp({ drift_detected: null,
       distribution_shift_detected: null, timestamp: null }),
-    "/drift/results?limit=12": () => resp([]),
+    "/cycles?limit=24": () => resp([]),
     "/alerts?limit=10": () => resp([]),
   };
   await loadAll();
@@ -902,35 +1053,74 @@ const settle = () => new Promise((r) => setImmediate(r));
     getById("quality-strip").hidden === true,
     "");
   check("no history shows a compact activity empty state",
-    getById("activity-list").innerHTML.includes("No completed cycles recorded yet"),
+    getById("activity-list").innerHTML.includes("No monitoring cycles recorded yet"),
     getById("activity-list").innerHTML);
   check("no history shows a compact detector-history empty state",
-    getById("history-chart").innerHTML.includes("No completed cycles to chart yet")
+    getById("history-chart").innerHTML.includes("No evaluated cycles yet")
       && !getById("history-chart").innerHTML.includes("<svg"),
     getById("history-chart").innerHTML.slice(0, 160));
   check("no alerts is a compact line, not an empty list",
     getById("alerts-list").innerHTML.includes("No alerts."),
     getById("alerts-list").innerHTML);
 
-  console.log("scenario 6b: two cycles are not a trend");
+  console.log("scenario 6b: one and two cycles render actual points");
 
   routeOverrides = {
-    "/drift/results?limit=12": () => resp(twoCycles),
+    "/cycles?limit=24": () => resp([twoCycles[0]]),
+  };
+  await loadAll();
+  await settle();
+  check("one cycle renders a real point, not an empty state",
+    getById("history-chart").innerHTML.includes("<svg")
+      && getById("history-chart").innerHTML.includes("#1<"),
+    getById("history-chart").innerHTML.slice(0, 200));
+  check("one cycle does not fabricate a connecting trend line",
+    !getById("history-chart").innerHTML.includes("<path"),
+    "");
+
+  routeOverrides = {
+    "/cycles?limit=24": () => resp(twoCycles),
   };
   await loadAll();
   await settle();
 
-  check("two cycles show a compact message instead of an empty chart",
-    getById("history-chart").innerHTML.includes("Only 2 recorded cycles")
-      && getById("history-chart").innerHTML.includes("meaningful trend")
-      && !getById("history-chart").innerHTML.includes("<svg"),
+  check("two cycles render both observations and connect them",
+    getById("history-chart").innerHTML.includes("<svg")
+      && getById("history-chart").innerHTML.includes("#1<")
+      && getById("history-chart").innerHTML.includes("#2<")
+      && getById("history-chart").innerHTML.includes("<path"),
     getById("history-chart").innerHTML.slice(0, 200));
-  check("the compact message does not invent points",
-    !getById("history-chart").innerHTML.includes("<circle"),
-    "");
   check("activity still lists the two stored cycles",
     (getById("activity-list").innerHTML.match(/data-testid="activity-row"/g) || []).length === 2,
     "");
+
+  console.log("scenario 6c: awaiting and failed cycles are labelled, not hidden");
+
+  const pendingCycle = {
+    cycle_id: "pending", cycle_number: 3,
+    started_at: "2026-11-19T10:00:00", ended_at: "2026-11-19T10:01:00",
+    probe_count: 40, success_count: 40, failed_count: 0,
+    expected_probes: 40, status: "awaiting_evaluation", result: null,
+  };
+  const failedCycle = {
+    cycle_id: "failed", cycle_number: 4,
+    started_at: "2026-11-19T11:00:00", ended_at: "2026-11-19T11:01:00",
+    probe_count: 40, success_count: 0, failed_count: 40,
+    expected_probes: 40, status: "failed", result: null,
+  };
+  routeOverrides = { "/cycles?limit=24": () => resp([failedCycle, pendingCycle]) };
+  await loadAll();
+  await settle();
+  const pendingHtml = getById("activity-list").innerHTML;
+  check("a cycle without a detector result is Awaiting evaluation",
+    /#3[\s\S]*?Awaiting evaluation[\s\S]*?Not evaluated/.test(pendingHtml),
+    pendingHtml.slice(0, 300));
+  check("a fully failed cycle is Failed and shows its failed probe count",
+    /#4[\s\S]*?40 failed[\s\S]*?Failed/.test(pendingHtml),
+    pendingHtml.slice(0, 300));
+  check("un-evaluated cycles are not charted as observations",
+    getById("history-chart").innerHTML.includes("No evaluated cycles yet"),
+    getById("history-chart").innerHTML.slice(0, 160));
 
   routeOverrides = {};
 

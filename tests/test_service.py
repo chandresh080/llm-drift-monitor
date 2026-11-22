@@ -1,6 +1,11 @@
 """Tests for the service layer: circuit breaker, matched windows, test dispatch."""
 
+import json
+import logging
+import os
 import sqlite3
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -574,6 +579,327 @@ class TestRunRecordBound:
             assert "live" in _runs
         finally:
             _runs.clear()
+
+
+class TestCycleActivity:
+    """Recent Activity is cycle level: every stored cycle appears once, and
+    its detector result is attached by exact cycle id, never by timestamp."""
+
+    @staticmethod
+    def seed_cycle(storage, cycle_id, count, timestamp, failed=0):
+        for i in range(count):
+            ok = i >= failed
+            storage.insert_probe_run(
+                timestamp=timestamp,
+                prompt_version="3.0.0",
+                prompt_text=f"prompt {i}",
+                model_id="gemini-3.1-flash-lite",
+                response_text=f"answer {cycle_id} {i}",
+                response_length=20 + i,
+                is_valid=ok,
+                run_status="success" if ok else "error",
+                adapter_type="gemini",
+                prompt_id=f"p{i}",
+                category="general",
+                cycle_id=cycle_id,
+            )
+
+    def build(self, tmp_path):
+        storage = DriftMonitorStorage(str(tmp_path / "cycles.db"))
+        self.seed_cycle(storage, "c1", 3, "2026-01-01T00:00:00")
+        self.seed_cycle(storage, "c2", 3, "2026-01-02T00:00:00")
+        self.seed_cycle(storage, "c3", 2, "2026-01-03T00:00:00", failed=1)
+        result = TestResultFieldMapping.representative_results()
+        result["cycle_id"] = "c1"
+        # Deliberately unrelated to the cycle's own clock: the link is an id.
+        result["timestamp"] = "2099-12-31T23:59:59"
+        storage.insert_test_results(result)
+        return storage
+
+    def test_cycles_are_grouped_with_exact_result_links(self, tmp_path):
+        storage = self.build(tmp_path)
+        summaries = {c["cycle_id"]: c for c in storage.get_cycle_summaries(10)}
+        assert set(summaries) == {"c1", "c2", "c3"}
+        assert summaries["c1"]["result"]["cycle_id"] == "c1"
+        assert summaries["c2"]["result"] is None
+        assert summaries["c3"]["probe_count"] == 2
+        assert summaries["c3"]["failed_count"] == 1
+        assert summaries["c1"]["cycle_number"] == 1
+        assert summaries["c3"]["cycle_number"] == 3
+
+    def test_read_endpoints_agree_on_stored_counts(self, tmp_path, monkeypatch):
+        import api
+
+        storage = self.build(tmp_path)  # 8 probes, 1 result, 3 cycles
+        monitor = StubMonitor(storage)
+        monitor.config["monitoring"]["batch_size"] = 3
+        monkeypatch.setattr("api._get_monitor", lambda: monitor)
+        monkeypatch.setattr("api._get_storage", lambda: storage)
+        api.invalidate_read_cache()
+
+        stats = api.get_stats()
+        runs = api.list_runs(limit=100)
+        results = api.get_drift_results(limit=100)
+        cycles = api.get_cycles(limit=100)
+        assert stats["probe_runs"] == len(runs) == 8
+        assert stats["test_results"] == len(results) == 1
+        assert stats["cycles"] == len(cycles) == 3
+        assert [run.id for run in runs] == [8, 7, 6, 5, 4, 3, 2, 1]
+        assert [cycle["cycle_number"] for cycle in cycles] == [3, 2, 1]
+        assert [cycle["cycle_id"] for cycle in cycles] == ["c3", "c2", "c1"]
+
+    def test_diagnostics_compare_probes_results_and_cycles(self, tmp_path):
+        storage = self.build(tmp_path)
+        counts = storage.get_diagnostics(expected_probes=3)
+        assert counts["probe_runs"] == 8
+        assert counts["cycles"] == 3
+        assert counts["test_results"] == 1
+        assert counts["evaluated_cycles"] == 1
+        assert counts["complete_cycles"] == 2
+        assert counts["awaiting_evaluation_cycles"] == 1
+        assert counts["failed_cycles"] == 1
+        assert counts["test_results_without_cycle"] == 0
+        assert counts["probe_runs_without_cycle"] == 0
+
+    def test_cycles_endpoint_labels_awaiting_and_interrupted(self, tmp_path, monkeypatch):
+        import api
+
+        storage = self.build(tmp_path)
+        monitor = StubMonitor(storage)
+        monitor.config["monitoring"]["batch_size"] = 3
+        monkeypatch.setattr("api._get_monitor", lambda: monitor)
+        api.invalidate_read_cache()
+        payload = {c["cycle_id"]: c for c in api.get_cycles(limit=10)}
+        assert payload["c1"]["status"] == "evaluated"
+        assert payload["c2"]["status"] == "awaiting_evaluation"
+        assert payload["c3"]["status"] == "interrupted"
+        assert payload["c1"]["probe_count"] == 3
+        assert payload["c1"]["result"]["cycle_id"] == "c1"
+
+
+class TestCycleIdMigration:
+    def test_legacy_result_is_linked_to_the_cycle_it_followed(self, tmp_path):
+        path = tmp_path / "legacy-links.db"
+        storage = DriftMonitorStorage(str(path))
+        TestCycleActivity.seed_cycle(storage, "old-cycle", 3,
+                                     "2026-02-01T00:00:00")
+        result = TestResultFieldMapping.representative_results()
+        result["cycle_id"] = None
+        result["timestamp"] = "2026-02-01T00:05:00"
+        storage.insert_test_results(result)
+        # Simulate a database written before the cycle link existed.
+        conn = sqlite3.connect(path)
+        conn.execute("UPDATE test_results SET cycle_id = NULL")
+        conn.commit()
+        conn.close()
+
+        reopened = DriftMonitorStorage(str(path))
+        stored = reopened.get_all_test_results(limit=1)[0]
+        assert stored["cycle_id"] == "old-cycle"
+        assert reopened.get_diagnostics(3)["test_results_without_cycle"] == 0
+
+
+class TestDurablePersistence:
+    def test_sqlite_records_survive_a_process_restart(self, tmp_path):
+        db_path = tmp_path / "restart.db"
+        result = TestResultFieldMapping.representative_results()
+        result["cycle_id"] = "persist-1"
+        script = (
+            "import json\n"
+            "from storage import DriftMonitorStorage\n"
+            f"s = DriftMonitorStorage({str(db_path)!r})\n"
+            "s.insert_probe_run(timestamp='2026-03-01T00:00:00', "
+            "prompt_version='3.0.0', prompt_text='p', model_id='m', "
+            "response_text='r', response_length=1, is_valid=True, "
+            "run_status='success', adapter_type='gemini', prompt_id='p1', "
+            "category='general', cycle_id='persist-1')\n"
+            f"s.insert_test_results({result!r})\n"
+            "print(json.dumps({'runs': s.count_all_runs(), "
+            "'results': s.count_test_results()}))\n"
+        )
+        insert = subprocess.run([sys.executable, "-c", script],
+                                cwd=os.path.dirname(os.path.dirname(__file__)),
+                                capture_output=True, text=True, check=True)
+        assert json.loads(insert.stdout) == {"runs": 1, "results": 1}
+
+        read_script = (
+            "import json\n"
+            "from storage import DriftMonitorStorage\n"
+            f"s = DriftMonitorStorage({str(db_path)!r})\n"
+            "print(json.dumps({'runs': s.count_all_runs(), "
+            "'results': s.count_test_results(), "
+            "'cycles': [c['cycle_id'] for c in s.get_cycle_summaries(5)]}))\n"
+        )
+        read = subprocess.run([sys.executable, "-c", read_script],
+                              cwd=os.path.dirname(os.path.dirname(__file__)),
+                              capture_output=True, text=True, check=True)
+        payload = json.loads(read.stdout)
+        assert payload["runs"] == 1
+        assert payload["results"] == 1
+        assert payload["cycles"] == ["persist-1"]
+
+    @pytest.mark.skipif(not os.environ.get("TEST_DATABASE_URL"),
+                        reason="set TEST_DATABASE_URL to exercise PostgreSQL")
+    def test_postgres_records_survive_reconnect(self):
+        from storage import create_storage
+
+        url = os.environ["TEST_DATABASE_URL"]
+        cycle_id = "pg-persist-test"
+        first = create_storage("unused.db", url)
+        first.clear_all()
+        first.insert_probe_run(
+            timestamp="2026-03-01T00:00:00", prompt_version="3.0.0",
+            prompt_text="p", model_id="m", response_text="r",
+            response_length=1, is_valid=True, run_status="success",
+            adapter_type="gemini", prompt_id="p1", category="general",
+            cycle_id=cycle_id)
+        second = create_storage("unused.db", url)
+        try:
+            assert second.count_all_runs() >= 1
+            assert cycle_id in second.get_cycle_ids()
+        finally:
+            second.clear_all()
+            second._pool.close()
+
+
+class TestBaselineImport:
+    def test_existing_baseline_manifest_is_never_overwritten(self, tmp_path):
+        from storage import import_baseline
+
+        source = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                              "data", "seed_gemini.db")
+        target = DriftMonitorStorage(str(tmp_path / "protected.db"))
+        target.insert_manifest({"collected_at": "1999-01-01T00:00:00"})
+        import_baseline(target, source)
+        assert target.get_manifest() == {"collected_at": "1999-01-01T00:00:00"}
+        assert target.count_all_runs() == 160
+
+    def test_seed_import_is_idempotent_and_keeps_the_baseline(self, tmp_path):
+        from storage import import_baseline
+
+        source = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                              "data", "seed_gemini.db")
+        target = DriftMonitorStorage(str(tmp_path / "seed-copy.db"))
+        first = import_baseline(target, source)
+        assert first["imported_cycles"] == 4
+        assert first["imported_runs"] == 160
+        assert first["imported_test_results"] == 1
+        runs_after_first = target.count_all_runs()
+
+        second = import_baseline(target, source)
+        assert second["imported_cycles"] == 0
+        assert second["imported_runs"] == 0
+        assert target.count_all_runs() == runs_after_first == 160
+        assert len(target.get_cycle_summaries(20)) == 4
+        assert target.count_test_results() == 1
+        counts = target.get_diagnostics(expected_probes=40)
+        assert counts["test_results_without_cycle"] == 0
+        assert counts["cycles"] == 4
+        manifest = target.get_manifest()
+        assert manifest.get("provider") == "gemini"
+        assert manifest.get("model_id") == "gemini-3.1-flash-lite"
+
+
+class TestStartupLogging:
+    """The startup identity line must be visible and never carry secrets."""
+
+    def test_storage_ready_names_absolute_path_and_counts(self, tmp_path):
+        storage = DriftMonitorStorage(str(tmp_path / "startup.db"))
+        records = []
+
+        class Capture(logging.Handler):
+            def emit(self, record):
+                records.append((record.levelno, record.getMessage()))
+
+        package_logger = logging.getLogger("llm_drift_monitor")
+        handler = Capture()
+        package_logger.addHandler(handler)
+        try:
+            storage.log_startup_status(40)
+        finally:
+            package_logger.removeHandler(handler)
+
+        ready = [json.loads(message) for level, message in records
+                 if level == logging.INFO and '"storage_ready"' in message]
+        assert len(ready) == 1
+        payload = ready[0]
+        assert payload["location"] == str((tmp_path / "startup.db").resolve())
+        assert payload["backend"] == "sqlite"
+        assert payload["durable"] is False
+        assert payload["counts"]["probe_runs"] == 0
+        assert payload["counts"]["expected_probes_per_cycle"] == 40
+        assert "api_key" not in json.dumps(payload).lower()
+
+    def test_api_logger_emits_info_under_uvicorn(self):
+        import api
+
+        api._configure_app_logging()
+        package_logger = logging.getLogger("llm_drift_monitor")
+        assert package_logger.level <= logging.INFO
+        assert package_logger.handlers
+
+
+class TestHealthDependencies:
+    class Adapter:
+        model_id = "gemini-3.1-flash-lite"
+
+        def __init__(self, ok):
+            self.ok = ok
+
+        def ping(self):
+            if not self.ok:
+                raise RuntimeError("quota exhausted")
+            return True
+
+    class BrokenStorage:
+        backend = "sqlite"
+        location = "/broken.db"
+        is_durable = False
+        storage_error = None
+
+        def count_successful_runs(self):
+            raise RuntimeError("disk I/O error")
+
+    @staticmethod
+    def reset_provider_cache(monkeypatch):
+        monkeypatch.setattr("api._provider_health",
+                            {"at": 0.0, "ok": None, "status": None,
+                             "error": None})
+
+    def test_database_and_provider_are_reported_independently(self, tmp_path, monkeypatch):
+        from api import health
+
+        storage = DriftMonitorStorage(str(tmp_path / "health.db"))
+        monitor = StubMonitor(storage, adapter=self.Adapter(True))
+        monkeypatch.setattr("api._get_monitor", lambda: monitor)
+        self.reset_provider_cache(monkeypatch)
+        payload = health()
+        assert payload["status"] == "ok"
+        assert payload["database"] == "available"
+        assert payload["db"] == "ok"
+        assert payload["provider_status"] == "ok"
+
+        monitor.adapter = self.Adapter(False)
+        self.reset_provider_cache(monkeypatch)
+        payload = health()
+        assert payload["database"] == "available"
+        assert payload["db"] == "ok"
+        assert payload["provider_status"] == "unreachable"
+        assert "quota exhausted" in payload["provider_error"]
+        assert payload["status"] == "degraded"
+
+    def test_database_failure_does_not_rewrite_provider_state(self, monkeypatch):
+        from api import health
+
+        monitor = StubMonitor(self.BrokenStorage(), adapter=self.Adapter(True))
+        monkeypatch.setattr("api._get_monitor", lambda: monitor)
+        self.reset_provider_cache(monkeypatch)
+        payload = health()
+        assert payload["database"] == "unavailable"
+        assert payload["db"] == "unavailable"
+        assert "disk I/O error" in payload["db_error"]
+        assert payload["provider_status"] == "ok"
+        assert payload["status"] == "degraded"
 
 
 class TestStaticAssets:

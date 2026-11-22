@@ -14,7 +14,7 @@ import random
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from storage import DriftMonitorStorage
+from storage import create_storage, import_baseline
 from embeddings import EmbeddingExtractor
 from drift_tests import (ks_test, proportion_test, mmd_test,
                          benjamini_hochberg_correction, centroid_distance,
@@ -661,7 +661,11 @@ class LLMDriftMonitor:
         # Render stores keys as secret files at /etc/secrets/<name>; fold those
         # into the environment before the adapter decides it is unconfigured.
         load_provider_key_secret_files()
-        self.storage = DriftMonitorStorage(self.config['data']['db_path'])
+        self.storage = create_storage(
+            self.config['data']['db_path'], os.environ.get('DATABASE_URL'))
+        self._ensure_baseline_import()
+        self.storage.log_startup_status(
+            self.config.get('monitoring', {}).get('batch_size'))
         
         # Initialize embedding extractor
         emb_cfg = self.config['embeddings']
@@ -700,6 +704,27 @@ class LLMDriftMonitor:
 
         # Load canary prompts
         self.canary_prompts = self._load_canary_prompts()
+
+    def _ensure_baseline_import(self) -> None:
+        """Seed a durable database from the committed Gemini baseline once.
+
+        SQLite keeps the committed seed in place; PostgreSQL starts empty, so
+        the baseline is imported idempotently by cycle id. The reference
+        window is never replaced by later observations.
+        """
+        if self.storage.backend not in ("postgres", "sqlite-fallback"):
+            return
+        source = os.environ.get(
+            "DRIFT_MONITOR_SEED_DB", "data/seed_gemini.db")
+        try:
+            summary = import_baseline(self.storage, source)
+            logger.info(json.dumps({
+                "event": "baseline_import",
+                "source": source,
+                **summary,
+            }, default=str))
+        except Exception as exc:
+            logger.exception("baseline import failed: %s", exc)
     
     def _load_config(self, config_path: str) -> Dict[str, Any]:
         """Load configuration from YAML."""
@@ -799,7 +824,8 @@ class LLMDriftMonitor:
         else:
             raise ValueError(f"Unknown adapter type: {adapter_type}")
     
-    def run_canary_probes(self, num_prompts: Optional[int] = None) -> List[int]:
+    def run_canary_probes(self, num_prompts: Optional[int] = None,
+                          cycle_id: Optional[str] = None) -> List[int]:
         """
         Run canary probes through target adapter.
         Returns list of run IDs created.
@@ -813,7 +839,7 @@ class LLMDriftMonitor:
         prompt_version = self.canary_prompts['version']
         model_id = self.adapter.model_id
         timestamp = datetime.now().isoformat()
-        cycle_id = str(uuid.uuid4())[:8]
+        cycle_id = cycle_id or str(uuid.uuid4())[:8]
         adapter_type = self.config['target']['type']
 
         # Generate responses, timing each individual model call. The batch runs
@@ -1036,16 +1062,21 @@ class LLMDriftMonitor:
         """
         Run a complete monitoring cycle: probes + tests + alerts.
         """
+        # One exact id links every probe row, the detector result and any
+        # alerts from this cycle. It is generated before the probes so a
+        # partial batch can never be mistaken for a different cycle.
+        cycle_id = str(uuid.uuid4())[:8]
         # Run probes; the configured batch size keeps CLI and API runs identical
         if num_probes is None:
             num_probes = self.config.get('monitoring', {}).get('batch_size')
-        run_ids = self.run_canary_probes(num_probes)
+        run_ids = self.run_canary_probes(num_probes, cycle_id=cycle_id)
         
         # Check if we have reference
         if not self.has_sufficient_reference():
             # Create reference by collecting more data
             # For now, just note - tests need reference + current
             return {
+                'cycle_id': cycle_id,
                 'run_ids': run_ids,
                 'tests_run': False,
                 'reason': 'Insufficient reference data'
@@ -1075,6 +1106,7 @@ class LLMDriftMonitor:
         # window would store a junk result and dilute the alert history.
         if len(ref_runs) < ref_size or len(cur_runs) < cur_size:
             return {
+                'cycle_id': cycle_id,
                 'run_ids': run_ids,
                 'tests_run': False,
                 'reason': 'Insufficient matched window data'
@@ -1085,6 +1117,7 @@ class LLMDriftMonitor:
             # Don't run tests - insufficient disjoint reference
             timestamp = datetime.now().isoformat()
             return {
+                'cycle_id': cycle_id,
                 'run_ids': run_ids,
                 'tests_run': False,
                 'reason': 'Insufficient disjoint reference data'
@@ -1106,6 +1139,7 @@ class LLMDriftMonitor:
         # Run statistical tests
         results = {
             'timestamp': timestamp,
+            'cycle_id': cycle_id,
             'reference_size': len(ref_runs),
             'current_size': len(cur_runs),
             'ref_length_count': len(ref_lengths),
@@ -1316,6 +1350,7 @@ class LLMDriftMonitor:
             self._log_mlflow_run(results, ref_size, cur_size, ref_embeddings, cur_embeddings, cur_lengths)
 
         return {
+            'cycle_id': cycle_id,
             'run_ids': run_ids,
             'tests_run': True,
             'results': results,
@@ -1551,6 +1586,7 @@ class LLMDriftMonitor:
                     parts.append(f"affected categories: {affected}")
                 alert = {
                     'timestamp': timestamp,
+                    'cycle_id': results.get('cycle_id'),
                     'alert_type': 'drift',
                     'severity': 'medium',
                     'message': 'Behavioral drift detected. ' + '; '.join(parts),
@@ -1580,6 +1616,7 @@ class LLMDriftMonitor:
         if quality_reasons:
             alert = {
                 'timestamp': timestamp,
+                'cycle_id': results.get('cycle_id'),
                 'alert_type': 'quality_degradation',
                 'severity': 'high',
                 'message': 'Quality signal: ' + ' and '.join(quality_reasons) + '. '

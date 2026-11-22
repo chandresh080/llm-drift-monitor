@@ -53,6 +53,27 @@ MAX_RUN_RECORDS = 200
 logger = logging.getLogger("llm_drift_monitor.api")
 
 
+def _configure_app_logging() -> None:
+    """Make application INFO records visible under uvicorn's log config.
+
+    Uvicorn configures its own loggers only, so without a handler here the
+    storage identity line (absolute path, backend and row counts) is dropped
+    before it reaches the console. No credentials are part of that payload.
+    """
+    app_logger = logging.getLogger("llm_drift_monitor")
+    app_logger.setLevel(logging.INFO)
+    if not app_logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s: %(message)s",
+            "%Y-%m-%dT%H:%M:%S"))
+        app_logger.addHandler(handler)
+    app_logger.propagate = False
+
+
+_configure_app_logging()
+
+
 def _record_run(run_id: str, record: Dict[str, Any]) -> None:
     """Store a run record, pruning the oldest once the bound is exceeded."""
     _runs[run_id] = record
@@ -107,6 +128,13 @@ _metrics: Dict[str, Any] = {
     "runs_replayed_total": 0,
 }
 _started_at = time.time()
+
+# Readiness pings the provider. The dashboard polls status periodically, but
+# a real ping costs provider quota, so a fresh result is reused briefly.
+PROVIDER_HEALTH_TTL_SECONDS = 60.0
+_provider_health: Dict[str, Any] = {
+    "at": 0.0, "ok": None, "status": None, "error": None,
+}
 
 
 # ---------- read cache ----------
@@ -458,10 +486,14 @@ class ProbeRunResponse(BaseModel):
     is_valid: Optional[int] = None
     run_status: Optional[str] = None
     adapter_type: Optional[str] = None
+    prompt_id: Optional[str] = None
+    category: Optional[str] = None
+    cycle_id: Optional[str] = None
 
 
 class AlertResponse(BaseModel):
     timestamp: Optional[str] = None
+    cycle_id: Optional[str] = None
     alert_type: Optional[str] = None
     severity: Optional[str] = None
     message: Optional[str] = None
@@ -715,14 +747,51 @@ def get_drift_results(limit: int = 20) -> list:
     return cached_read(f"results:{limit}", lambda: _get_storage().get_all_test_results(limit=limit))
 
 
+def _cycle_status(cycle: Dict[str, Any], expected: Optional[int]) -> str:
+    """Classify a stored cycle from records, never from a timestamp guess."""
+    probe_count = int(cycle.get("probe_count") or 0)
+    failed = int(cycle.get("failed_count") or 0)
+    if expected and probe_count < int(expected):
+        return "interrupted"
+    if probe_count and failed == probe_count:
+        return "failed"
+    if cycle.get("result") is None:
+        return "awaiting_evaluation"
+    return "evaluated"
+
+
+@app.get("/cycles")
+def get_cycles(limit: int = 12) -> list:
+    """Cycle summaries grouped from probe records.
+
+    This is the activity feed's source: one row per monitoring cycle, not one
+    row per stored detector result. A cycle without a result is still listed
+    and labelled awaiting evaluation.
+    """
+    monitor = _get_monitor()
+    expected = monitor.config.get('monitoring', {}).get('batch_size')
+    cycles = cached_read(
+        f"cycles:{limit}", lambda: _get_storage().get_cycle_summaries(limit=limit))
+    out = []
+    for cycle in cycles:
+        item = dict(cycle)
+        item["expected_probes"] = expected
+        item["status"] = _cycle_status(item, expected)
+        out.append(item)
+    return out
+
+
 @app.get("/stats")
 def get_stats() -> Dict[str, Any]:
-    """Exact counts for the dashboard headers."""
-    return cached_read("stats", lambda: {
-        "probe_runs": _get_storage().count_all_runs(),
-        "test_results": _get_storage().count_test_results(),
-        "alerts": _get_storage().count_alerts(),
-    })
+    """Exact counts for the dashboard headers and storage diagnostic.
+
+    The probe/test/cycle triplet is deliberately exposed together: a
+    dashboard that shows only one of them cannot tell "nothing was stored"
+    from "stored but not displayed".
+    """
+    monitor = _get_monitor()
+    expected = monitor.config.get('monitoring', {}).get('batch_size')
+    return cached_read("stats", lambda: _get_storage().get_diagnostics(expected))
 
 
 @app.get("/config")
@@ -739,6 +808,20 @@ def get_config() -> Dict[str, Any]:
     cfg = monitor.config
     adapter = monitor.adapter
     def build() -> Dict[str, Any]:
+        storage = monitor.storage
+        durable = bool(getattr(storage, "is_durable", False))
+        backend = getattr(storage, "backend", "unknown")
+        storage_note = (
+            "Managed PostgreSQL via DATABASE_URL. Durability depends on the "
+            "provider plan; Render Free Postgres expires after 30 days."
+            if durable else
+            "SQLite on the container filesystem. History is lost when the "
+            "instance recycles. Set DATABASE_URL to a managed PostgreSQL "
+            "database for durable history.")
+        if getattr(storage, "storage_error", None):
+            storage_note = (
+                "DATABASE_URL is configured but PostgreSQL is unreachable; "
+                "the service is using ephemeral SQLite. " + storage_note)
         return {
             "target_model": adapter.model_id if adapter else None,
             "adapter_type": type(adapter).__name__ if adapter else None,
@@ -759,6 +842,13 @@ def get_config() -> Dict[str, Any]:
                 'category_window_cycles', 5),
             "min_samples_per_category": cfg['monitoring'].get(
                 'min_samples_per_category', 8),
+            "storage": {
+                "backend": backend,
+                "durable": durable,
+                "location": getattr(storage, "location", None),
+                "note": storage_note,
+                "error": getattr(storage, "storage_error", None),
+            },
             # Baseline manifest: what actually produced the reference window
             # stored in this database, so the comparison shown to a visitor
             # carries its own provenance.
@@ -1144,20 +1234,22 @@ def liveness() -> Dict[str, str]:
 
 
 @app.get("/health")
-def health() -> Dict[str, Any]:
-    """Readiness: DB and target provider status.
+def health(probe: bool = True) -> Dict[str, Any]:
+    """Readiness: database and target provider, reported separately.
 
     Deliberately heavier than liveness: it initializes the monitor so the
-    first /runs call does not pay the whole cost, and it asks the adapter
-    for a real ping. Dashboard panels do not wait on this; they read stored
-    data first and treat this as status context.
+    first /runs call does not pay the whole cost, and (unless a fresh cached
+    result exists) asks the adapter for a real ping. The dashboard never
+    blocks its first render on this; it treats the result as status context.
     """
     db_ok = True
+    db_error = None
     try:
         storage = _get_storage()
         storage.count_successful_runs()
-    except Exception:
+    except Exception as exc:
         db_ok = False
+        db_error = str(exc)
     monitor = _get_monitor()
     provider_name = (monitor.adapter.model_id if monitor.adapter
                      else cfg_model_id(monitor))
@@ -1168,22 +1260,46 @@ def health() -> Dict[str, Any]:
         provider_error = monitor.adapter_error
         provider_status = "not_configured"
     else:
-        try:
-            provider_ok = bool(monitor.adapter.ping())
-            provider_error = None if provider_ok else \
-                "Provider ping failed."
-            provider_status = "ok" if provider_ok else "unreachable"
-        except Exception as exc:
+        now = time.monotonic()
+        cached = _provider_health
+        fresh = (cached.get("ok") is not None
+                 and now - float(cached.get("at") or 0) < PROVIDER_HEALTH_TTL_SECONDS)
+        if probe and not fresh:
+            try:
+                provider_ok = bool(monitor.adapter.ping())
+                provider_error = None if provider_ok else "Provider ping failed."
+                provider_status = "ok" if provider_ok else "unreachable"
+            except Exception as exc:
+                provider_ok = False
+                provider_error = str(exc)
+                provider_status = "unreachable"
+            _provider_health.update({
+                "at": now, "ok": provider_ok,
+                "status": provider_status, "error": provider_error,
+            })
+        elif cached.get("ok") is not None:
+            provider_ok = bool(cached["ok"])
+            provider_status = cached.get("status") or (
+                "ok" if provider_ok else "unreachable")
+            provider_error = cached.get("error")
+        else:
+            # Not pinged yet: configured is not the same as reachable.
             provider_ok = False
-            provider_error = str(exc)
-            provider_status = "unreachable"
+            provider_status = "unchecked"
+            provider_error = None
     status = "ok" if (db_ok and provider_ok) else "degraded"
+    storage = _get_storage()
     return {
         "status": status,
-        "db": "ok" if db_ok else "unreachable",
+        "db": "ok" if db_ok else "unavailable",
+        "database": "available" if db_ok else "unavailable",
+        "db_error": db_error,
         "provider": provider_name,
         "provider_status": provider_status,
         "provider_error": provider_error,
+        "storage_backend": getattr(storage, "backend", "unknown"),
+        "storage_durable": bool(getattr(storage, "is_durable", False)),
+        "storage_location": getattr(storage, "location", None),
     }
 
 

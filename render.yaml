@@ -19,6 +19,18 @@ services:
         sync: false
       - key: GEMINI_MODEL
         value: gemini-3.1-flash-lite
+      # Durable history. The free web plan has no persistent disk, so the
+      # SQLite file is recreated with the container. Set DATABASE_URL to a
+      # managed PostgreSQL instance (for example Render Postgres or Neon)
+      # and the service imports the committed Gemini baseline once, keyed by
+      # cycle id, then keeps every new cycle there.
+      #
+      # Render Free Postgres expires after 30 days. It is useful for a demo
+      # but it is NOT permanent storage; use a paid plan or another managed
+      # provider if history must outlive that window. Until DATABASE_URL is
+      # set, /config and the dashboard state that storage is ephemeral.
+      - key: DATABASE_URL
+        sync: false
       # Tracking is memory safe: each cycle logs to MLflow from a short
       # lived subprocess, so mlflow never enters the serving process. Runs
       # land in the container's SQLite-backed mlflow.db; the free tier resets

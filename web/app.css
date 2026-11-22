@@ -105,7 +105,14 @@ html, body {
 .topbar-right {
   display: inline-flex;
   align-items: center;
-  gap: 16px;
+  gap: 10px;
+  flex: none;
+}
+
+.status-sep {
+  width: 1px;
+  height: 12px;
+  background: var(--border);
   flex: none;
 }
 
@@ -129,6 +136,7 @@ html, body {
 .status.status-ok .dot { background: var(--ok); }
 .status.status-warn .dot { background: var(--warn); }
 .status.status-bad .dot { background: var(--alert); }
+.status.status-muted .dot { background: var(--ink-4); }
 
 .gh-link {
   font-size: 12px;
@@ -331,9 +339,30 @@ html, body {
 
 .act-result.is-muted { color: var(--ink-3); }
 
-.act-quality { font-size: 12px; }
+.act-outcome {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+}
 
-.act-signal { color: var(--warn); }
+.act-signal { color: var(--warn); font-size: 11.5px; }
+
+.act-failed {
+  color: var(--ink-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.act-status {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.act-status.is-ok { color: var(--ink-2); }
+.act-status.is-wait { color: var(--warn); }
+.act-status.is-warn { color: var(--warn); }
+.act-status.is-bad { color: var(--alert); }
 
 /* ---------- workspace grid ---------- */
 
@@ -628,6 +657,25 @@ html, body {
   flex: none;
 }
 
+.legend-marker {
+  width: 7px;
+  height: 7px;
+  display: inline-block;
+  background: currentColor;
+  flex: none;
+}
+
+.legend-marker.mk-circle { border-radius: 50%; }
+.legend-marker.mk-square { border-radius: 1px; }
+.legend-marker.mk-triangle {
+  width: 0;
+  height: 0;
+  background: none;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-bottom: 7px solid currentColor;
+}
+
 .legend-latest {
   width: 8px;
   height: 8px;
@@ -647,6 +695,12 @@ html, body {
   max-width: 540px;
   font-size: 12.5px;
   color: var(--ink-3);
+}
+
+.chart-empty-compact {
+  padding: 22px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
 }
 
 /* ---------- response samples ---------- */
@@ -745,9 +799,14 @@ html, body {
   white-space: nowrap;
 }
 
-.s-state { font-size: 10.5px; color: var(--ink-3); }
-.s-state.s-ok { color: var(--ok); }
-.s-state.s-bad { color: var(--alert); }
+.s-icon {
+  display: inline-flex;
+  vertical-align: -3px;
+  margin-left: 3px;
+}
+.s-icon.s-ok { color: var(--ok); }
+.s-icon.s-bad { color: var(--alert); }
+.s-icon.s-neutral { color: var(--ink-4); }
 .s-missing { color: var(--ink-3); }
 
 .s-change {
@@ -760,6 +819,18 @@ html, body {
 
 .s-changed { color: var(--ink-2); font-weight: 550; }
 .s-delta { color: var(--ink-3); font-variant-numeric: tabular-nums; }
+
+.resp-line { position: relative; }
+
+.resp-icon {
+  position: absolute;
+  top: 8px;
+  right: 9px;
+  display: inline-flex;
+  padding: 1px;
+  background: #FAFAFA;
+  border-radius: 3px;
+}
 
 .sample-detail { padding: 2px 0 12px; }
 
@@ -1036,7 +1107,9 @@ html, body {
 
   .brand { flex: 1 1 auto; }
   .brand-model { max-width: 45vw; }
-  .topbar-right { flex: none; }
+  .topbar-right { flex: 1 1 100%; gap: 8px; }
+  /* The GitHub link is hidden here, so its trailing divider would dangle. */
+  .topbar-right .status-sep:last-of-type { display: none; }
   .gh-link { display: none; }
 
   .section-head {
@@ -1128,7 +1201,13 @@ html, body {
 @media (max-width: 460px) {
   .brand-name { font-size: 13px; }
   .brand-model { display: none; }
-  .topbar-right { margin-left: auto; }
+  .topbar-right {
+    margin-left: auto;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+  }
+  /* Wrapped statuses read better without dividers at line breaks. */
+  .topbar-right .status-sep { display: none; }
 
   .stat-strip { grid-template-columns: 1fr; }
 
