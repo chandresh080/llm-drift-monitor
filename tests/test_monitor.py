@@ -35,6 +35,64 @@ class TestWindowing:
         assert fake_monitor.create_reference_window() is True
 
 
+class TestProbeOutcomeSeparation:
+    """A returned empty response is an observation; a failed request is not."""
+
+    class MixedAdapter:
+        model_id = "fake-outcome-test"
+
+        def __init__(self):
+            self.calls = 0
+
+        def generate(self, prompt):
+            self.calls += 1
+            if self.calls == 1:
+                return "   "
+            if self.calls == 2:
+                raise ConnectionError("network down x-api-key: secret999")
+            return "a valid model answer"
+
+    def test_empty_and_failed_probes_are_stored_separately(self, fake_monitor):
+        fake_monitor.adapter = self.MixedAdapter()
+        cycle_id = "outcome-test-cycle"
+        fake_monitor.run_canary_probes(num_prompts=6, cycle_id=cycle_id)
+
+        with fake_monitor.storage._db() as conn:
+            rows = conn.execute(
+                "SELECT run_status, is_valid, response_text FROM probe_runs "
+                "WHERE cycle_id = ? ORDER BY id", (cycle_id,)).fetchall()
+        statuses = [row[0] for row in rows]
+        assert "success" in statuses
+        assert "empty" in statuses
+        assert "failed" in statuses
+        # Both misses stay invalid so response availability still counts them.
+        for row in rows:
+            if row[0] in ("empty", "failed"):
+                assert row[1] == 0
+                assert not (row[2] or "").strip()
+        summary = fake_monitor.storage.get_cycle_summaries(5)[0]
+        assert summary["empty_count"] >= 1
+        assert summary["failed_count"] >= 1
+
+    def test_recitation_guard_empty_is_not_a_provider_failure(self, fake_monitor):
+        class RecitationAdapter(self.MixedAdapter):
+            def generate(self, prompt):
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("response contained no text")
+                return "a valid model answer"
+
+        fake_monitor.adapter = RecitationAdapter()
+        cycle_id = "recitation-cycle"
+        fake_monitor.run_canary_probes(num_prompts=5, cycle_id=cycle_id)
+        with fake_monitor.storage._db() as conn:
+            statuses = {row[0] for row in conn.execute(
+                "SELECT run_status FROM probe_runs WHERE cycle_id = ?",
+                (cycle_id,)).fetchall()}
+        assert "empty" in statuses
+        assert "failed" not in statuses
+
+
 class TestAlertPersistence:
     def test_insert_and_retrieve_alert(self, tmp_path):
         storage = DriftMonitorStorage(str(tmp_path / "alerts.db"))

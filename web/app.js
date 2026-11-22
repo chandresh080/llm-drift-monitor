@@ -18,8 +18,9 @@ const state = {
   live: null,         // /health/live payload (fast liveness)
   liveError: null,    // last liveness failure, if any
   health: null,       // /health payload (DB + provider readiness)
-  healthError: null,  // readiness request failed; dependencies unknown
+  healthError: null,  // last readiness failure, with diagnostics attached
   healthCheckedAt: 0,
+  cyclesLoaded: false, // /cycles answered: direct evidence the DB is readable
   config: null,       // /config payload
   stats: null,        // diagnostics: probe/cycle/test-result counts
   latest: null,       // /drift/latest payload
@@ -92,6 +93,7 @@ async function fetchJson(url, opts = {}) {
     const resp = await fetch(url, { ...opts, signal: controller.signal });
     if (!resp.ok) {
       const err = new Error(`HTTP ${resp.status}`);
+      err.isTimeout = false;
       err.status = resp.status;
       err.retryAfter = resp.headers.get("Retry-After");
       try {
@@ -101,6 +103,11 @@ async function fetchJson(url, opts = {}) {
       throw err;
     }
     return await resp.json();
+  } catch (err) {
+    // AbortController fires AbortError when our own deadline expires. Mark it
+    // so readiness can tell a timeout from a server/network error.
+    if (err && err.name === "AbortError") err.isTimeout = true;
+    throw err;
   } finally {
     clearTimeout(timer);
   }
@@ -138,11 +145,42 @@ const API_STATES = {
   checking: ["status-muted", "API Checking", "Waiting for the first response."],
 };
 
+/* Connectivity and persistence are separate facts:
+   - connectivity comes from any endpoint that actually queried storage,
+     not from /health alone;
+   - persistence comes from config.storage (backend + durable), never from
+     the word "available". SQLite on the Render free filesystem is
+     ephemeral even though its queries succeed. */
 function dbState() {
+  const h = state.health;
+  // A successful /health response is authoritative for connectivity: it
+  // just ran a real storage query and reported the result.
+  if (h) {
+    return (h.database === "available" || h.db === "ok")
+      ? "available" : "unavailable";
+  }
+  // /health did not answer. A DB-backed endpoint that did answer is direct
+  // evidence the database is reachable, so never call it Unknown then.
+  if (state.stats != null || state.cyclesLoaded) return "available";
+  if (state.config && state.config.storage && state.config.storage.backend) {
+    return "available";
+  }
   if (state.healthError) return "unknown";
-  if (!state.health) return "checking";
-  return (state.health.database === "available" || state.health.db === "ok")
-    ? "available" : "unavailable";
+  return "checking";
+}
+
+/* Compact backend identity, shown next to the DB state and in Configuration.
+   "Persistent" is only claimed for a configured PostgreSQL backend that the
+   service itself reports durable; the plan caveat stays in the tooltip. */
+function storageLabel() {
+  const st = state.config && state.config.storage;
+  if (!st || !st.backend) return "";
+  const backend = String(st.backend);
+  const name = backend.indexOf("postgres") === 0 ? "PostgreSQL"
+    : (backend === "sqlite" || backend === "sqlite-fallback") ? "SQLite"
+      : backend;
+  const persistent = backend.indexOf("postgres") === 0 && st.durable === true;
+  return `${name} · ${persistent ? "Persistent" : "Ephemeral"}`;
 }
 
 const DB_STATES = {
@@ -151,7 +189,7 @@ const DB_STATES = {
   unavailable: ["status-bad", "Database Unavailable",
     "The storage backend did not answer."],
   unknown: ["status-muted", "Database Unknown",
-    "Readiness did not answer, so database state is unknown."],
+    "Readiness and every database-backed endpoint failed; state is unknown."],
   checking: ["status-muted", "Database Checking",
     "Waiting for the readiness check."],
 };
@@ -177,7 +215,11 @@ function modelId() {
 
 function providerState() {
   if (state.health) {
-    return state.health.provider_status === "ok" ? "available" : "unavailable";
+    const status = state.health.provider_status;
+    if (status === "ok") return "available";
+    if (status === "unreachable" || status === "not_configured") return "unavailable";
+    // unchecked (and any future unknown value) is not a measured failure.
+    return "unknown";
   }
   if (state.config && state.config.provider_available === false) return "unavailable";
   if (state.healthError) return "unknown";
@@ -194,7 +236,7 @@ function providerStates() {
         || (state.config && state.config.provider_error)
         || "The target provider cannot run new cycles."],
     unknown: ["status-muted", `${name} Unknown`,
-      "Readiness did not answer, so provider state is unknown."],
+      "Readiness did not check the provider, or the check did not answer."],
     checking: ["status-muted", `${name} Checking`,
       "Waiting for the readiness check."],
   };
@@ -210,7 +252,18 @@ function renderPill(id, found) {
 
 function renderStatusGroup() {
   renderPill("health-pill", API_STATES[apiState()] || API_STATES.checking);
-  renderPill("db-pill", DB_STATES[dbState()] || DB_STATES.checking);
+  const db = [...(DB_STATES[dbState()] || DB_STATES.checking)];
+  const storage = storageLabel();
+  if (storage) {
+    db[2] = `${db[2]} ${storage}.`;
+    if (storage.indexOf("Persistent") !== -1) {
+      db[2] += " Confirm the managed plan is non-expiring; Render Free "
+        + "Postgres expires after 30 days.";
+    } else {
+      db[2] += " History is lost when the instance recycles.";
+    }
+  }
+  renderPill("db-pill", db);
   const states = providerStates();
   renderPill("provider-pill", states[providerState()] || states.checking);
 }
@@ -495,6 +548,11 @@ function renderConfig() {
   $("cfg-cur").textContent = `${c.current_window} responses`;
   $("cfg-alpha").textContent = `${Number(c.alpha).toFixed(2)} · Benjamini–Hochberg`;
   $("cfg-persist").textContent = `${c.min_consecutive_cycles} consecutive flagged cycles`;
+  const storageEl = $("cfg-storage");
+  if (storageEl) {
+    storageEl.textContent = storageLabel() || "unknown";
+    storageEl.title = (c.storage && c.storage.note) || "";
+  }
 
   const l = state.latest || {};
   const ts = state.latest && state.latest.timestamp;
@@ -771,6 +829,7 @@ function cycleSignals(result) {
 function cycleStatus(c) {
   switch (c.status) {
     case "evaluated": return ["Evaluated", "act-status is-ok"];
+    case "reference_baseline": return ["Reference baseline", "act-status is-baseline"];
     case "awaiting_evaluation": return ["Awaiting evaluation", "act-status is-wait"];
     case "failed": return ["Failed", "act-status is-bad"];
     case "interrupted": return ["Interrupted", "act-status is-warn"];
@@ -818,12 +877,21 @@ function renderActivity() {
     const [statusText, statusCls] = cycleStatus(c);
     const alerts = alertsForCycle(c);
     const probes = Number(c.probe_count || 0);
+    const empty = Number(c.empty_count || 0);
     const failed = Number(c.failed_count || 0);
-    const probeCell = `${probes}`
-      + (failed ? `<span class="act-failed"> · ${failed} failed</span>` : "");
+    let probeCell = `${probes}`;
+    if (empty) {
+      probeCell += `<span class="act-empty"> · ${empty} empty response`
+        + `${empty === 1 ? "" : "s"}</span>`;
+    }
+    if (failed) {
+      probeCell += `<span class="act-failed"> · ${failed} failed</span>`;
+    }
     let outcome;
     if (!c.result) {
-      outcome = '<span class="muted">Not evaluated</span>';
+      outcome = c.reference_baseline
+        ? '<span class="muted">Reference collection</span>'
+        : '<span class="muted">Not evaluated</span>';
     } else {
       const quality = [];
       if (s.availability) quality.push("Availability changed");
@@ -927,9 +995,11 @@ function renderHistory() {
     return;
   }
   if (note) {
-    const label = rows.length === 1 ? "1 evaluated cycle"
-      : `${rows.length} evaluated cycles`;
-    note.textContent = `${label} · adjusted p-values from stored detector results.`;
+    note.textContent = rows.length === 1
+      ? "1 evaluated cycle available · limited history; a trend appears "
+        + "after further cycles."
+      : `${rows.length} evaluated cycles · adjusted p-values from stored `
+        + "detector results.";
   }
   el.innerHTML = svgHistory(rows, alpha);
 }
@@ -958,7 +1028,10 @@ function historyMarker(shape, x, y, color, size, title, flagged) {
 }
 
 function svgHistory(rows, alpha) {
-  const w = 560, h = 190, m = { top: 12, right: 14, bottom: 34, left: 34 };
+  // A single observation gets a shorter canvas: a full-height plot with one
+  // point reads as a broken chart rather than limited history.
+  const h = rows.length <= 1 ? 132 : 190;
+  const w = 560, m = { top: 12, right: 14, bottom: 34, left: 34 };
   const iw = w - m.left - m.right;
   const ih = h - m.top - m.bottom;
   const n = rows.length;
@@ -1085,6 +1158,7 @@ async function loadOne(def) {
     state[def.key] = await fetchJson(def.url);
     state.failed.delete(def.key);
     state.dataOk = true;
+    if (def.key === "cycles") state.cyclesLoaded = true;
   } catch (err) {
     state[def.key] = (def.key === "cycles" || def.key === "alerts") ? [] : null;
     state.failed.add(def.key);
@@ -1108,13 +1182,32 @@ async function loadHealth() {
   const now = Date.now();
   if (state.health && now - state.healthCheckedAt < HEALTH_REFRESH_MS) return;
   try {
-    state.health = await fetchJson("/health");
+    const payload = await fetchJson("/health");
+    state.health = payload;
     state.healthError = null;
     state.healthCheckedAt = now;
+    // Surface the API's own readiness detail without echoing secrets.
+    const d = payload && payload.diagnostics;
+    if (d && (d.timeout || d.error_detail)) {
+      console.warn("readiness diagnostics", {
+        httpStatus: d.http_status, timeout: d.timeout,
+        dbReady: d.db_ready, providerReady: d.provider_ready,
+        detail: d.error_detail,
+      });
+    }
   } catch (err) {
     state.health = null;
-    state.healthError = err;
+    state.healthError = {
+      httpStatus: err.status || null,
+      timeout: Boolean(err.isTimeout || (err.name === "AbortError")),
+      kind: err.isTimeout ? "timeout"
+        : (err.status ? `HTTP ${err.status}` : (err.name || "network")),
+      detail: String(err.detail || err.message || err).slice(0, 240),
+    };
     state.healthCheckedAt = now;
+    // A failed readiness fetch is not proof the database is down; other
+    // DB-backed endpoints remain the authority for the DB pill.
+    console.warn("readiness fetch failed", state.healthError);
   }
   renderStatusGroup();
   renderModelLabel();

@@ -597,7 +597,7 @@ class TestCycleActivity:
                 response_text=f"answer {cycle_id} {i}",
                 response_length=20 + i,
                 is_valid=ok,
-                run_status="success" if ok else "error",
+                run_status="success" if ok else "failed",
                 adapter_type="gemini",
                 prompt_id=f"p{i}",
                 category="general",
@@ -667,6 +667,9 @@ class TestCycleActivity:
         storage = self.build(tmp_path)
         monitor = StubMonitor(storage)
         monitor.config["monitoring"]["batch_size"] = 3
+        # This fixture is not a reference baseline: keep baseline detection off
+        # so the status logic under test is interruption/awaiting-evaluation.
+        monitor.config["reference"]["window_size"] = 0
         monkeypatch.setattr("api._get_monitor", lambda: monitor)
         api.invalidate_read_cache()
         payload = {c["cycle_id"]: c for c in api.get_cycles(limit=10)}
@@ -675,6 +678,120 @@ class TestCycleActivity:
         assert payload["c3"]["status"] == "interrupted"
         assert payload["c1"]["probe_count"] == 3
         assert payload["c1"]["result"]["cycle_id"] == "c1"
+
+
+class TestBaselineRoles:
+    """The committed Gemini baseline is three reference cycles plus one
+    evaluated cycle. Role and empty-output facts come from stored records."""
+
+    @staticmethod
+    def committed_seed_copy(tmp_path):
+        import shutil
+        source = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                              "data", "seed_gemini.db")
+        target = str(tmp_path / "seed_copy.db")
+        shutil.copyfile(source, target)
+        return source, DriftMonitorStorage(target)
+
+    def test_three_baseline_cycles_and_one_evaluated_cycle(self, tmp_path, monkeypatch):
+        import api as api_module
+
+        _, storage = self.committed_seed_copy(tmp_path)
+        monitor = StubMonitor(storage)
+        monitor.config["reference"]["window_size"] = 120
+        monitor.config["monitoring"]["batch_size"] = 40
+        monkeypatch.setattr("api._get_monitor", lambda: monitor)
+        api_module.invalidate_read_cache()
+        cycles = {c["cycle_number"]: c for c in api_module.get_cycles(limit=10)}
+        assert {n: c["status"] for n, c in cycles.items()} == {
+            1: "reference_baseline", 2: "reference_baseline",
+            3: "reference_baseline", 4: "evaluated",
+        }
+        assert cycles[1]["empty_count"] == 1
+        assert cycles[1]["failed_count"] == 0
+        assert cycles[4]["result"] is not None
+
+    def test_baseline_cycles_are_not_awaiting_evaluation(self, tmp_path):
+        _, storage = self.committed_seed_copy(tmp_path)
+        counts = storage.get_diagnostics(expected_probes=40, reference_window=120)
+        assert counts["probe_runs"] == 160
+        assert counts["cycles"] == 4
+        assert counts["reference_baseline_cycles"] == 3
+        assert counts["evaluated_cycles"] == 1
+        assert counts["awaiting_evaluation_cycles"] == 0
+        assert counts["failed_cycles"] == 0
+        assert counts["empty_probe_runs"] == 3
+        assert counts["failed_probe_runs"] == 0
+
+    def test_no_reference_window_keeps_legacy_awaiting_count(self, tmp_path):
+        _, storage = self.committed_seed_copy(tmp_path)
+        counts = storage.get_diagnostics(expected_probes=40, reference_window=None)
+        assert counts["reference_baseline_cycles"] == 0
+        assert counts["awaiting_evaluation_cycles"] == 3
+
+
+class TestProbeOutcomes:
+    """Empty output and provider failure are different stored outcomes."""
+
+    def test_legacy_empty_rows_are_relabelled_once(self, tmp_path):
+        path = str(tmp_path / "legacy.db")
+        raw = sqlite3.connect(path)
+        raw.execute("""CREATE TABLE probe_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL,
+            prompt_version TEXT NOT NULL, prompt_text TEXT NOT NULL,
+            model_id TEXT NOT NULL, response_text TEXT NOT NULL,
+            response_length INTEGER, is_valid INTEGER,
+            run_status TEXT NOT NULL, adapter_type TEXT NOT NULL)""")
+        raw.execute("""INSERT INTO probe_runs
+            (timestamp, prompt_version, prompt_text, model_id, response_text,
+             response_length, is_valid, run_status, adapter_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ("t", "3", "p", "m", "", 0, 0, "failed", "gemini"))
+        raw.commit()
+        raw.close()
+
+        storage = DriftMonitorStorage(path)
+        with storage._db() as conn:
+            status = conn.execute(
+                "SELECT run_status FROM probe_runs").fetchone()[0]
+        assert status == "empty"
+
+        # A genuine later failure must not be rewritten by a rerun.
+        storage.insert_probe_run(
+            timestamp="t2", prompt_version="3", prompt_text="p", model_id="m",
+            response_text="", response_length=0, is_valid=False,
+            run_status="failed", adapter_type="gemini")
+        reopened = DriftMonitorStorage(path)
+        with reopened._db() as conn:
+            statuses = {row[0] for row in conn.execute(
+                "SELECT run_status FROM probe_runs").fetchall()}
+        assert statuses == {"empty", "failed"}
+
+    def test_import_maps_legacy_empty_without_mutating_source(self, tmp_path):
+        from storage import import_baseline
+
+        source = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                              "data", "seed_gemini.db")
+        storage = DriftMonitorStorage(str(tmp_path / "import_target.db"))
+        before = sqlite3.connect(source).execute(
+            "SELECT run_status FROM probe_runs WHERE id = 18").fetchone()[0]
+        assert before == "failed"
+        summary = import_baseline(storage, source)
+        assert summary["imported_runs"] == 160
+        with storage._db() as conn:
+            statuses = {row[0] for row in conn.execute(
+                "SELECT DISTINCT run_status FROM probe_runs").fetchall()}
+        assert "empty" in statuses and "failed" not in statuses
+        after = sqlite3.connect(source).execute(
+            "SELECT run_status FROM probe_runs WHERE id = 18").fetchone()[0]
+        assert after == before
+
+        # A second import must not duplicate the baseline.
+        again = import_baseline(storage, source)
+        assert again["imported_cycles"] == 0
+        assert again["imported_runs"] == 0
+        counts = storage.get_diagnostics(expected_probes=40, reference_window=120)
+        assert counts["probe_runs"] == 160
 
 
 class TestCycleIdMigration:
@@ -900,6 +1017,91 @@ class TestHealthDependencies:
         assert "disk I/O error" in payload["db_error"]
         assert payload["provider_status"] == "ok"
         assert payload["status"] == "degraded"
+
+    def test_health_diagnostics_explain_timeout_and_keep_db_ready(self, tmp_path, monkeypatch):
+        from api import health
+
+        class TimeoutAdapter(self.Adapter):
+            def ping(self):
+                raise TimeoutError("ping timed out after 5s")
+
+        storage = DriftMonitorStorage(str(tmp_path / "health_timeout.db"))
+        monitor = StubMonitor(storage, adapter=TimeoutAdapter(True))
+        monkeypatch.setattr("api._get_monitor", lambda: monitor)
+        self.reset_provider_cache(monkeypatch)
+        payload = health()
+        d = payload["diagnostics"]
+        assert d["db_ready"] is True
+        assert d["provider_ready"] is False
+        assert d["timeout"] is True
+        assert d["http_status"] == 200
+        assert d["error_type"] == "TimeoutError"
+        assert "timed out" in d["error_detail"]
+        assert d["duration_ms"] >= 0
+        assert payload["database"] == "available"
+
+    def test_health_diagnostics_redact_secrets(self, tmp_path, monkeypatch):
+        from api import health
+
+        class LeakyAdapter(self.Adapter):
+            def ping(self):
+                raise RuntimeError(
+                    "request failed x-goog-api-key: super_secret_value_12345 "
+                    "Authorization: Bearer another_secret_98765")
+
+        storage = DriftMonitorStorage(str(tmp_path / "health_secret.db"))
+        monitor = StubMonitor(storage, adapter=LeakyAdapter(True))
+        monkeypatch.setattr("api._get_monitor", lambda: monitor)
+        self.reset_provider_cache(monkeypatch)
+        payload = health()
+        blob = json.dumps(payload)
+        assert "super_secret_value_12345" not in blob
+        assert "another_secret_98765" not in blob
+        assert "<redacted>" in blob
+
+    def test_monitor_init_failure_keeps_db_available(self, monkeypatch, tmp_path):
+        from api import health
+
+        storage = DriftMonitorStorage(str(tmp_path / "health_no_monitor.db"))
+        monkeypatch.setattr("api._get_storage", lambda: storage)
+
+        def boom():
+            raise RuntimeError("monitor exploded x-api-key: secret123")
+
+        monkeypatch.setattr("api._get_monitor", boom)
+        payload = health()
+        assert payload["database"] == "available"
+        assert payload["status"] == "degraded"
+        assert payload["provider_status"] == "unreachable"
+        assert payload["diagnostics"]["db_ready"] is True
+        assert "secret123" not in json.dumps(payload)
+
+    def test_storage_init_failure_still_returns_structured_health(self, monkeypatch):
+        from api import health
+
+        def boom():
+            raise RuntimeError("storage init failed")
+
+        monkeypatch.setattr("api._get_storage", boom)
+        monkeypatch.setattr("api._get_monitor", boom)
+        self.reset_provider_cache(monkeypatch)
+        payload = health()
+        assert payload["database"] == "unavailable"
+        assert payload["storage_backend"] == "unknown"
+        assert payload["diagnostics"]["db_ready"] is False
+        assert "storage init failed" in payload["db_error"]
+
+    def test_unchecked_provider_is_explicit(self, tmp_path, monkeypatch):
+        from api import health
+
+        storage = DriftMonitorStorage(str(tmp_path / "health_unchecked.db"))
+        monitor = StubMonitor(storage, adapter=self.Adapter(True))
+        monkeypatch.setattr("api._get_monitor", lambda: monitor)
+        self.reset_provider_cache(monkeypatch)
+        payload = health(probe=False)
+        assert payload["provider_status"] == "unchecked"
+        assert payload["diagnostics"]["provider_ready"] is False
+        assert payload["diagnostics"]["error_detail"] is None
 
 
 class TestStaticAssets:

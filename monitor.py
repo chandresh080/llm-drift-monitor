@@ -27,6 +27,22 @@ from sequential_testing import (spent_alpha, consecutive_flagged_history,
 logger = logging.getLogger("llm_drift_monitor.monitor")
 
 
+def _safe_error_text(exc: BaseException, limit: int = 240) -> str:
+    """Short diagnostic text with credentials and long tokens redacted.
+
+    Provider errors are surfaced on the dashboard and in logs; never let an
+    echoed request header or key ride along with them.
+    """
+    text = str(exc)
+    # Bearer headers carry a scheme plus the actual credential; redact both.
+    text = re.sub(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+",
+                  "Bearer <redacted>", text)
+    text = re.sub(
+        r"(?i)(api[_-]?key|x-goog-api-key|authorization|bearer|token|secret)"
+        r"(\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|\S+)", r"\1\2<redacted>", text)
+    return text[:limit]
+
+
 def _cgroup_memory_stats(base: str = "/sys/fs/cgroup") -> Dict[str, Optional[float]]:
     """Cgroup v2 memory accounting for the whole instance, in MB.
 
@@ -665,7 +681,8 @@ class LLMDriftMonitor:
             self.config['data']['db_path'], os.environ.get('DATABASE_URL'))
         self._ensure_baseline_import()
         self.storage.log_startup_status(
-            self.config.get('monitoring', {}).get('batch_size'))
+            self.config.get('monitoring', {}).get('batch_size'),
+            self.config.get('reference', {}).get('window_size'))
         
         # Initialize embedding extractor
         emb_cfg = self.config['embeddings']
@@ -851,6 +868,13 @@ class LLMDriftMonitor:
         gate = RateGate(self.call_spacing_seconds)
 
         def timed_generate(prompt: str):
+            """Return (text, outcome) for one probe attempt.
+
+            An empty model response and a failed provider request are kept
+            apart. Both are recorded as rows for this cycle; only the latter
+            is a transport failure. Empty output stays visible to the
+            response-availability detector through is_valid=0.
+            """
             gate.wait()
             call_started = time.perf_counter()
             try:
@@ -867,21 +891,29 @@ class LLMDriftMonitor:
                     # with finishReason RECITATION) is an availability miss,
                     # not a network failure. At temperature 0 it reproduces
                     # stably, so a retry would spend quota for the same
-                    # result. It is recorded as the empty response it is,
-                    # and the Response availability family counts the miss.
+                    # result. Record it as the empty response it is.
                     if 'contained no text' not in str(exc):
                         raise
                     text = ''
                     logger.warning(
                         "Provider returned no text for one probe (recitation "
                         "guard); recorded as an empty response.")
-                return text
+                outcome = 'empty' if not (text or '').strip() else 'success'
+                return (text, outcome)
+            except Exception as exc:
+                # An actual provider/transport failure: the probe attempt is
+                # still recorded, but it says nothing about model behaviour.
+                logger.warning("Provider request failed for one probe: %s",
+                               _safe_error_text(exc))
+                return ('', 'failed')
             finally:
                 latencies.append(time.perf_counter() - call_started)
 
-        responses = _generate_batch_concurrent(
+        results = _generate_batch_concurrent(
             timed_generate, [item['text'] for item in items],
             max_workers=self.max_workers)
+        responses = [text for text, _ in results]
+        outcomes = [outcome for _, outcome in results]
         ordered = sorted(latencies)
         count = max(1, len(ordered))
         self.last_cycle_latency_seconds = round(sum(ordered) / count, 3)
@@ -898,13 +930,20 @@ class LLMDriftMonitor:
         responses_by_text = list(responses)
         embeddings = self.embedder.extract_embeddings(responses_by_text)
 
-        for i, (item, response) in enumerate(zip(items, responses)):
+        for i, (item, response, outcome) in enumerate(zip(items, responses, outcomes)):
             # Extract features
             response_length, is_valid = self.embedder.extract_response_features(response)
             behavior = extract_behavior_features(response)
 
-            # Determine run status
-            run_status = 'success' if is_valid else 'failed'
+            # Keep the three outcomes distinct: a returned empty response is
+            # an observation, a failed request is not. is_valid stays 0 for
+            # both so the availability detector still counts the miss.
+            if outcome == 'failed':
+                run_status = 'failed'
+            elif outcome == 'empty' or not is_valid:
+                run_status = 'empty'
+            else:
+                run_status = 'success'
 
             # Insert probe run
             # Use proper timestamp with microseconds for uniqueness

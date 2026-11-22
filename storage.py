@@ -16,9 +16,35 @@ import logging
 import os
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("llm_drift_monitor.storage")
+
+# Explicit probe outcomes. Empty output and a failed provider request are
+# different observations: an empty response still describes the model's
+# behaviour (the availability detector counts the miss), whereas a failed
+# request says nothing about the model at all.
+OUTCOME_SUCCESS = "success"
+OUTCOME_EMPTY = "empty"
+OUTCOME_FAILED = "failed"
+
+# Marker for the one-time, non-destructive relabel of legacy rows. Old code
+# wrote run_status='failed' for every invalid (empty/whitespace) response,
+# because a real provider failure aborted the batch before any row existed.
+_EMPTY_STATUS_MIGRATION = "legacy_empty_run_status_v1"
+
+
+def is_legacy_empty_response(status: Optional[str], text: Optional[str],
+                             is_valid: Any) -> bool:
+    """True when a stored 'failed' row is really an empty model response.
+
+    Used by the one-time migration and when importing the committed baseline
+    into a fresh backend, so both paths apply the same, evidence-based rule.
+    """
+    return (status == OUTCOME_FAILED
+            and not (text or "").strip()
+            and not bool(is_valid))
 
 
 class _Row:
@@ -266,6 +292,9 @@ class DriftMonitorStorage:
             # exact cycle link. Backfill it once from insert order/timestamps;
             # new rows always carry the cycle id directly.
             self._backfill_cycle_links(conn)
+            # Distinguish empty model output from a provider failure. Runs
+            # once; later rows already carry the correct explicit outcome.
+            self._migrate_run_status(conn)
             # Every read path filters or orders by these columns; without the
             # indexes each dashboard poll scans the tables.
             conn.executescript("""
@@ -280,6 +309,35 @@ class DriftMonitorStorage:
                 CREATE INDEX IF NOT EXISTS idx_alerts_cycle ON alerts (cycle_id);
             """)
             conn.commit()
+
+    def _migrate_run_status(self, conn) -> None:
+        """Relabel legacy empty responses once, without touching other data.
+
+        A historical row with status 'failed', empty text and validity 0 was
+        produced by the old `run_status = 'success' if is_valid else 'failed'`
+        rule: it is an empty model output, not a transport failure. The
+        migration is marker-guarded so a later, genuine 'failed' row is never
+        rewritten on a subsequent start.
+        """
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                name TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            )
+        """)
+        if conn.execute(
+                "SELECT 1 FROM schema_migrations WHERE name = ?",
+                (_EMPTY_STATUS_MIGRATION,)).fetchone():
+            return
+        conn.execute("""
+            UPDATE probe_runs SET run_status = ?
+            WHERE run_status = ?
+              AND (response_text IS NULL OR TRIM(response_text) = '')
+              AND (is_valid IS NULL OR is_valid = 0)
+        """, (OUTCOME_EMPTY, OUTCOME_FAILED))
+        conn.execute(
+            "INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)",
+            (_EMPTY_STATUS_MIGRATION, datetime.now(timezone.utc).isoformat()))
 
     def _backfill_cycle_links(self, conn) -> None:
         """Attach legacy test results and alerts to the cycle they followed.
@@ -706,12 +764,41 @@ class DriftMonitorStorage:
 
     # ---------- cycle aggregation and diagnostics ----------
 
-    def get_cycle_summaries(self, limit: int = 12) -> List[Dict[str, Any]]:
+    def _reference_cycle_ids(self, conn, reference_window: Optional[int]) -> set:
+        """Cycles whose rows make up the configured reference window.
+
+        Derived from the exact stored cycles, oldest first: walk the cycles
+        until their cumulative probe count reaches the configured reference
+        window. Nothing is keyed to a cycle number or a timestamp guess, so a
+        different batch size or window size still identifies the right set.
+        """
+        if not reference_window:
+            return set()
+        ids: set = set()
+        cumulative = 0
+        rows = conn.execute("""
+            SELECT cycle_id, COUNT(*) AS probe_count
+            FROM probe_runs
+            WHERE cycle_id IS NOT NULL AND cycle_id <> ''
+            GROUP BY cycle_id ORDER BY MIN(id) ASC
+        """).fetchall()
+        for row in rows:
+            if cumulative >= int(reference_window):
+                break
+            ids.add(row[0])
+            cumulative += int(row[1] or 0)
+        return ids
+
+    def get_cycle_summaries(self, limit: int = 12,
+                            expected_probes: Optional[int] = None,
+                            reference_window: Optional[int] = None) -> List[Dict[str, Any]]:
         """Group probe records by cycle and attach the exact detector result.
 
         The join is on ``cycle_id``, never on timestamps. A cycle with no
-        result is still a real monitoring cycle and stays in the list; the
-        caller can label it awaiting evaluation, interrupted or failed.
+        result is still a real monitoring cycle and stays in the list. Cycles
+        that supplied the reference window are flagged from stored records,
+        so they can be shown as baseline collection rather than as pending
+        evaluations.
         """
         with self._db() as conn:
             rows = conn.execute("""
@@ -724,7 +811,9 @@ class DriftMonitorStorage:
                            COUNT(*) AS probe_count,
                            SUM(CASE WHEN run_status = 'success' THEN 1 ELSE 0 END)
                                AS success_count,
-                           SUM(CASE WHEN run_status <> 'success' THEN 1 ELSE 0 END)
+                           SUM(CASE WHEN run_status = 'empty' THEN 1 ELSE 0 END)
+                               AS empty_count,
+                           SUM(CASE WHEN run_status = 'failed' THEN 1 ELSE 0 END)
                                AS failed_count,
                            MIN(id) AS first_id,
                            MAX(id) AS last_id
@@ -736,6 +825,7 @@ class DriftMonitorStorage:
                 LIMIT ?
             """, (int(limit),)).fetchall()
             summaries = [dict(row) for row in rows]
+            baseline_ids = self._reference_cycle_ids(conn, reference_window)
             cycle_ids = [s["cycle_id"] for s in summaries]
             results: Dict[str, Dict[str, Any]] = {}
             if cycle_ids:
@@ -748,6 +838,8 @@ class DriftMonitorStorage:
             for summary in summaries:
                 summary["result"] = results.get(summary["cycle_id"])
                 summary["timestamp"] = summary.get("ended_at") or summary.get("started_at")
+                summary["reference_baseline"] = summary["cycle_id"] in baseline_ids
+                summary["expected_probes"] = expected_probes
             return summaries
 
     def get_cycle_ids(self) -> set:
@@ -757,8 +849,13 @@ class DriftMonitorStorage:
                 "WHERE cycle_id IS NOT NULL AND cycle_id <> ''").fetchall()
             return {row[0] for row in rows}
 
-    def get_diagnostics(self, expected_probes: Optional[int] = None) -> Dict[str, Any]:
-        """Counts that expose missing, orphaned or unevaluated records."""
+    def get_diagnostics(self, expected_probes: Optional[int] = None,
+                        reference_window: Optional[int] = None) -> Dict[str, Any]:
+        """Counts that expose missing, orphaned or unevaluated records.
+
+        Awaiting-evaluation counts exclude cycles that supplied the reference
+        window: those are baseline collection, not pending detector work.
+        """
         with self._db() as conn:
             def scalar(sql, params=()):
                 row = conn.execute(sql, params).fetchone()
@@ -767,8 +864,10 @@ class DriftMonitorStorage:
             probe_runs = scalar("SELECT COUNT(*) FROM probe_runs")
             successful = scalar(
                 "SELECT COUNT(*) FROM probe_runs WHERE run_status = 'success'")
+            empty = scalar(
+                "SELECT COUNT(*) FROM probe_runs WHERE run_status = 'empty'")
             failed = scalar(
-                "SELECT COUNT(*) FROM probe_runs WHERE run_status <> 'success'")
+                "SELECT COUNT(*) FROM probe_runs WHERE run_status = 'failed'")
             without_cycle = scalar(
                 "SELECT COUNT(*) FROM probe_runs "
                 "WHERE cycle_id IS NULL OR cycle_id = ''")
@@ -779,48 +878,41 @@ class DriftMonitorStorage:
             results_without_cycle = scalar(
                 "SELECT COUNT(*) FROM test_results "
                 "WHERE cycle_id IS NULL OR cycle_id = ''")
-            evaluated_cycles = scalar(
-                "SELECT COUNT(DISTINCT cycle_id) FROM test_results "
-                "WHERE cycle_id IS NOT NULL AND cycle_id <> ''")
+            evaluated_ids = {row[0] for row in conn.execute(
+                "SELECT DISTINCT cycle_id FROM test_results "
+                "WHERE cycle_id IS NOT NULL AND cycle_id <> ''").fetchall()}
+            evaluated_cycles = len(evaluated_ids)
             alerts = scalar("SELECT COUNT(*) FROM alerts")
             failed_cycles = scalar("""
                 SELECT COUNT(*) FROM (
                     SELECT cycle_id FROM probe_runs
                     WHERE cycle_id IS NOT NULL AND cycle_id <> ''
                     GROUP BY cycle_id
-                    HAVING SUM(CASE WHEN run_status <> 'success' THEN 1 ELSE 0 END) > 0
+                    HAVING SUM(CASE WHEN run_status = 'failed' THEN 1 ELSE 0 END) > 0
                 ) c
             """)
+            baseline_ids = self._reference_cycle_ids(conn, reference_window)
             complete_cycles = None
             awaiting_evaluation = None
             if expected_probes:
-                complete_cycles = scalar("""
-                    SELECT COUNT(*) FROM (
-                        SELECT cycle_id FROM probe_runs
-                        WHERE cycle_id IS NOT NULL AND cycle_id <> ''
-                        GROUP BY cycle_id
-                        HAVING COUNT(*) = ?
-                    ) c
-                """, (int(expected_probes),))
-                awaiting_evaluation = scalar("""
-                    SELECT COUNT(*) FROM (
-                        SELECT cycle_id FROM probe_runs
-                        WHERE cycle_id IS NOT NULL AND cycle_id <> ''
-                        GROUP BY cycle_id
-                        HAVING COUNT(*) = ?
-                    ) c
-                    WHERE NOT EXISTS (
-                        SELECT 1 FROM test_results tr
-                        WHERE tr.cycle_id = c.cycle_id
-                    )
-                """, (int(expected_probes),))
+                complete_rows = conn.execute("""
+                    SELECT cycle_id FROM probe_runs
+                    WHERE cycle_id IS NOT NULL AND cycle_id <> ''
+                    GROUP BY cycle_id HAVING COUNT(*) = ?
+                """, (int(expected_probes),)).fetchall()
+                complete_cycles = len(complete_rows)
+                awaiting_evaluation = sum(
+                    1 for row in complete_rows
+                    if row[0] not in evaluated_ids and row[0] not in baseline_ids)
             return {
                 "probe_runs": probe_runs,
                 "successful_probe_runs": successful,
+                "empty_probe_runs": empty,
                 "failed_probe_runs": failed,
                 "probe_runs_without_cycle": without_cycle,
                 "cycles": cycles,
                 "failed_cycles": failed_cycles,
+                "reference_baseline_cycles": len(baseline_ids),
                 "complete_cycles": complete_cycles,
                 "evaluated_cycles": evaluated_cycles,
                 "awaiting_evaluation_cycles": awaiting_evaluation,
@@ -828,6 +920,7 @@ class DriftMonitorStorage:
                 "test_results_without_cycle": results_without_cycle,
                 "alerts": alerts,
                 "expected_probes_per_cycle": expected_probes,
+                "reference_window": reference_window,
             }
 
     def info(self) -> Dict[str, Any]:
@@ -839,11 +932,12 @@ class DriftMonitorStorage:
             "storage_error": self.storage_error,
         }
 
-    def log_startup_status(self, expected_probes: Optional[int] = None) -> None:
+    def log_startup_status(self, expected_probes: Optional[int] = None,
+                           reference_window: Optional[int] = None) -> None:
         """Log the resolved database identity and row counts, never secrets."""
         try:
             payload = {"event": "storage_ready", **self.info(),
-                       "counts": self.get_diagnostics(expected_probes)}
+                       "counts": self.get_diagnostics(expected_probes, reference_window)}
             logger.info(json.dumps(payload, default=str))
         except Exception as exc:  # a log line must never stop the service
             logger.warning("storage startup status unavailable: %s", exc)
@@ -1032,6 +1126,7 @@ class PostgresStorage(DriftMonitorStorage):
         with self._db() as conn:
             conn.executescript(_PG_SCHEMA)
             self._backfill_cycle_links(conn)
+            self._migrate_run_status(conn)
             conn.commit()
 
     def _migrate_columns(self, conn) -> None:
@@ -1155,9 +1250,11 @@ def import_baseline(target: DriftMonitorStorage, source_path: str) -> Dict[str, 
     """Import a committed SQLite baseline into a target database, idempotently.
 
     A cycle that already exists in the target is skipped whole, so a redeploy
-    can never duplicate baseline probes. The manifest is upserted (same keys,
-    same values), and a test result is only inserted when its cycle has no
-    result yet. The reference window is never overwritten.
+    can never duplicate baseline probes. The manifest is only written when
+    the target has none, and a test result is only inserted when its cycle
+    has no result yet. The reference window is never overwritten. Legacy
+    empty responses in the source are stored with the explicit 'empty'
+    outcome, not mislabelled as provider failures.
     """
     if not os.path.exists(source_path):
         return {"source": source_path, "exists": False, "imported_cycles": 0}
@@ -1179,6 +1276,13 @@ def import_baseline(target: DriftMonitorStorage, source_path: str) -> Dict[str, 
                 (cycle["cycle_id"],)).fetchall()
             for run in runs:
                 run = dict(run)
+                # The committed seed predates the outcome split. Apply the
+                # same evidence-based rule the migration uses, without
+                # mutating the source file.
+                status = run["run_status"]
+                if is_legacy_empty_response(
+                        status, run["response_text"], run["is_valid"]):
+                    status = OUTCOME_EMPTY
                 new_id = target.insert_probe_run(
                     timestamp=run["timestamp"],
                     prompt_version=run["prompt_version"],
@@ -1187,7 +1291,7 @@ def import_baseline(target: DriftMonitorStorage, source_path: str) -> Dict[str, 
                     response_text=run["response_text"],
                     response_length=run["response_length"],
                     is_valid=bool(run["is_valid"]),
-                    run_status=run["run_status"],
+                    run_status=status,
                     adapter_type=run["adapter_type"],
                     prompt_id=run.get("prompt_id"),
                     category=run.get("category"),

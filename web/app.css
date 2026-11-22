@@ -354,12 +354,19 @@ html, body {
   font-variant-numeric: tabular-nums;
 }
 
+.act-empty {
+  color: var(--ink-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
 .act-status {
   font-size: 12px;
   white-space: nowrap;
 }
 
 .act-status.is-ok { color: var(--ink-2); }
+.act-status.is-baseline { color: var(--ink-3); }
 .act-status.is-wait { color: var(--warn); }
 .act-status.is-warn { color: var(--warn); }
 .act-status.is-bad { color: var(--alert); }

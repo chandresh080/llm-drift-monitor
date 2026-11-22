@@ -30,6 +30,8 @@ import threading
 import time
 import uuid
 import logging
+import yaml
+from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any, Dict, Optional
 
@@ -37,7 +39,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel
 
-from monitor import LLMDriftMonitor, _cgroup_memory_stats, _cgroup_memory_stat_fields
+from monitor import (LLMDriftMonitor, _cgroup_memory_stats,
+                     _cgroup_memory_stat_fields, _safe_error_text)
 from storage import DriftMonitorStorage
 
 app = FastAPI(title="LLM Drift Monitor")
@@ -748,16 +751,23 @@ def get_drift_results(limit: int = 20) -> list:
 
 
 def _cycle_status(cycle: Dict[str, Any], expected: Optional[int]) -> str:
-    """Classify a stored cycle from records, never from a timestamp guess."""
+    """Classify a stored cycle from records, never from a timestamp guess.
+
+    Reference-baseline cycles are identified by the storage layer from the
+    configured reference window and the exact cycle rows. Without a detector
+    result they are baseline collection, not pending evaluations.
+    """
     probe_count = int(cycle.get("probe_count") or 0)
     failed = int(cycle.get("failed_count") or 0)
+    if cycle.get("result") is not None:
+        return "evaluated"
+    if cycle.get("reference_baseline"):
+        return "reference_baseline"
     if expected and probe_count < int(expected):
         return "interrupted"
     if probe_count and failed == probe_count:
         return "failed"
-    if cycle.get("result") is None:
-        return "awaiting_evaluation"
-    return "evaluated"
+    return "awaiting_evaluation"
 
 
 @app.get("/cycles")
@@ -765,13 +775,18 @@ def get_cycles(limit: int = 12) -> list:
     """Cycle summaries grouped from probe records.
 
     This is the activity feed's source: one row per monitoring cycle, not one
-    row per stored detector result. A cycle without a result is still listed
-    and labelled awaiting evaluation.
+    row per stored detector result. Cycles that supplied the reference window
+    are labelled baseline collection; only later result-free cycles are
+    awaiting evaluation.
     """
     monitor = _get_monitor()
     expected = monitor.config.get('monitoring', {}).get('batch_size')
+    reference_window = monitor.config.get('reference', {}).get('window_size')
     cycles = cached_read(
-        f"cycles:{limit}", lambda: _get_storage().get_cycle_summaries(limit=limit))
+        f"cycles:{limit}",
+        lambda: _get_storage().get_cycle_summaries(
+            limit=limit, expected_probes=expected,
+            reference_window=reference_window))
     out = []
     for cycle in cycles:
         item = dict(cycle)
@@ -791,7 +806,10 @@ def get_stats() -> Dict[str, Any]:
     """
     monitor = _get_monitor()
     expected = monitor.config.get('monitoring', {}).get('batch_size')
-    return cached_read("stats", lambda: _get_storage().get_diagnostics(expected))
+    reference_window = monitor.config.get('reference', {}).get('window_size')
+    return cached_read(
+        "stats",
+        lambda: _get_storage().get_diagnostics(expected, reference_window))
 
 
 @app.get("/config")
@@ -1241,23 +1259,75 @@ def health(probe: bool = True) -> Dict[str, Any]:
     first /runs call does not pay the whole cost, and (unless a fresh cached
     result exists) asks the adapter for a real ping. The dashboard never
     blocks its first render on this; it treats the result as status context.
+
+    The response always carries a diagnostics object so a failed dependency
+    is explainable from one request: HTTP status, whether a ping timed out,
+    sanitised error detail, and each readiness result. Errors are redacted
+    before they leave the process; no key or token is ever echoed.
     """
+    started = time.monotonic()
+    diagnostics: Dict[str, Any] = {
+        "http_status": 200,
+        "timeout": False,
+        "error_type": None,
+        "error_detail": None,
+        "db_ready": False,
+        "provider_ready": False,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    # Database readiness is measured on its own. A provider problem can never
+    # rewrite this result.
     db_ok = True
     db_error = None
+    storage = None
     try:
         storage = _get_storage()
         storage.count_successful_runs()
+        db_ok = True
     except Exception as exc:
         db_ok = False
-        db_error = str(exc)
-    monitor = _get_monitor()
+        db_error = _safe_error_text(exc)
+        diagnostics["error_type"] = type(exc).__name__
+        diagnostics["error_detail"] = db_error
+    diagnostics["db_ready"] = db_ok
+
+    # Monitor construction is a dependency too: if it fails, answer with a
+    # structured degraded payload rather than a 500 that the dashboard can
+    # only report as an opaque Unknown.
+    try:
+        monitor = _get_monitor()
+    except Exception as exc:
+        detail = _safe_error_text(exc)
+        logger.error("health: monitor initialization failed: %s", detail)
+        diagnostics.update({
+            "error_type": diagnostics["error_type"] or type(exc).__name__,
+            "error_detail": diagnostics["error_detail"] or detail,
+            "provider_ready": False,
+            "duration_ms": round((time.monotonic() - started) * 1000, 1),
+        })
+        return {
+            "status": "degraded",
+            "db": "ok" if db_ok else "unavailable",
+            "database": "available" if db_ok else "unavailable",
+            "db_error": db_error,
+            "provider": cfg_model_id_or_none(),
+            "provider_status": "unreachable",
+            "provider_error": detail,
+            "storage_backend": getattr(storage, "backend", "unknown") if db_ok else "unknown",
+            "storage_durable": bool(getattr(storage, "is_durable", False)) if db_ok else False,
+            "storage_location": getattr(storage, "location", None) if db_ok else None,
+            "diagnostics": diagnostics,
+        }
+
     provider_name = (monitor.adapter.model_id if monitor.adapter
                      else cfg_model_id(monitor))
     if monitor.adapter is None:
         # Explicit unavailable state, never a synthetic fallback: the
         # deployment is missing its provider key and states it.
         provider_ok = False
-        provider_error = monitor.adapter_error
+        provider_error = _safe_error_text(
+            Exception(monitor.adapter_error)) if monitor.adapter_error else None
         provider_status = "not_configured"
     else:
         now = time.monotonic()
@@ -1271,8 +1341,13 @@ def health(probe: bool = True) -> Dict[str, Any]:
                 provider_status = "ok" if provider_ok else "unreachable"
             except Exception as exc:
                 provider_ok = False
-                provider_error = str(exc)
+                provider_error = _safe_error_text(exc)
                 provider_status = "unreachable"
+                # Distinguish a timeout from a server-side response.
+                if isinstance(exc, TimeoutError):
+                    diagnostics["timeout"] = True
+                diagnostics["error_type"] = diagnostics["error_type"] or type(exc).__name__
+                diagnostics["error_detail"] = diagnostics["error_detail"] or provider_error
             _provider_health.update({
                 "at": now, "ok": provider_ok,
                 "status": provider_status, "error": provider_error,
@@ -1287,8 +1362,9 @@ def health(probe: bool = True) -> Dict[str, Any]:
             provider_ok = False
             provider_status = "unchecked"
             provider_error = None
+    diagnostics["provider_ready"] = bool(provider_ok)
+    diagnostics["duration_ms"] = round((time.monotonic() - started) * 1000, 1)
     status = "ok" if (db_ok and provider_ok) else "degraded"
-    storage = _get_storage()
     return {
         "status": status,
         "db": "ok" if db_ok else "unavailable",
@@ -1297,10 +1373,21 @@ def health(probe: bool = True) -> Dict[str, Any]:
         "provider": provider_name,
         "provider_status": provider_status,
         "provider_error": provider_error,
-        "storage_backend": getattr(storage, "backend", "unknown"),
-        "storage_durable": bool(getattr(storage, "is_durable", False)),
-        "storage_location": getattr(storage, "location", None),
+        "storage_backend": getattr(storage, "backend", "unknown") if db_ok else "unknown",
+        "storage_durable": bool(getattr(storage, "is_durable", False)) if db_ok else False,
+        "storage_location": getattr(storage, "location", None) if db_ok else None,
+        "diagnostics": diagnostics,
     }
+
+
+def cfg_model_id_or_none() -> Optional[str]:
+    """Best-effort model id without a monitor instance, for failure payloads."""
+    try:
+        with open(os.environ.get("DRIFT_MONITOR_CONFIG", "config/config.yaml")) as handle:
+            cfg = yaml.safe_load(handle) or {}
+        return cfg.get("target", {}).get("model_id")
+    except Exception:
+        return None
 
 
 def cfg_model_id(monitor: LLMDriftMonitor) -> Optional[str]:

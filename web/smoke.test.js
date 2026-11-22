@@ -916,6 +916,128 @@ const settle = () => new Promise((r) => setImmediate(r));
   await loadAll();
   await settle();
 
+  console.log("scenario 3c: baseline cycle roles, empty responses and storage identity");
+
+  /* The committed Gemini baseline is three reference cycles plus one
+     evaluated cycle. Baseline cycles are not pending evaluations, and their
+     empty responses are not provider failures. */
+  const oneResult = {
+    id: 1, timestamp: "2026-11-10T18:22:00",
+    overall_drift_detected: 0, overall_quality_degradation: 0,
+    ks_adjusted_pvalue: 0.82, ks_significant: 0,
+    proportion_z_adjusted_pvalue: 0.64, proportion_z_significant: 0,
+    mmd_adjusted_pvalue: 1.0, mmd_significant: 0,
+  };
+  const baselineCycles = [
+    { cycle_id: "evaluated", cycle_number: 4, probe_count: 40, empty_count: 0,
+      failed_count: 0, status: "evaluated", reference_baseline: false,
+      started_at: "2026-11-10T15:27:00", ended_at: "2026-11-10T15:27:35",
+      result: oneResult },
+    { cycle_id: "base-3", cycle_number: 3, probe_count: 40, empty_count: 1,
+      failed_count: 0, status: "reference_baseline", reference_baseline: true,
+      started_at: "2026-11-09T16:54:00", ended_at: "2026-11-09T16:54:19",
+      result: null },
+    { cycle_id: "base-2", cycle_number: 2, probe_count: 40, empty_count: 1,
+      failed_count: 0, status: "reference_baseline", reference_baseline: true,
+      started_at: "2026-11-09T16:44:00", ended_at: "2026-11-09T16:44:04",
+      result: null },
+    { cycle_id: "base-1", cycle_number: 1, probe_count: 40, empty_count: 1,
+      failed_count: 0, status: "reference_baseline", reference_baseline: true,
+      started_at: "2026-11-09T13:00:00", ended_at: "2026-11-09T13:00:13",
+      result: null },
+  ];
+  routeOverrides = {
+    "/cycles?limit=24": () => resp(baselineCycles),
+    "/config": () => resp({
+      target_model: "gemini-3.1-flash-lite", adapter_type: "GeminiAdapter",
+      provider_available: true, provider_error: null,
+      embedding_model: "all-MiniLM-L6-v2", reference_window: 120, current_window: 40,
+      prompt_panel_version: "3.0.0", probes_per_cycle: 40, alpha: 0.05,
+      min_consecutive_cycles: 2,
+      storage: { backend: "sqlite", durable: false, location: "/app/data/seed_gemini.db",
+        note: "SQLite on the container filesystem." },
+    }),
+    "/stats": () => resp({
+      probe_runs: 160, test_results: 1, cycles: 4, evaluated_cycles: 1,
+      reference_baseline_cycles: 3, awaiting_evaluation_cycles: 0,
+      failed_cycles: 0, complete_cycles: 4, alerts: 0,
+    }),
+  };
+  await loadAll();
+  await settle();
+
+  const baseHtml = getById("activity-list").innerHTML;
+  check("baseline cycles are labelled Reference baseline, not awaiting evaluation",
+    (baseHtml.match(/Reference baseline/g) || []).length === 3
+      && !baseHtml.includes("Awaiting evaluation"),
+    baseHtml.slice(0, 400));
+  check("only the real detector result is shown as Evaluated",
+    (baseHtml.match(/Evaluated/g) || []).length === 1, baseHtml.slice(0, 400));
+  check("empty responses are described as empty, not failed",
+    baseHtml.includes("1 empty response") && !baseHtml.includes("failed"),
+    baseHtml.slice(0, 400));
+  check("one evaluated cycle renders a compact one-point history svg",
+    getById("history-chart").innerHTML.includes("<svg")
+      && getById("history-note").textContent.includes("1 evaluated cycle available")
+      && !getById("history-note").textContent.includes("Awaiting"),
+    getById("history-note").textContent);
+  check("SQLite storage is shown as ephemeral, never durable",
+    getById("cfg-storage").textContent === "SQLite · Ephemeral"
+      && !getById("cfg-storage").textContent.includes("Persistent"),
+    getById("cfg-storage").textContent);
+
+  /* A failed /health fetch must not turn Database Available into Unknown
+     while /stats and /cycles have already queried storage successfully. */
+  routeOverrides = {
+    "/health": () => resp({ detail: "temporary readiness failure" },
+      { ok: false, status: 503 }),
+  };
+  vmEval("state.health = null; state.healthCheckedAt = 0; loadHealth();");
+  await settle();
+  check("database stays Available when /health fails but /stats answered",
+    getById("db-pill").innerHTML.includes("Database Available")
+      && !getById("db-pill").innerHTML.includes("Unknown"),
+    getById("db-pill").innerHTML);
+  vmEval("globalThis.__healthError = state.healthError;");
+  const healthErr = globalThis.__healthError;
+  check("readiness failure records HTTP status as a diagnostic",
+    Boolean(healthErr && healthErr.httpStatus === 503
+      && healthErr.timeout === false && healthErr.detail),
+    JSON.stringify(healthErr));
+
+  /* An unchecked provider is unknown, not a measured failure. */
+  routeOverrides = { "/health": () => resp({
+    status: "degraded", db: "ok", database: "available",
+    provider_status: "unchecked", provider_error: null,
+    provider: "gemini-3.1-flash-lite",
+  }) };
+  vmEval("state.health = null; state.healthCheckedAt = 0; loadHealth();");
+  await settle();
+  check("unchecked provider is Unknown, not Unavailable",
+    getById("provider-pill").innerHTML.includes("Gemini Unknown")
+      && !getById("provider-pill").innerHTML.includes("Gemini Unavailable"),
+    getById("provider-pill").innerHTML);
+
+  /* PostgreSQL with a durable backend is the only persistent claim. */
+  routeOverrides = { "/config": () => resp({
+    target_model: "gemini-3.1-flash-lite", adapter_type: "GeminiAdapter",
+    provider_available: true, provider_error: null,
+    embedding_model: "all-MiniLM-L6-v2", reference_window: 120, current_window: 40,
+    prompt_panel_version: "3.0.0", probes_per_cycle: 40, alpha: 0.05,
+    min_consecutive_cycles: 2,
+    storage: { backend: "postgres", durable: true, location: "DATABASE_URL",
+      note: "Managed PostgreSQL. Verify the plan is non-expiring." },
+  }) };
+  await loadAll();
+  await settle();
+  check("configured PostgreSQL is shown as persistent",
+    getById("cfg-storage").textContent === "PostgreSQL · Persistent",
+    getById("cfg-storage").textContent);
+
+  routeOverrides = {};
+  await loadAll();
+  await settle();
+
   console.log("scenario 4: split signals, redacted prompts, rate limits");
 
   /* availability fires, distribution does not: the headline must stay
