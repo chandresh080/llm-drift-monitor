@@ -40,7 +40,11 @@ const state = {
 
 const WAKE_WAIT_MS = 5000;
 const REQUEST_TIMEOUT_MS = 15000;
-const HEALTH_REFRESH_MS = 300000;
+/* Match api.PROVIDER_HEALTH_TTL_SECONDS (60s). The API reuses a fresh ping
+   for that long, so polling at this rate costs no extra provider quota and
+   bounds how long an unresolved status can linger on screen. /config can
+   override the value if the backend TTL changes. */
+const DEFAULT_HEALTH_REFRESH_MS = 60000;
 const NUM_TESTS = 3;      // detector family: KS, availability, MMD
 
 const $ = (id) => document.getElementById(id);
@@ -1210,20 +1214,46 @@ async function loadOne(def) {
   renderHealthPill();
 }
 
+/* The backend caches a real provider ping for PROVIDER_HEALTH_TTL_SECONDS.
+   Use that value when /config supplies it; otherwise keep the documented
+   default in sync. Never let this frontend interval exceed the backend TTL
+   by five minutes, or an early `unchecked` result can outlive a healthy
+   provider. */
+function healthRefreshMs() {
+  const ttl = state.config && state.config.provider_health_ttl_seconds;
+  if (typeof ttl === "number" && Number.isFinite(ttl) && ttl > 0) {
+    return Math.max(1000, Math.round(ttl * 1000));
+  }
+  return DEFAULT_HEALTH_REFRESH_MS;
+}
+
+/* Only a decisive provider verdict may be reused. `unchecked`, an
+   unrecognised value, or a failed readiness request must be retried on the
+   next refresh instead of being frozen in application state. */
+function providerStatusSettled(health) {
+  const status = health && health.provider_status;
+  return status === "ok" || status === "unreachable"
+    || status === "not_configured";
+}
+
 /* Readiness is separate from liveness and never blocks the first render.
-   The provider ping costs quota, so a fresh answer is reused briefly. A
-   failed readiness call leaves the dependency states unknown instead of
-   claiming they are down. */
+   The provider ping costs quota, so a fresh settled answer is reused for the
+   backend TTL. A failed or unresolved readiness call is retried on the next
+   refresh instead of claiming the provider is down. */
 async function loadHealth() {
   const now = Date.now();
-  if (state.health && now - state.healthCheckedAt < HEALTH_REFRESH_MS) return;
+  if (state.health && !state.healthError
+      && providerStatusSettled(state.health)
+      && now - state.healthCheckedAt < healthRefreshMs()) return;
   try {
     // Readiness must be fresh: never let a browser heuristic reuse an old
     // dependency snapshot. The API also sends Cache-Control: no-store.
     const payload = await fetchJson("/health", { cache: "no-store" });
     state.health = payload;
     state.healthError = null;
-    state.healthCheckedAt = now;
+    // Stamp the response time, not the request start: a slow ping must not
+    // immediately look stale and trigger a second provider call.
+    state.healthCheckedAt = Date.now();
     // Surface the API's dependency detail without echoing secrets. The
     // request's own HTTP status lives on state.healthError, not here.
     const d = payload && payload.diagnostics;
@@ -1242,7 +1272,7 @@ async function loadHealth() {
         : (err.status ? `HTTP ${err.status}` : (err.name || "network")),
       detail: String(err.detail || err.message || err).slice(0, 240),
     };
-    state.healthCheckedAt = now;
+    state.healthCheckedAt = Date.now();
     // A failed readiness fetch is not proof the database is down; other
     // DB-backed endpoints remain the authority for the DB pill.
     console.warn("readiness fetch failed", state.healthError);

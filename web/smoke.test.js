@@ -10,6 +10,8 @@
    - API reachability is its own state: online, degraded, unknown, offline
    - provider availability is a separate fact on the model label, never a
      second competing service badge
+   - readiness refresh retries unresolved states but reuses decisive ones
+     only for the backend provider-ping TTL
    - recent activity is a real table: five newest cycles, newest first
    - detector history needs at least three stored cycles; fewer is a compact
      message, never an empty chart or fabricated data
@@ -289,7 +291,7 @@ const fixtures = {
     tests_start_at_responses: 160, prompt_panel_version: "3.0.0",
     prompt_panel_probes: 40, probes_per_cycle: 40, alpha: 0.05,
     min_consecutive_cycles: 2, category_window_cycles: 3,
-    min_samples_per_category: 8,
+    min_samples_per_category: 8, provider_health_ttl_seconds: 60,
     baseline_manifest: {
       provider: "gemini", model_id: "gemini-3.1-flash-lite",
       panel_version: "3.0.0", temperature: "0.0",
@@ -1089,6 +1091,109 @@ const settle = () => new Promise((r) => setImmediate(r));
     getById("provider-pill").innerHTML.includes("Gemini Available")
       && globalThis.__recoveredHealth === null,
     `${getById("provider-pill").innerHTML} / ${JSON.stringify(globalThis.__recoveredHealth)}`);
+
+  console.log("scenario 3e: readiness refresh uses state, not only HTTP caching");
+
+  /* The frontend refresh interval is separate from Cache-Control. Test the
+     loadHealth() cache itself: unresolved states must be retried, settled
+     states may be reused until the backend ping TTL elapses. */
+  const healthRequestCount = () => requestedUrls.filter((u) => u === "/health").length;
+  const unavailableHealth = () => resp({
+    status: "degraded", db: "ok", database: "available", db_error: null,
+    provider: "gemini-3.1-flash-lite", provider_status: "unreachable",
+    provider_error: "quota exhausted",
+  });
+  const brokenDbHealth = () => resp({
+    status: "degraded", db: "unavailable", database: "unavailable",
+    db_error: "disk I/O error",
+    provider: "gemini-3.1-flash-lite", provider_status: "ok",
+    provider_error: null,
+  });
+  vmEval("state.config.provider_health_ttl_seconds = 60; "
+    + "globalThis.__healthRefreshMs = healthRefreshMs();");
+  check("frontend TTL follows the backend provider ping TTL",
+    globalThis.__healthRefreshMs === 60000,
+    String(globalThis.__healthRefreshMs));
+
+  /* A fresh `unchecked` result must not freeze the indicator. */
+  routeOverrides = { "/health": uncheckedHealth };
+  reloadHealth();
+  await settle();
+  const afterUnchecked = healthRequestCount();
+  routeOverrides = { "/health": healthyHealth };
+  vmEval("loadHealth();");   // no time travel: still inside the cache interval
+  await settle();
+  check("unchecked is retried immediately when the provider is healthy",
+    healthRequestCount() === afterUnchecked + 1
+      && getById("provider-pill").innerHTML.includes("Gemini Available")
+      && getById("model-label").title === getById("provider-pill").title,
+    `${healthRequestCount()} / ${getById("provider-pill").innerHTML}`);
+
+  /* A failed request leaves state.health null; the next refresh must still
+     recover without waiting for a five-minute cache window. */
+  routeOverrides = { "/health": () => resp(
+    { detail: "temporary failure" }, { ok: false, status: 503 }) };
+  reloadHealth();
+  await settle();
+  const afterFailure = healthRequestCount();
+  check("HTTP failure is Unknown with the status visible",
+    getById("provider-pill").innerHTML.includes("Gemini Unknown")
+      && getById("provider-pill").title.includes("HTTP 503"),
+    getById("provider-pill").title);
+  routeOverrides = { "/health": healthyHealth };
+  vmEval("loadHealth();");
+  await settle();
+  check("healthy response after an HTTP failure is fetched and applied",
+    healthRequestCount() === afterFailure + 1
+      && getById("provider-pill").innerHTML.includes("Gemini Available"),
+    `${healthRequestCount()} / ${getById("provider-pill").innerHTML}`);
+
+  /* A decisive failure may be reused until the TTL elapses, then flips. */
+  routeOverrides = { "/health": unavailableHealth };
+  reloadHealth();
+  await settle();
+  check("unreachable is Gemini Unavailable with the provider error",
+    getById("provider-pill").innerHTML.includes("Gemini Unavailable")
+      && getById("provider-pill").title.includes("quota exhausted")
+      && getById("model-label").title === getById("provider-pill").title,
+    getById("provider-pill").title);
+  const afterUnreachable = healthRequestCount();
+  routeOverrides = { "/health": healthyHealth };
+  vmEval("loadHealth();");
+  await settle();
+  check("settled failure is reused inside the TTL, without a provider call",
+    healthRequestCount() === afterUnreachable
+      && getById("provider-pill").innerHTML.includes("Gemini Unavailable"),
+    `${healthRequestCount()} / ${getById("provider-pill").innerHTML}`);
+  vmEval("state.healthCheckedAt = Date.now() - healthRefreshMs() - 1; loadHealth();");
+  await settle();
+  check("unreachable transitions to ok once the TTL has elapsed",
+    healthRequestCount() === afterUnreachable + 1
+      && getById("provider-pill").innerHTML.includes("Gemini Available")
+      && getById("model-label").title === getById("provider-pill").title,
+    `${healthRequestCount()} / ${getById("provider-pill").innerHTML}`);
+
+  const afterHealthy = healthRequestCount();
+  vmEval("loadHealth();");
+  await settle();
+  check("repeated refresh inside the TTL reuses the healthy result",
+    healthRequestCount() === afterHealthy
+      && getById("provider-pill").innerHTML.includes("Gemini Available"),
+    `${healthRequestCount()} / ${getById("provider-pill").innerHTML}`);
+
+  /* Provider status comes only from provider_status, never from db_ok. */
+  routeOverrides = { "/health": brokenDbHealth };
+  reloadHealth();
+  await settle();
+  check("database failure does not change provider availability",
+    getById("db-pill").innerHTML.includes("Database Unavailable")
+      && getById("provider-pill").innerHTML.includes("Gemini Available")
+      && getById("model-label").title === getById("provider-pill").title,
+    `${getById("db-pill").innerHTML} / ${getById("provider-pill").innerHTML}`);
+
+  routeOverrides = {};
+  await loadAll();
+  await settle();
 
   /* PostgreSQL with a durable backend is the only persistent claim. */
   routeOverrides = { "/config": () => resp({

@@ -994,6 +994,16 @@ class TestHealthDependencies:
                 assert response.status_code == 200
                 assert response.headers["cache-control"] == "no-store"
 
+    def test_config_publishes_provider_health_ttl(self, tmp_path, monkeypatch):
+        import api
+
+        storage = DriftMonitorStorage(str(tmp_path / "ttl_config.db"))
+        monitor = StubMonitor(storage, adapter=self.Adapter(True))
+        monkeypatch.setattr("api._get_monitor", lambda: monitor)
+        api.invalidate_read_cache()
+        payload = api.get_config()
+        assert payload["provider_health_ttl_seconds"] == api.PROVIDER_HEALTH_TTL_SECONDS
+
     def test_database_and_provider_are_reported_independently(self, tmp_path, monkeypatch):
         from api import health
 

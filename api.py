@@ -860,6 +860,9 @@ def get_config() -> Dict[str, Any]:
             "alpha": cfg['alerts'].get('significance_threshold', 0.05),
             "min_consecutive_cycles": cfg['alerts'].get(
                 'min_consecutive_cycles', 2),
+            # The dashboard aligns its readiness refresh with this TTL so an
+            # unresolved result cannot be cached five minutes past recovery.
+            "provider_health_ttl_seconds": PROVIDER_HEALTH_TTL_SECONDS,
             "category_window_cycles": cfg['monitoring'].get(
                 'category_window_cycles', 5),
             "min_samples_per_category": cfg['monitoring'].get(
