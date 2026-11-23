@@ -12,6 +12,8 @@
      second competing service badge
    - readiness refresh retries unresolved states but reuses decisive ones
      only for the backend provider-ping TTL
+   - a finished monitoring run refreshes readiness, not just data panels, so
+     an earlier unchecked/failed result cannot survive a successful cycle
    - recent activity is a real table: five newest cycles, newest first
    - detector history needs at least three stored cycles; fewer is a compact
      message, never an empty chart or fabricated data
@@ -1190,6 +1192,54 @@ const settle = () => new Promise((r) => setImmediate(r));
       && getById("provider-pill").innerHTML.includes("Gemini Available")
       && getById("model-label").title === getById("provider-pill").title,
     `${getById("db-pill").innerHTML} / ${getById("provider-pill").innerHTML}`);
+
+  routeOverrides = {};
+  await loadAll();
+  await settle();
+
+  console.log("scenario 3f: a finished run refreshes stale readiness");
+
+  /* Regression for the deployed mismatch: runCheck() used to end with only
+     loadAll(). That re-rendered an unresolved health snapshot while the API
+     had already recovered, so the data cycle looked complete but the pill
+     stayed Unknown. Reproduce the old completion call first. */
+  routeOverrides = { "/health": healthyHealth };
+  vmEval(`state.health = {
+    status: 'degraded', db: 'ok', database: 'available', db_error: null,
+    provider: 'gemini-3.1-flash-lite', provider_status: 'unchecked',
+    provider_error: null
+  };
+  state.healthError = null;
+  state.healthCheckedAt = Date.now();
+  renderStatusGroup(); renderModelLabel();`);
+  const beforeCycle = healthRequestCount();
+  await loadAll();
+  await settle();
+  check("data-only completion reproduces stale Gemini Unknown",
+    healthRequestCount() === beforeCycle
+      && getById("provider-pill").innerHTML.includes("Gemini Unknown")
+      && getById("model-label").title === getById("provider-pill").title,
+    `${healthRequestCount() - beforeCycle} / ${getById("provider-pill").innerHTML}`);
+
+  const beforeRunRefresh = healthRequestCount();
+  await refreshAfterRun();
+  await settle();
+  check("finished run fetches fresh readiness and recovers Gemini Available",
+    healthRequestCount() === beforeRunRefresh + 1
+      && getById("provider-pill").innerHTML.includes("Gemini Available")
+      && getById("provider-pill").title.includes("answered its readiness ping")
+      && getById("model-label").title === getById("provider-pill").title,
+    `${healthRequestCount() - beforeRunRefresh} / ${getById("provider-pill").innerHTML}`);
+
+  /* A fresh settled verdict is still reused: completing another run must
+     not spend provider quota on an unnecessary ping. */
+  const afterRunRefresh = healthRequestCount();
+  await refreshAfterRun();
+  await settle();
+  check("a second finished run inside the TTL makes no provider ping",
+    healthRequestCount() === afterRunRefresh
+      && getById("provider-pill").innerHTML.includes("Gemini Available"),
+    `${healthRequestCount() - afterRunRefresh} / ${getById("provider-pill").innerHTML}`);
 
   routeOverrides = {};
   await loadAll();

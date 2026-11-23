@@ -1288,6 +1288,15 @@ function loadAll() {
   return Promise.allSettled(DATA_LOADERS.map((def) => loadOne(def)));
 }
 
+/* A run ending (completed, failed, lost) changes the data panels, but the
+   provider pill reads only /health. Refresh both: unresolved or failed
+   readiness must not survive a finished cycle just because loadAll() re-rendered
+   the stale state. loadHealth() still honours the backend TTL, so a fresh
+   settled result costs no extra provider ping. */
+async function refreshAfterRun() {
+  await Promise.all([loadAll(), loadHealth()]);
+}
+
 /* Fast liveness probe. A failure on its own is not proof that the service
    is down: the data endpoints are the stronger evidence, and apiState()
    resolves the two. */
@@ -1775,7 +1784,7 @@ async function runCheck() {
         if (misses >= 3) {
           note.textContent = "The hosted instance recycled while this check ran, "
             + "so its record is gone and nothing was committed. Run it again.";
-          await loadAll();
+          await refreshAfterRun();
           return;
         }
         continue;
@@ -1784,13 +1793,13 @@ async function runCheck() {
 
       if (st.status === "lost") {
         note.textContent = st.error || "The instance recycled during this check; run again.";
-        await loadAll();
+        await refreshAfterRun();
         return;
       }
 
       if (st.status === "completed") {
         const r = st.result || {};
-        await loadAll();
+        await refreshAfterRun();
         if (r.tests_run) {
           const latest = state.latest || {};
           const sig = latestSignals(latest);
@@ -1808,7 +1817,7 @@ async function runCheck() {
           + (String(st.error || "").includes("Provider unavailable")
             ? " New checks stay unavailable until the provider key is configured."
             : " Nothing was committed; wait a moment and try again.");
-        await loadAll();
+        await refreshAfterRun();
         return;
       }
     }
