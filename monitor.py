@@ -43,6 +43,8 @@ def _safe_error_text(exc: BaseException, limit: int = 240) -> str:
     text = re.sub(
         r"(?i)(api[_-]?key|x-goog-api-key|authorization|bearer|token|secret)"
         r"(\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|\S+)", r"\1\2<redacted>", text)
+    text = re.sub(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/@\s]+:[^/@\s]+@",
+                  r"\1<redacted>@", text)
     return text[:limit]
 
 
@@ -726,13 +728,15 @@ class LLMDriftMonitor:
         self.canary_prompts = self._load_canary_prompts()
 
     def _ensure_baseline_import(self) -> None:
-        """Seed a durable database from the committed Gemini baseline once.
+        """Seed a durable PostgreSQL database from the committed baseline once.
 
         SQLite keeps the committed seed in place; PostgreSQL starts empty, so
         the baseline is imported idempotently by cycle id. The reference
-        window is never replaced by later observations.
+        window is never replaced by later observations. A configured-but-
+        unreachable PostgreSQL URL must not seed its ephemeral SQLite
+        fallback: that would create history the deployment cannot keep.
         """
-        if self.storage.backend not in ("postgres", "sqlite-fallback"):
+        if self.storage.backend != "postgres":
             return
         source = os.environ.get(
             "DRIFT_MONITOR_SEED_DB", "data/seed_gemini.db")

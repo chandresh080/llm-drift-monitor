@@ -203,6 +203,38 @@ class TestStorageMigration:
         ).fetchone()
         assert row == ("fact_001", "factual", "abc123")
 
+    def test_reopening_preserves_rows_and_relinks_legacy_results(self, tmp_path):
+        db_path = tmp_path / "history.db"
+        storage = DriftMonitorStorage(str(db_path))
+        storage.insert_probe_run(
+            timestamp="2026-01-01T00:00:00", prompt_version="3.0.0",
+            prompt_text="p", model_id="m", response_text="r",
+            response_length=1, is_valid=True, run_status="success",
+            adapter_type="fake", prompt_id="p1", category="general",
+            cycle_id="legacy-cycle")
+        result = TestResultFieldMapping.representative_results()
+        result.update({"cycle_id": "legacy-cycle",
+                       "timestamp": "2026-01-01T00:01:00"})
+        storage.insert_test_results(result)
+        storage.insert_alert({
+            "timestamp": "2026-01-01T00:02:00", "cycle_id": "legacy-cycle",
+            "alert_type": "drift", "severity": "warning", "message": "legacy alert"})
+
+        # Simulate records written before the cycle link existed.
+        with storage._db() as conn:
+            conn.execute("UPDATE test_results SET cycle_id = NULL")
+            conn.execute("UPDATE alerts SET cycle_id = NULL")
+
+        for _ in range(2):
+            reopened = DriftMonitorStorage(str(db_path))
+            assert reopened.count_all_runs() == 1
+            assert reopened.count_test_results() == 1
+            assert reopened.count_alerts() == 1
+            summary = reopened.get_cycle_summaries(5)[0]
+            assert summary["cycle_id"] == "legacy-cycle"
+            assert summary["result"]["cycle_id"] == "legacy-cycle"
+            assert reopened.get_all_alerts(5)[0]["cycle_id"] == "legacy-cycle"
+
 
 class TestResultFieldMapping:
     """The results produced by a monitoring cycle use one set of field
@@ -344,6 +376,8 @@ class TestRunThrottle:
         monkeypatch.setattr("api.PUBLIC_RUN_INTERVAL_SECONDS", 600.0)
         monkeypatch.setattr("api._last_enqueue", [0.0])
         monkeypatch.setattr("api._ip_last_run", {})
+        monkeypatch.setattr("api._runs", {})
+        monkeypatch.setattr("api._idempotency", {})
         monkeypatch.setattr("api._daily_usage",
                             {"date": "2099-01-01", "count": 0})
         # Never hand runs to the real worker: the monitor costs an
@@ -410,6 +444,46 @@ class TestRunThrottle:
         count, date = _daily_count_and_date()
         assert count == 0 and date != "1999-01-01"
 
+    def test_configured_but_failed_storage_rejects_new_runs(self, monkeypatch, tmp_path):
+        import storage as storage_module
+        from api import _daily_usage, _last_enqueue, _run_queue, _runs
+        from storage import create_storage
+
+        def unavailable(_url):
+            raise RuntimeError("postgresql://user:hunter2@db.example/monitor failed")
+
+        monkeypatch.setattr(storage_module, "PostgresStorage", unavailable)
+        fallback = create_storage(str(tmp_path / "fallback.db"),
+                                  "postgresql://user:hunter2@db.example/monitor")
+        client = self.reset_state(monkeypatch)
+        monkeypatch.setattr("api._get_monitor", lambda: StubMonitor(fallback))
+
+        rejected = client.post("/runs")
+        assert rejected.status_code == 503
+        assert "persistent storage is unavailable" in rejected.json()["detail"]
+        # Nothing was enqueued, recorded, metered, or written to SQLite.
+        assert _run_queue.qsize() == 0
+        assert _runs == {}
+        assert _last_enqueue[0] == 0.0
+        assert _daily_usage["count"] == 0
+        assert fallback.count_all_runs() == 0
+
+    def test_monitor_init_failure_also_rejects_new_runs(self, monkeypatch):
+        from api import _daily_usage, _run_queue, _runs
+
+        client = self.reset_state(monkeypatch)
+
+        def boom():
+            raise RuntimeError("storage init failed")
+
+        monkeypatch.setattr("api._get_monitor", boom)
+        rejected = client.post("/runs")
+        assert rejected.status_code == 503
+        assert "persistent storage is unavailable" in rejected.json()["detail"]
+        assert _run_queue.qsize() == 0
+        assert _runs == {}
+        assert _daily_usage["count"] == 0
+
 
 class StubMonitor:
     """Duck typed LLMDriftMonitor for endpoint tests without adapter or
@@ -461,9 +535,73 @@ class TestProviderUnavailableSurface:
         assert payload["provider_error"] == "missing key"
         assert payload["baseline_manifest"]["provider"] == "gemini"
         assert payload["run_policy"]["daily_cycle_budget"] > 0
+        # Local SQLite is explicitly writable and explicitly not durable.
+        state = payload["storage"]
+        assert state["backend"] == "sqlite"
+        assert state["durable"] is False
+        assert state["fallback"] is False
+        assert state["accepts_writes"] is True
+        assert state["new_checks_enabled"] is True
         # No key material of any kind appears in the config endpoint.
         assert "GEMINI_API_KEY" not in str(payload)
         assert "api_key" not in str(payload).lower()
+
+
+class TestStorageStateSurface:
+    """Storage identity and write capability share one shape in /config,
+    /health and the run gate, so the dashboard cannot mistake a read-only
+    fallback for a healthy writable backend."""
+
+    @staticmethod
+    def _fallback_storage(tmp_path):
+        storage = DriftMonitorStorage(str(tmp_path / "fallback.db"))
+        storage.backend = "sqlite-fallback"
+        storage.is_durable = False
+        storage.accepts_writes = False
+        storage.storage_error = ("connection failed api_key=hunter2 "
+                                 "postgresql://user:s3cr3t@db.example/monitor")
+        return storage
+
+    def test_config_names_the_read_only_fallback_and_redacts_its_error(
+            self, monkeypatch, tmp_path):
+        from api import get_config, invalidate_read_cache
+
+        storage = self._fallback_storage(tmp_path)
+        monitor = StubMonitor(storage, adapter=None, adapter_error=None)
+        monkeypatch.setattr("api._get_monitor", lambda: monitor)
+        invalidate_read_cache()
+
+        state = get_config()["storage"]
+        assert state["backend"] == "sqlite-fallback"
+        assert state["durable"] is False
+        assert state["fallback"] is True
+        assert state["accepts_writes"] is False
+        assert state["new_checks_enabled"] is False
+        assert "read-only" in state["note"]
+        assert "hunter2" not in str(state)
+        assert "s3cr3t" not in str(state)
+
+    def test_health_matches_config_when_the_db_probe_fails(
+            self, monkeypatch, tmp_path):
+        from api import health
+
+        storage = self._fallback_storage(tmp_path)
+
+        def broken_count():
+            raise RuntimeError("disk I/O error")
+
+        storage.count_successful_runs = broken_count
+        monitor = StubMonitor(storage, adapter=None, adapter_error=None)
+        monkeypatch.setattr("api._get_storage", lambda: storage)
+        monkeypatch.setattr("api._get_monitor", lambda: monitor)
+
+        payload = health(probe=False)
+        assert payload["database"] == "unavailable"
+        assert payload["storage_backend"] == "sqlite-fallback"
+        assert payload["storage"]["backend"] == "sqlite-fallback"
+        assert payload["storage"]["new_checks_enabled"] is False
+        assert "hunter2" not in str(payload)
+        assert "s3cr3t" not in str(payload)
 
 
 class TestComparisonRedaction:
@@ -816,6 +954,95 @@ class TestCycleIdMigration:
         assert reopened.get_diagnostics(3)["test_results_without_cycle"] == 0
 
 
+class TestStorageSelection:
+    """Local SQLite stays writable; a configured failed backend is read-only."""
+
+    def test_unset_database_url_selects_writable_local_sqlite(self, monkeypatch, tmp_path):
+        from storage import create_storage
+
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        storage = create_storage(str(tmp_path / "local.db"), None)
+        assert storage.backend == "sqlite"
+        assert storage.is_durable is False
+        assert storage.storage_error is None
+        assert storage.info()["accepts_writes"] is True
+        storage.insert_probe_run(
+            timestamp="2026-03-01T00:00:00", prompt_version="3.0.0",
+            prompt_text="p", model_id="m", response_text="r",
+            response_length=1, is_valid=True, run_status="success",
+            adapter_type="fake", prompt_id="p1", category="general",
+            cycle_id="local-1")
+        assert storage.count_all_runs() == 1
+
+    def test_failed_postgres_fallback_refuses_every_monitoring_write(
+            self, monkeypatch, tmp_path):
+        import storage as storage_module
+        from storage import create_storage
+
+        def unavailable(_url):
+            raise RuntimeError("connection failed with api_key=hunter2")
+
+        monkeypatch.setattr(storage_module, "PostgresStorage", unavailable)
+        storage = create_storage(str(tmp_path / "fallback.db"), "postgresql://db")
+        info = storage.info()
+        assert storage.backend == "sqlite-fallback"
+        assert storage.is_durable is False
+        assert storage.accepts_writes is False
+        assert info["accepts_writes"] is False
+        assert "hunter2" not in str(info)  # startup logs stay credential-free
+
+        with pytest.raises(RuntimeError, match="new monitoring writes"):
+            storage.insert_probe_run(
+                timestamp="2026-03-01T00:00:00", prompt_version="3.0.0",
+                prompt_text="p", model_id="m", response_text="r",
+                response_length=1, is_valid=True, run_status="success",
+                adapter_type="fake")
+        with pytest.raises(RuntimeError, match="new monitoring writes"):
+            storage.insert_response_features(1, 1, True)
+        with pytest.raises(RuntimeError, match="new monitoring writes"):
+            storage.insert_embedding(1, [0.1])
+        with pytest.raises(RuntimeError, match="new monitoring writes"):
+            storage.insert_manifest({"provider": "gemini"})
+        with pytest.raises(RuntimeError, match="new monitoring writes"):
+            storage.insert_test_results(
+                TestResultFieldMapping.representative_results())
+        with pytest.raises(RuntimeError, match="new monitoring writes"):
+            storage.insert_alert({
+                "timestamp": "2026-03-01T00:00:00", "alert_type": "drift",
+                "severity": "warning", "message": "blocked"})
+        assert storage.count_all_runs() == 0
+        assert storage.get_manifest() == {}
+
+    def test_fallback_does_not_import_a_baseline(self, monkeypatch, tmp_path):
+        import monitor as monitor_module
+        from monitor import LLMDriftMonitor
+        from types import SimpleNamespace
+
+        calls = []
+        monkeypatch.setattr(monitor_module, "import_baseline",
+                            lambda target, source: calls.append((target, source)))
+        storage = DriftMonitorStorage(str(tmp_path / "fallback.db"))
+        storage.backend = "sqlite-fallback"
+        storage.accepts_writes = False
+        LLMDriftMonitor._ensure_baseline_import(SimpleNamespace(storage=storage))
+        assert calls == []
+
+    def test_postgres_imports_the_baseline_once(self, monkeypatch, tmp_path):
+        import monitor as monitor_module
+        from monitor import LLMDriftMonitor
+        from types import SimpleNamespace
+
+        seed = str(tmp_path / "seed.db")
+        calls = []
+        monkeypatch.setenv("DRIFT_MONITOR_SEED_DB", seed)
+        monkeypatch.setattr(monitor_module, "import_baseline",
+                            lambda target, source: calls.append((target, source)))
+        storage = DriftMonitorStorage(str(tmp_path / "postgres.db"))
+        storage.backend = "postgres"
+        LLMDriftMonitor._ensure_baseline_import(SimpleNamespace(storage=storage))
+        assert calls == [(storage, seed)]
+
+
 class TestDurablePersistence:
     def test_sqlite_records_survive_a_process_restart(self, tmp_path):
         db_path = tmp_path / "restart.db"
@@ -855,28 +1082,214 @@ class TestDurablePersistence:
         assert payload["results"] == 1
         assert payload["cycles"] == ["persist-1"]
 
-    @pytest.mark.skipif(not os.environ.get("TEST_DATABASE_URL"),
-                        reason="set TEST_DATABASE_URL to exercise PostgreSQL")
-    def test_postgres_records_survive_reconnect(self):
-        from storage import create_storage
+@pytest.mark.skipif(
+    not os.environ.get("TEST_DATABASE_URL"),
+    reason="set TEST_DATABASE_URL to a dedicated disposable database for PostgreSQL tests")
+class TestPostgresIntegration:
+    """Destructive integration checks.
 
-        url = os.environ["TEST_DATABASE_URL"]
-        cycle_id = "pg-persist-test"
-        first = create_storage("unused.db", url)
-        first.clear_all()
-        first.insert_probe_run(
+    These tests clear tables and, in the migration case, recreate a legacy
+    schema. They must only be pointed at a disposable TEST_DATABASE_URL, never
+    at a production or shared database.
+    """
+
+    @staticmethod
+    def _storage():
+        from storage import create_storage
+        return create_storage("unused.db", os.environ["TEST_DATABASE_URL"])
+
+    @staticmethod
+    def _reset_schema():
+        """Drop the disposable integration tables so the next run starts modern."""
+        import psycopg
+
+        connection = psycopg.connect(os.environ["TEST_DATABASE_URL"],
+                                     autocommit=True)
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    DROP TABLE IF EXISTS embeddings, response_features,
+                    test_results, alerts, probe_runs, baseline_manifest,
+                    schema_migrations CASCADE
+                """)
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _seed_cycle(storage, cycle_id):
+        run_id = storage.insert_probe_run(
             timestamp="2026-03-01T00:00:00", prompt_version="3.0.0",
             prompt_text="p", model_id="m", response_text="r",
-            response_length=1, is_valid=True, run_status="success",
+            response_length=7, is_valid=True, run_status="success",
             adapter_type="gemini", prompt_id="p1", category="general",
             cycle_id=cycle_id)
-        second = create_storage("unused.db", url)
+        storage.insert_response_features(
+            run_id, 7, True, is_refusal=0, repetition_ratio=0.1,
+            token_count=7, has_code_block=0)
+        storage.insert_embedding(run_id, [0.1, 0.2, 0.3])
+        result = TestResultFieldMapping.representative_results()
+        result.update({"cycle_id": cycle_id,
+                       "timestamp": "2026-03-01T00:01:00"})
+        storage.insert_test_results(result)
+        storage.insert_alert({
+            "timestamp": "2026-03-01T00:02:00", "cycle_id": cycle_id,
+            "alert_type": "drift", "severity": "warning", "message": "persisted alert"})
+        storage.insert_manifest({"provider": "test", "model_id": "test-model"})
+
+    def test_records_survive_reconnect_with_cycle_links(self):
+        first = self._storage()
+        second = None
+        first.clear_all()
         try:
-            assert second.count_all_runs() >= 1
+            cycle_id = "pg-persist-test"
+            self._seed_cycle(first, cycle_id)
+            second = self._storage()
+
+            assert second.backend == "postgres"
+            assert second.is_durable is True
+            assert second.count_all_runs() == 1
+            assert second.count_test_results() == 1
+            assert second.count_alerts() == 1
+            assert second.get_manifest()["model_id"] == "test-model"
             assert cycle_id in second.get_cycle_ids()
+
+            run_id = second.get_all_runs(limit=1)[0]["id"]
+            assert second.get_features_for_runs([run_id])[0]["token_count"] == 7
+            assert second.get_embeddings_for_runs([run_id]) == [[0.1, 0.2, 0.3]]
+            summary = second.get_cycle_summaries(5)[0]
+            assert summary["cycle_id"] == cycle_id
+            assert summary["probe_count"] == 1
+            assert summary["result"]["cycle_id"] == cycle_id
+            assert second.get_all_alerts(5)[0]["cycle_id"] == cycle_id
         finally:
-            second.clear_all()
-            second._pool.close()
+            if second is not None:
+                second.clear_all()
+                second.close()
+            first.close()
+
+    def test_baseline_import_is_idempotent(self):
+        from storage import import_baseline
+
+        storage = self._storage()
+        storage.clear_all()
+        source = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                              "data", "seed_gemini.db")
+        try:
+            first = import_baseline(storage, source)
+            assert first["imported_cycles"] == 4
+            assert first["imported_runs"] == 160
+            counts_after_first = (storage.count_all_runs(),
+                                  storage.count_test_results(),
+                                  len(storage.get_cycle_summaries(20)))
+            manifest = storage.get_manifest()
+
+            second = import_baseline(storage, source)
+            assert second["imported_cycles"] == 0
+            assert second["imported_runs"] == 0
+            assert second["imported_test_results"] == 0
+            assert (storage.count_all_runs(), storage.count_test_results(),
+                    len(storage.get_cycle_summaries(20))) == counts_after_first
+            assert storage.get_manifest() == manifest
+        finally:
+            storage.clear_all()
+            storage.close()
+
+    def test_legacy_schema_migrates_additively_without_losing_rows(self):
+        import psycopg
+
+        url = os.environ["TEST_DATABASE_URL"]
+        self._reset_schema()
+        connection = psycopg.connect(url, autocommit=True)
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    CREATE TABLE probe_runs (
+                        id BIGSERIAL PRIMARY KEY,
+                        timestamp TEXT NOT NULL,
+                        prompt_version TEXT NOT NULL,
+                        prompt_text TEXT NOT NULL,
+                        model_id TEXT NOT NULL,
+                        response_text TEXT NOT NULL,
+                        response_length INTEGER,
+                        is_valid INTEGER,
+                        run_status TEXT NOT NULL,
+                        adapter_type TEXT NOT NULL
+                    )
+                """)
+                cursor.execute("""
+                    INSERT INTO probe_runs (
+                        timestamp, prompt_version, prompt_text, model_id,
+                        response_text, response_length, is_valid, run_status,
+                        adapter_type)
+                    VALUES ('2026-03-01T00:00:00', '3.0.0', 'p', 'm',
+                            'r', 1, 1, 'success', 'fake')
+                """)
+                cursor.execute("""
+                    CREATE TABLE response_features (
+                        id BIGSERIAL PRIMARY KEY,
+                        run_id BIGINT NOT NULL,
+                        response_length INTEGER,
+                        is_valid INTEGER
+                    )
+                """)
+                cursor.execute("""
+                    CREATE TABLE test_results (
+                        id BIGSERIAL PRIMARY KEY,
+                        timestamp TEXT NOT NULL,
+                        reference_size INTEGER,
+                        current_size INTEGER,
+                        ks_pvalue DOUBLE PRECISION,
+                        bh_significant_tests TEXT
+                    )
+                """)
+                cursor.execute("""
+                    INSERT INTO test_results (timestamp, reference_size,
+                        current_size, ks_pvalue, bh_significant_tests)
+                    VALUES ('2026-03-01T00:01:00', 50, 10, 0.4, '[]')
+                """)
+                cursor.execute("""
+                    CREATE TABLE alerts (
+                        id BIGSERIAL PRIMARY KEY,
+                        timestamp TEXT NOT NULL,
+                        alert_type TEXT NOT NULL,
+                        severity TEXT NOT NULL,
+                        message TEXT NOT NULL
+                    )
+                """)
+                cursor.execute("""
+                    INSERT INTO alerts (timestamp, alert_type, severity, message)
+                    VALUES ('2026-03-01T00:02:00', 'drift', 'warning',
+                            'legacy alert')
+                """)
+        finally:
+            connection.close()
+
+        storage = self._storage()
+        try:
+            assert storage.backend == "postgres"
+            assert storage.count_all_runs() == 1
+            assert storage.get_all_runs(limit=1)[0]["response_text"] == "r"
+            result = storage.get_all_test_results(limit=1)[0]
+            assert result["reference_size"] == 50
+            assert result["cycle_id"] is None
+            alert = storage.get_all_alerts(limit=1)[0]
+            assert alert["message"] == "legacy alert"
+            assert alert["cycle_id"] is None
+            run_id = storage.get_all_runs(limit=1)[0]["id"]
+            assert storage.get_features_for_runs([run_id])[0]["token_count"] is None
+
+            reopened = self._storage()
+            try:
+                assert reopened.count_all_runs() == 1
+                assert reopened.count_test_results() == 1
+                assert reopened.count_alerts() == 1
+            finally:
+                reopened.close()
+        finally:
+            try:
+                storage.close()
+            finally:
+                self._reset_schema()
 
 
 class TestBaselineImport:

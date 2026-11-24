@@ -6,9 +6,11 @@ Operational shape, sized for a single small container:
   seconds (or several visitors at once) costs a handful of queries per
   minute instead of one set per request. The cache is invalidated when a
   run completes, so panels never lag behind a finished cycle.
-- Runs are serialized through a one worker queue. Cycles write to SQLite
-  and share the embedding model, so running two at once would only add
-  latency and memory pressure. POST /runs accepts an Idempotency-Key
+- Runs are serialized through a one worker queue. Cycles write to the
+  configured storage backend and share the embedding model, so running two
+  at once would only add latency and memory pressure. A configured but
+  failed PostgreSQL backend leaves a read-only SQLite fallback and refuses
+  new cycles with 503. POST /runs accepts an Idempotency-Key
   header and replays the original run id for duplicate submissions, a
   minimum interval between enqueues acts as a global rate limit, and the
   queue is deliberately shallow (2) so a burst hits an explicit
@@ -117,6 +119,60 @@ def _get_monitor() -> LLMDriftMonitor:
 
 def _get_storage() -> DriftMonitorStorage:
     return _get_monitor().storage
+
+
+def _storage_state(storage: Optional[DriftMonitorStorage]) -> Dict[str, Any]:
+    """One non-secret storage identity for /config, /health and run gating.
+
+    Backend, durability and write capability are separate facts. A configured
+    PostgreSQL URL that fails to initialize leaves an ephemeral SQLite object
+    that serves reads only; it must never be reported as durable or writable.
+    """
+    backend = getattr(storage, "backend", "unknown") if storage else "unknown"
+    durable = bool(getattr(storage, "is_durable", False)) if storage else False
+    accepts_writes = bool(getattr(storage, "accepts_writes", True)) if storage else False
+    fallback = backend == "sqlite-fallback"
+    if fallback:
+        note = ("DATABASE_URL is configured but PostgreSQL is unavailable. "
+                "The dashboard serves stored data read-only; new checks are "
+                "disabled until the database is fixed and the service redeployed.")
+    elif durable:
+        note = ("Managed PostgreSQL via DATABASE_URL. Durability depends on "
+                "the provider plan; Render Free Postgres expires after 30 days.")
+    else:
+        note = ("SQLite on the container filesystem. History is lost when the "
+                "instance recycles. Set DATABASE_URL to a managed PostgreSQL "
+                "database for durable history.")
+    error = getattr(storage, "storage_error", None) if storage else None
+    return {
+        "backend": backend,
+        "durable": durable,
+        "location": getattr(storage, "location", None) if storage else None,
+        "note": note,
+        # Connection strings must never be echoed, even in a failure note.
+        "error": _safe_error_text(Exception(error)) if error else None,
+        "fallback": fallback,
+        "accepts_writes": accepts_writes,
+        "new_checks_enabled": accepts_writes and not fallback,
+    }
+
+
+def _ensure_new_checks_allowed() -> None:
+    """Reject new cycles when the configured persistent database is missing."""
+    detail = (
+        "New checks are disabled: persistent storage is unavailable. "
+        "DATABASE_URL is configured but PostgreSQL could not be initialized, "
+        "so this service serves stored data read-only. Fix the database "
+        "configuration and redeploy.")
+    try:
+        state = _storage_state(_get_monitor().storage)
+    except Exception:
+        # No monitor means no storage object at all; never enqueue a cycle
+        # that cannot be recorded somewhere durable.
+        state = {"new_checks_enabled": False}
+    if not state["new_checks_enabled"]:
+        _metrics["runs_rejected_total"] += 1
+        raise HTTPException(status_code=503, detail=detail)
 
 
 # ---------- metrics ----------
@@ -516,8 +572,11 @@ async def create_run(request: Request) -> RunResponse:
     """Enqueue a probe + detection run; the result is polled via /runs/{id}.
 
     A duplicate submission with the same Idempotency-Key returns the
-    original run instead of starting a second cycle.
+    original run instead of starting a second cycle. New cycles are refused
+    with 503 while the configured persistent database is unavailable, so a
+    cycle can never be committed to the ephemeral fallback file.
     """
+    _ensure_new_checks_allowed()
     idem_key = request.headers.get("Idempotency-Key")
     if idem_key:
         with _idempotency_lock:
@@ -830,20 +889,7 @@ def get_config() -> Dict[str, Any]:
     cfg = monitor.config
     adapter = monitor.adapter
     def build() -> Dict[str, Any]:
-        storage = monitor.storage
-        durable = bool(getattr(storage, "is_durable", False))
-        backend = getattr(storage, "backend", "unknown")
-        storage_note = (
-            "Managed PostgreSQL via DATABASE_URL. Durability depends on the "
-            "provider plan; Render Free Postgres expires after 30 days."
-            if durable else
-            "SQLite on the container filesystem. History is lost when the "
-            "instance recycles. Set DATABASE_URL to a managed PostgreSQL "
-            "database for durable history.")
-        if getattr(storage, "storage_error", None):
-            storage_note = (
-                "DATABASE_URL is configured but PostgreSQL is unreachable; "
-                "the service is using ephemeral SQLite. " + storage_note)
+        state = _storage_state(monitor.storage)
         return {
             "target_model": adapter.model_id if adapter else None,
             "adapter_type": type(adapter).__name__ if adapter else None,
@@ -867,13 +913,7 @@ def get_config() -> Dict[str, Any]:
                 'category_window_cycles', 5),
             "min_samples_per_category": cfg['monitoring'].get(
                 'min_samples_per_category', 8),
-            "storage": {
-                "backend": backend,
-                "durable": durable,
-                "location": getattr(storage, "location", None),
-                "note": storage_note,
-                "error": getattr(storage, "storage_error", None),
-            },
+            "storage": state,
             # Baseline manifest: what actually produced the reference window
             # stored in this database, so the comparison shown to a visitor
             # carries its own provenance.
@@ -1315,6 +1355,7 @@ def health(probe: bool = True) -> Dict[str, Any]:
             "provider_ready": False,
             "duration_ms": round((time.monotonic() - started) * 1000, 1),
         })
+        state = _storage_state(storage)
         return {
             "status": "degraded",
             "db": "ok" if db_ok else "unavailable",
@@ -1323,9 +1364,10 @@ def health(probe: bool = True) -> Dict[str, Any]:
             "provider": cfg_model_id_or_none(),
             "provider_status": "unreachable",
             "provider_error": detail,
-            "storage_backend": getattr(storage, "backend", "unknown") if db_ok else "unknown",
-            "storage_durable": bool(getattr(storage, "is_durable", False)) if db_ok else False,
-            "storage_location": getattr(storage, "location", None) if db_ok else None,
+            "storage_backend": state["backend"],
+            "storage_durable": state["durable"],
+            "storage_location": state["location"],
+            "storage": state,
             "diagnostics": diagnostics,
         }
 
@@ -1374,6 +1416,7 @@ def health(probe: bool = True) -> Dict[str, Any]:
     diagnostics["provider_ready"] = bool(provider_ok)
     diagnostics["duration_ms"] = round((time.monotonic() - started) * 1000, 1)
     status = "ok" if (db_ok and provider_ok) else "degraded"
+    state = _storage_state(storage)
     return {
         "status": status,
         "db": "ok" if db_ok else "unavailable",
@@ -1382,9 +1425,10 @@ def health(probe: bool = True) -> Dict[str, Any]:
         "provider": provider_name,
         "provider_status": provider_status,
         "provider_error": provider_error,
-        "storage_backend": getattr(storage, "backend", "unknown") if db_ok else "unknown",
-        "storage_durable": bool(getattr(storage, "is_durable", False)) if db_ok else False,
-        "storage_location": getattr(storage, "location", None) if db_ok else None,
+        "storage_backend": state["backend"],
+        "storage_durable": state["durable"],
+        "storage_location": state["location"],
+        "storage": state,
         "diagnostics": diagnostics,
     }
 

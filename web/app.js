@@ -308,6 +308,9 @@ function renderStatusGroup() {
       db[2] += " History is lost when the instance recycles.";
     }
   }
+  if (runBlockedReason()) {
+    db[2] += " New checks are disabled until the database is fixed.";
+  }
   renderPill("db-pill", db);
   const states = providerStates();
   renderPill("provider-pill", states[providerState()] || states.checking);
@@ -543,12 +546,38 @@ function renderEffects() {
 
 /* ---------- run note and configuration ---------- */
 
+/* A configured PostgreSQL database that failed to initialize leaves a
+   read-only SQLite fallback. New checks are refused by the API in that state
+   and the button must explain why instead of looking temporarily busy. */
+function runBlockedReason() {
+  const sources = [state.config && state.config.storage,
+    state.health && state.health.storage];
+  for (const st of sources) {
+    if (!st) continue;
+    if (st.new_checks_enabled === false || st.accepts_writes === false
+        || st.fallback === true || st.backend === "sqlite-fallback") {
+      return "New checks are disabled: persistent storage is unavailable. "
+        + "Existing history stays readable; fix DATABASE_URL and redeploy.";
+    }
+  }
+  return null;
+}
+
 /* The operational note next to the Run check button uses the real
    configured values: how many prompts a run collects, the per-visitor
    interval, and the remaining daily quota. It never hardcodes numbers
    another deployment would contradict. */
 function renderRunNote() {
   const c = state.config;
+  const blocked = runBlockedReason();
+  const btn = $("run-btn");
+  if (btn) btn.disabled = Boolean(blocked);
+  if (blocked) {
+    const note = $("run-note");
+    note.dataset.active = "1";
+    note.textContent = blocked;
+    return;
+  }
   if (!c || $("run-note").dataset.active) return;
   const rp = c.run_policy || {};
   const bits = [`${c.probes_per_cycle || c.prompt_panel_probes || "?"} prompts per run`];
@@ -1278,6 +1307,7 @@ async function loadHealth() {
     console.warn("readiness fetch failed", state.healthError);
   }
   renderStatusGroup();
+  renderRunNote();
   renderModelLabel();
   /* A deployment without provider credentials has no target_model on
      /config; readiness supplies the model name, so refresh the label. */
@@ -1726,6 +1756,14 @@ function svgLines(xs, series, opts) {
 let runInFlight = false;
 
 async function runCheck() {
+  const blocked = runBlockedReason();
+  if (blocked) {
+    const note = $("run-note");
+    note.dataset.active = "1";
+    note.textContent = blocked;
+    $("run-btn").disabled = true;
+    return;
+  }
   if (runInFlight) return;
   runInFlight = true;
   const btn = $("run-btn"), note = $("run-note");
@@ -1751,6 +1789,12 @@ async function runCheck() {
         headers: { "Content-Type": "application/json" },
       });
     } catch (err) {
+      if (err.status === 503) {
+        note.textContent = err.detail
+          ? err.detail
+          : "New checks are disabled because persistent storage is unavailable.";
+        return;
+      }
       if (err.status === 429) {
         let when = "";
         const waitS = err.retryAfter ? parseInt(err.retryAfter, 10) : NaN;
@@ -1826,7 +1870,7 @@ async function runCheck() {
     banner("Could not start a check: " + err.message);
     note.textContent = "No new responses were recorded.";
   } finally {
-    btn.disabled = false;
+    btn.disabled = Boolean(runBlockedReason());
     btn.textContent = "Run check";
     runInFlight = false;
     /* The note's dataset.active flag stays set: whatever the last run

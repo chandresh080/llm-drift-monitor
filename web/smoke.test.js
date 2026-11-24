@@ -30,6 +30,7 @@
    - product CSV string keys ("0.0") resolve against numeric lookups
    - the refusal rate change takes its sign from the delta itself
    - rate limit rejections surface the server's Retry-After message
+   - a read-only storage fallback disables new checks and explains why
    - Monitor and Evaluation stay separate views
 
    Used by CI; run locally with: node web/smoke.test.js */
@@ -1261,6 +1262,33 @@ const settle = () => new Promise((r) => setImmediate(r));
     getById("cfg-storage").textContent === "PostgreSQL · Persistent",
     getById("cfg-storage").textContent);
 
+  /* A configured PostgreSQL URL that fails to initialize is a read-only
+     SQLite fallback: the dashboard still renders stored data, but it must not
+     offer to start a new cycle or claim durable history. */
+  const baseConfig = await fixtures["/config"]().json();
+  routeOverrides = { "/config": () => resp({
+    ...baseConfig,
+    storage: {
+      backend: "sqlite-fallback", durable: false,
+      location: "/app/data/drift_monitor.db",
+      note: "DATABASE_URL is configured but PostgreSQL is unavailable.",
+      error: "connection failed with api_key=<redacted>",
+      fallback: true, accepts_writes: false, new_checks_enabled: false,
+    },
+  }) };
+  await loadAll();
+  await settle();
+  check("read-only fallback disables Run check and explains why",
+    getById("run-btn").disabled === true
+      && getById("run-note").textContent.includes("New checks are disabled")
+      && getById("run-note").textContent.includes("DATABASE_URL"),
+    `${getById("run-btn").disabled} / ${getById("run-note").textContent}`);
+  check("read-only fallback is never shown as persistent",
+    getById("cfg-storage").textContent === "SQLite · Ephemeral"
+      && getById("db-pill").title.includes("New checks are disabled"),
+    `${getById("cfg-storage").textContent} / ${getById("db-pill").title}`);
+
+  getById("run-note").dataset.active = "";
   routeOverrides = {};
   await loadAll();
   await settle();
@@ -1345,6 +1373,24 @@ const settle = () => new Promise((r) => setImmediate(r));
   check("429 detail is surfaced in the run note",
     getById("run-note").textContent.includes("daily cycle budget"),
     getById("run-note").textContent);
+
+  /* A 503 can also arrive after the page rendered (for example a backend
+     that changed state). Its server reason must be shown, not replaced by a
+     generic banner, and the button must follow the current config state. */
+  routeOverrides = { "/runs": () => ({ ok: false, status: 503,
+    headers: { get: () => null },
+    json: async () => ({
+      detail: "New checks are disabled: persistent storage is unavailable.",
+    }) }) };
+  vmEval(`runInFlight = false; runCheck();`);
+  await settle();
+  check("503 storage detail is surfaced in the run note",
+    getById("run-note").textContent.includes("persistent storage is unavailable"),
+    getById("run-note").textContent);
+  check("503 does not leave the button disabled when storage permits writes",
+    getById("run-btn").disabled === false
+      && getById("run-btn").textContent === "Run check",
+    `${getById("run-btn").disabled} / ${getById("run-btn").textContent}`);
 
   routeOverrides = {};
 

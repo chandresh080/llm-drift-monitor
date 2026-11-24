@@ -7,19 +7,39 @@ PostgreSQL path deliberately keeps a very small connection pool (one warm
 connection, two at most) so it fits the hosted 512 MiB instance.
 
 Both backends expose the same public methods. The SQLite implementation is
-the reference; the PostgreSQL subclass only overrides schema creation,
-placeholder handling and the one insert that needs ``RETURNING id``.
+the reference; the PostgreSQL subclass overrides schema creation, additive
+migrations, placeholder handling and the one insert that needs
+``RETURNING id``.
 """
 
 import json
 import logging
 import os
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("llm_drift_monitor.storage")
+
+
+def _safe_error_text(exc: BaseException, limit: int = 240) -> str:
+    """Trim and redact credentials from an initialization error.
+
+    The fallback error is shown in /config and written to startup logs, so a
+    connection URL or key in an exception must never survive verbatim.
+    """
+    text = str(exc)
+    text = re.sub(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+",
+                  "Bearer <redacted>", text)
+    text = re.sub(
+        r"(?i)(api[_-]?key|x-goog-api-key|authorization|bearer|token|secret)"
+        r"(\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|\S+)", r"\1\2<redacted>", text)
+    text = re.sub(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/@\s]+:[^/@\s]+@",
+                  r"\1<redacted>@", text)
+    return text[:limit]
+
 
 # Explicit probe outcomes. Empty output and a failed provider request are
 # different observations: an empty response still describes the model's
@@ -119,6 +139,9 @@ class DriftMonitorStorage:
 
     backend = "sqlite"
     is_durable = False
+    # A configured PostgreSQL URL that cannot initialize falls back to a
+    # local SQLite file for reads only. See create_storage().
+    accepts_writes = True
 
     def __init__(self, db_path: str = "data/drift_monitor.db"):
         self.db_path = db_path
@@ -444,6 +467,7 @@ class DriftMonitorStorage:
                          category: Optional[str] = None,
                          cycle_id: Optional[str] = None) -> int:
         """Insert a probe run and return its ID."""
+        self._ensure_writable()
         with self._db() as conn:
             cursor = conn.execute("""
                 INSERT INTO probe_runs (
@@ -466,6 +490,7 @@ class DriftMonitorStorage:
                                  token_count: Optional[int] = None,
                                  has_code_block: Optional[int] = None):
         """Insert response features for a run."""
+        self._ensure_writable()
         with self._db() as conn:
             conn.execute("""
                 INSERT INTO response_features (run_id, response_length, is_valid,
@@ -477,6 +502,7 @@ class DriftMonitorStorage:
 
     def insert_embedding(self, run_id: int, embedding: List[float]):
         """Insert embedding for a run."""
+        self._ensure_writable()
         # Convert numpy floats to Python floats for JSON serialization
         embedding = [float(x) for x in embedding]
         with self._db() as conn:
@@ -488,6 +514,7 @@ class DriftMonitorStorage:
 
     def insert_manifest(self, items: Dict[str, str]) -> None:
         """Write or update the baseline manifest for this database."""
+        self._ensure_writable()
         with self._db() as conn:
             for key, value in items.items():
                 conn.execute(
@@ -505,6 +532,7 @@ class DriftMonitorStorage:
 
     def insert_test_results(self, results: Dict[str, Any]):
         """Insert test results."""
+        self._ensure_writable()
         with self._db() as conn:
             conn.execute("""
                 INSERT INTO test_results (
@@ -553,6 +581,7 @@ class DriftMonitorStorage:
 
     def insert_alert(self, alert: Dict[str, Any]):
         """Insert an alert."""
+        self._ensure_writable()
         with self._db() as conn:
             conn.execute("""
                 INSERT INTO alerts (
@@ -930,7 +959,19 @@ class DriftMonitorStorage:
             "location": self.location,
             "durable": self.is_durable,
             "storage_error": self.storage_error,
+            "accepts_writes": self.accepts_writes,
         }
+
+    def close(self) -> None:
+        """Release backend resources. SQLite opens a connection per call."""
+        return None
+
+    def _ensure_writable(self) -> None:
+        """Refuse writes when a configured database failed to initialize."""
+        if not self.accepts_writes:
+            raise RuntimeError(
+                "Persistent storage is unavailable; new monitoring writes "
+                "are disabled. Check DATABASE_URL and redeploy.")
 
     def log_startup_status(self, expected_probes: Optional[int] = None,
                            reference_window: Optional[int] = None) -> None:
@@ -1073,6 +1114,12 @@ CREATE TABLE IF NOT EXISTS alerts (
     overall_quality_degradation INTEGER
 );
 
+"""
+
+# Indexes are applied after the additive column migrations. On an older
+# PostgreSQL database the cycle_id columns may not exist yet, so creating
+# these first would fail and trigger the ephemeral fallback.
+_PG_INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_probe_runs_timestamp ON probe_runs (timestamp);
 CREATE INDEX IF NOT EXISTS idx_probe_runs_status ON probe_runs (run_status);
 CREATE INDEX IF NOT EXISTS idx_probe_runs_cycle ON probe_runs (cycle_id);
@@ -1115,16 +1162,33 @@ class PostgresStorage(DriftMonitorStorage):
             open=True,
             kwargs={"connect_timeout": 8},
         )
-        self._init_db()
+        try:
+            self._init_db()
+        except Exception:
+            self.close()
+            raise
 
     @contextmanager
     def _db(self):
         with self._pool.connection() as connection:
             yield _PgConnection(connection)
 
+    def close(self) -> None:
+        """Return the pooled connections on shutdown or failed initialization."""
+        self._pool.close()
+
     def _init_db(self):
         with self._db() as conn:
             conn.executescript(_PG_SCHEMA)
+            # Older databases are upgraded additively, exactly as SQLite is.
+            # Indexes must follow the column migrations: an older schema has
+            # no cycle_id to index, and a failed schema init would otherwise
+            # silently switch the deployment to ephemeral SQLite.
+            self._migrate_columns(conn)
+            self._migrate_feature_columns(conn)
+            self._migrate_test_columns(conn)
+            self._migrate_alert_columns(conn)
+            conn.executescript(_PG_INDEXES)
             self._backfill_cycle_links(conn)
             self._migrate_run_status(conn)
             conn.commit()
@@ -1173,6 +1237,7 @@ class PostgresStorage(DriftMonitorStorage):
                          prompt_id: Optional[str] = None,
                          category: Optional[str] = None,
                          cycle_id: Optional[str] = None) -> int:
+        self._ensure_writable()
         with self._db() as conn:
             cursor = conn.execute("""
                 INSERT INTO probe_runs (
@@ -1193,10 +1258,11 @@ def create_storage(db_path: str = "data/drift_monitor.db",
                    database_url: Optional[str] = None) -> DriftMonitorStorage:
     """Select durable PostgreSQL when configured, otherwise SQLite.
 
-    A configured-but-unreachable PostgreSQL URL falls back to SQLite and
-    records the error, so the dashboard keeps serving stored data while
-    clearly reporting that it is ephemeral. It never pretends the fallback
-    is durable.
+    A configured-but-unreachable PostgreSQL URL falls back to SQLite for
+    **reads only**: the dashboard keeps serving stored data, but the storage
+    object refuses monitoring writes. This prevents a cycle from being
+    silently committed to an ephemeral file when the configured persistent
+    database is unavailable. The fallback is never labelled durable.
     """
     url = (database_url or "").strip()
     if not url:
@@ -1210,7 +1276,8 @@ def create_storage(db_path: str = "data/drift_monitor.db",
         storage = DriftMonitorStorage(db_path)
         storage.backend = "sqlite-fallback"
         storage.is_durable = False
-        storage.storage_error = str(exc)
+        storage.accepts_writes = False
+        storage.storage_error = _safe_error_text(exc)
         return storage
 
 
