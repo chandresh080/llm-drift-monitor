@@ -1,0 +1,39 @@
+{
+  "commit": "6a0ebe4e6f298a032116d927ee5149563192ffd5",
+  "config": {
+    "prompts": 40,
+    "ref_cycles": 3,
+    "cur_cycles": 1,
+    "emb_dim": 32,
+    "prompt_emb_std": 0.7,
+    "within_emb_std": 1.0,
+    "temporal_emb": 0.0,
+    "prompt_len_std": 15.0,
+    "within_len_std": 8.0,
+    "temporal_len": 0.0,
+    "valid_alpha": 20.0,
+    "valid_beta": 1.0,
+    "failure_prompt_p": 0.25,
+    "permutations": 999,
+    "alpha": 0.05
+  },
+  "trials": {
+    "null": 1000,
+    "power": 400,
+    "alert_sequences": 200
+  },
+  "elapsed_seconds": 1236.8,
+  "outputs": [
+    "SUMMARY.md",
+    "alert_null.png",
+    "alert_power.png",
+    "alert_rates.csv",
+    "detection_delay.csv",
+    "null_any.png",
+    "null_type_i.csv",
+    "null_type_i.png",
+    "power.csv",
+    "power_curves.png",
+    "summary.json"
+  ]
+}

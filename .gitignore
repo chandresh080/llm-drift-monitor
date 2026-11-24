@@ -4,3 +4,6 @@ __pycache__/
 .ruff_cache/
 mlflow.db
 mlruns/
+data/drift_monitor.db
+data/seed_drift.db-shm
+data/seed_drift.db-wal

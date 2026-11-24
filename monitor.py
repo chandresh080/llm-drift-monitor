@@ -1,4 +1,5 @@
 import json
+import math
 import uuid
 import re
 import logging
@@ -19,7 +20,9 @@ from embeddings import EmbeddingExtractor
 from drift_tests import (ks_test, proportion_test, mmd_test,
                          benjamini_hochberg_correction, centroid_distance,
                          count_unique_embeddings, holm_correction,
-                         paired_cluster_mmd_test, category_mmd_tests)
+                         category_mmd_tests, paired_mean_length_test,
+                         paired_validity_permutation_test,
+                         allocation_preserving_mmd_test)
 from behavior_features import extract_behavior_features, refusal_rate
 from sequential_testing import (spent_alpha, consecutive_flagged_history,
                                 consecutive_streak)
@@ -1168,7 +1171,40 @@ class LLMDriftMonitor:
         
         ref_validity = self.storage.get_validity_for_runs(ref_run_ids, include_failed=True)
         cur_validity = self.storage.get_validity_for_runs(cur_run_ids, include_failed=True)
-        
+
+        # Prompt-level views of the same selected runs. The panel repeats fixed
+        # prompt ids across cycles, so length and availability tests must see
+        # one contrast per prompt rather than treating repeats as independent.
+        # Values come from the already-fetched window rows, so failed and empty
+        # attempts remain counted in availability but contribute no length.
+        prompt_of_run = {run['id']: run.get('prompt_id') for run in all_runs}
+        length_of_run = {
+            run['id']: (float(run['response_length'])
+                        if run.get('run_status') == 'success'
+                        and run.get('response_length') is not None else None)
+            for run in all_runs
+        }
+        validity_of_run = {run['id']: int(run.get('is_valid') or 0)
+                           for run in all_runs}
+        ref_lengths_by_prompt: Dict[str, List[float]] = {}
+        cur_lengths_by_prompt: Dict[str, List[float]] = {}
+        ref_validity_by_prompt: Dict[str, List[int]] = {}
+        cur_validity_by_prompt: Dict[str, List[int]] = {}
+        for run_id in ref_run_ids:
+            key = prompt_of_run.get(run_id, '')
+            length = length_of_run.get(run_id)
+            if length is not None:
+                ref_lengths_by_prompt.setdefault(key, []).append(length)
+            ref_validity_by_prompt.setdefault(
+                key, []).append(validity_of_run.get(run_id, 0))
+        for run_id in cur_run_ids:
+            key = prompt_of_run.get(run_id, '')
+            length = length_of_run.get(run_id)
+            if length is not None:
+                cur_lengths_by_prompt.setdefault(key, []).append(length)
+            cur_validity_by_prompt.setdefault(
+                key, []).append(validity_of_run.get(run_id, 0))
+
         # Extract embeddings (only for runs that have them)
         ref_embeddings = self.storage.get_embeddings_for_runs(ref_run_ids)
         cur_embeddings = self.storage.get_embeddings_for_runs(cur_run_ids)
@@ -1189,23 +1225,38 @@ class LLMDriftMonitor:
             'cur_valid_count': len(cur_validity),
         }
         
-        # KS test on response lengths
-        # Require sufficient usable samples
+        # Response lengths: pooled KS is retained only as an exploratory
+        # effect-size reference. The inferential test is a paired t on the
+        # per-prompt mean contrast, which respects the repeated panel.
         min_samples = self.config['alerts'].get('min_sample_size', 10)
+        pooled_ks_stat, pooled_ks_pval = ks_test(ref_lengths, cur_lengths)
+        results['ks_statistic_pooled'] = pooled_ks_stat
+        results['ks_pvalue_pooled'] = pooled_ks_pval
         if len(ref_lengths) < min_samples or len(cur_lengths) < min_samples:
             ks_stat, ks_pval = float('nan'), 1.0
         else:
-            ks_stat, ks_pval = ks_test(ref_lengths, cur_lengths)
+            ks_stat, ks_pval = paired_mean_length_test(
+                ref_lengths_by_prompt, cur_lengths_by_prompt)
         results['ks_statistic'] = ks_stat
         results['ks_pvalue'] = ks_pval
         results['ks_raw_pvalue'] = ks_pval
-        
-        # Two-sample test on response validity, using Fisher's exact test when
-        # the expected cell counts are too small for the normal approximation
+
+        # Availability: the pooled Fisher/z result is kept for reference, but
+        # the family uses within-prompt randomization so that heterogeneous
+        # prompt success rates and failed/empty attempts are not pooled as
+        # independent Bernoulli draws.
+        pooled_prop_stat, pooled_prop_pval, pooled_prop_method = \
+            proportion_test(ref_validity, cur_validity)
+        results['proportion_z_stat_pooled'] = pooled_prop_stat
+        results['proportion_z_pvalue_pooled'] = pooled_prop_pval
+        results['proportion_test_method_pooled'] = pooled_prop_method
         if len(ref_validity) < 5 or len(cur_validity) < 5:
-            prop_stat, prop_pval, prop_method = float('nan'), 1.0, 'fisher'
+            prop_stat, prop_pval, prop_method = float('nan'), 1.0, 'paired_permutation'
         else:
-            prop_stat, prop_pval, prop_method = proportion_test(ref_validity, cur_validity)
+            prop_stat, prop_pval = paired_validity_permutation_test(
+                ref_validity_by_prompt, cur_validity_by_prompt,
+                random_seed=self.random_seed)
+            prop_method = 'paired_permutation'
         results['proportion_z_stat'] = prop_stat
         results['proportion_z_pvalue'] = prop_pval
         results['proportion_z_raw_pvalue'] = prop_pval
@@ -1236,21 +1287,18 @@ class LLMDriftMonitor:
         results['current_unique_responses'] = count_unique_embeddings(
             cur_embeddings)
 
-        # Paired prompt level MMD: the matched panel probes the same prompt
-        # ids on both sides, and answers from one prompt share that prompt as
-        # a source of variation a response level permutation ignores. When
-        # the panel is matched, this test is the inferential MMD: it is the
-        # permutation that respects the repeated prompt structure, so it is
-        # what enters the BH significance family and the alert path. The
-        # pooled response level test stays in the results as an exploratory
-        # statistic and effect size reference (see *_pooled fields).
+        # Prompt-level MMD: randomization stays within each matched prompt and
+        # preserves that prompt's observed 3:1 allocation. Swapping whole
+        # answer sets is only exact for equal cluster sizes and would compare
+        # the observed 117/40 statistic with statistics from other allocations.
+        # The pooled response level test stays as an exploratory reference.
         ref_paired = self.storage.get_embeddings_with_run_ids_for_runs(
             ref_run_ids)
         cur_paired = self.storage.get_embeddings_with_run_ids_for_runs(
             cur_run_ids)
         ref_prompt_of = {r['id']: r.get('prompt_id') for r in ref_runs}
         cur_prompt_of = {r['id']: r.get('prompt_id') for r in cur_runs}
-        pc_stat, pc_pval, pc_pairs = paired_cluster_mmd_test(
+        pc_stat, pc_pval, pc_pairs, pc_method = allocation_preserving_mmd_test(
             [emb for _, emb in ref_paired], [emb for _, emb in cur_paired],
             [ref_prompt_of.get(run_id, '') for run_id, _ in ref_paired],
             [cur_prompt_of.get(run_id, '') for run_id, _ in cur_paired],
@@ -1258,19 +1306,17 @@ class LLMDriftMonitor:
         results['paired_cluster_mmd_statistic'] = pc_stat
         results['paired_cluster_mmd_pvalue'] = pc_pval
         results['paired_cluster_prompt_pairs'] = pc_pairs
-        paired_available = pc_pairs is not None and pc_pairs > 0
+        # A degenerate premise (matched labels but no usable contrast) must
+        # fall back to the pooled p-value, never displace it with nan/1.0.
+        paired_available = (pc_pairs is not None and pc_pairs > 0
+                            and not math.isnan(pc_stat))
         results['mmd_statistic'] = pc_stat if paired_available else mmd_stat
         mmd_family_pval = pc_pval if paired_available else mmd_pval
         results['mmd_pvalue'] = mmd_family_pval
         results['mmd_raw_pvalue'] = mmd_family_pval
-        # The exchangeable unit and the permutation regime stay explicit:
-        # whole prompt answer sets versus individual responses, and exhaustive
-        # enumeration versus seeded sampling above the pattern cap.
         results['mmd_permutation_unit'] = ('prompt_cluster' if paired_available
                                            else 'response')
-        results['paired_cluster_method'] = (
-            ('exhaustive' if pc_pairs <= 12 else 'sampled')
-            if paired_available else None)
+        results['paired_cluster_method'] = pc_method if paired_available else None
 
         # Effect sizes, kept separate from significance: with enough samples a
         # trivial change becomes significant, so alerts report magnitude too.

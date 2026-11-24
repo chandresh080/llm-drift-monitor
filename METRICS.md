@@ -6,17 +6,25 @@ All experiment scripts take a `--seed`, so every table here can be regenerated. 
 are per-cycle frequencies measured under synthetic nulls and injected shifts, not
 long-run production guarantees.
 
+> **Hosted 3:1 design:** the Render service uses `config/config.gemini.yaml`
+> (40 prompts, 120 reference runs, 40 current runs), not the 10-prompt demo
+> configuration described in sections 1-4. Those sections are historical iid
+> simulations and are **not** calibrated performance of the deployed paired
+> detector. The validity audit for the hosted design, including calibration and
+> power under repeated prompts, is in `STATISTICAL_AUDIT.md` and its generated
+> tables in `results/statistical_audit/`.
+
 ## Fixed configuration behind every number
 
 | Setting | Value |
 | --- | --- |
 | Significance threshold (alpha) | 0.05 |
-| Pooled test family | 3 detectors (KS, proportion, MMD) |
+| Three-test family | KS, proportion, MMD (prompt-level inferential tests; pooled values retained as exploratory) |
 | Within-cycle correction | Benjamini-Hochberg |
 | Probe panel per cycle | 10 prompts, 2 per category, 5 categories |
 | Headline reference window | 50 runs, matched prompt ids |
-| Category window | 5 cycles, 10 samples per category, min 8 to test |
-| MMD permutations (runtime) | 500, so minimum attainable p is about 1/501 |
+| Category window | 5 cycles, 10 samples per category, min 8 nominal **and** 8 distinct to test |
+| MMD permutations | pooled exploratory test: 500 (floor ~1/501); prompt-level allocation test: 1000 sampled patterns or exhaustive enumeration, floor ~1/1001 or 1/pattern count |
 | MMD bandwidth | median heuristic on the pooled window |
 | Embedding models tested | all-MiniLM-L6-v2 (384 dim), all-mpnet-base-v2 (768 dim) |
 | Alert persistence | flag must hold 2 consecutive cycles |
@@ -267,9 +275,9 @@ Detector statistics and p values:
 
 | Metric | Meaning |
 | --- | --- |
-| `ks_statistic`, `ks_pvalue` | KS statistic and p on response length distributions |
-| `proportion_z_stat`, `proportion_z_pvalue` | Validity proportion test; `proportion_test_method` records fisher when expected counts are small |
-| `mmd_statistic`, `mmd_pvalue` | RBF MMD statistic and permutation p on embeddings. When the panel is matched this is the paired prompt cluster permutation (the inferential entry in the corrected family and the alert path); the pooled response level permutation is kept as exploratory only |
+| `ks_statistic`, `ks_pvalue` | Inferential length test: paired t statistic and p on per-prompt mean length differences (field names retained for compatibility). Pooled KS is in `ks_statistic_pooled`, `ks_pvalue_pooled` |
+| `proportion_z_stat`, `proportion_z_pvalue` | Inferential availability test: within-prompt permutation statistic and p; `proportion_test_method` records `paired_permutation`. Pooled Fisher/z is in `proportion_z_stat_pooled`, `proportion_z_pvalue_pooled`, `proportion_test_method_pooled` |
+| `mmd_statistic`, `mmd_pvalue` | RBF MMD statistic and permutation p on embeddings. When the panel is matched this is the within-prompt allocation-preserving permutation (the inferential entry in the corrected family and the alert path); the pooled response level permutation is kept as exploratory only |
 | `mmd_statistic_pooled`, `mmd_pvalue_pooled` | The pooled response level permutation, exploratory statistic and effect size reference, never the alert source |
 | `mmd_permutation_unit`, `paired_cluster_method` | The exchangeable unit (prompt_cluster or response) and the permutation regime (exhaustive or sampled), recorded per cycle |
 | `ks_adjusted_pvalue`, `proportion_z_adjusted_pvalue`, `mmd_adjusted_pvalue` | BH adjusted values across the test family |
@@ -279,7 +287,7 @@ Detector statistics and p values:
 | `bh_significant_tests` | Which corrected tests rejected in the cycle |
 | `overall_drift_detected` | Legacy field: any corrected test, kept for stored history compatibility; never used for the headline or the drift alert |
 | `overall_quality_degradation` | Legacy column name; the actual definition is an invalid-response threshold: it is 1 when the current window has at least 10 responses (`alerts.min_sample_size`) and the invalid proportion is 0.30 or higher (`alerts.quality_degradation_threshold`). It is a high-invalid-response-rate flag, not a general answer quality judgment |
-| `centroid_distance` | Euclidean distance between reference and current embedding centroids, the baseline detector |
+| `centroid_distance` | Cosine distance `1 - cos(μ_ref, μ_cur)` between reference and current embedding centroids, the mean-shift baseline |
 | `length_shift_pct` | Percent change in mean response length |
 | `refusal_rate_change` | Change in refusal rate between windows |
 
@@ -393,7 +401,7 @@ Detector results (reference 50 versus current 10, pooled family):
 | KS (response lengths) | 0.30 | 0.395 | 1.0 | No |
 | Proportion / Fisher (validity) | n/a | 1.000 | 1.0 | No |
 | MMD (embeddings, 500 perms, duplicate embeddings collapsed at entry) | 0.000 | 0.980 | 1.0 | No |
-| Paired prompt level MMD (diagnostic, 1024 swap patterns) | -0.027 | 1.0 | n/a, reported raw | No |
+| Paired prompt level MMD (legacy whole-cluster swap, 1024 patterns) | -0.027 | 1.0 | n/a, reported raw | No |
 
 Verdict: no drift detected, no alerts. Effect sizes: centroid distance 0.152,
 length shift +20.2% (mean 823.1 to 989.3 characters), refusal rate 0.0 both sides.
@@ -405,12 +413,13 @@ duplicate embeddings at entry. Second, the panel is matched (the same ten prompt
 ids are probed on both sides), so the standard run level permutation is joined in
 the results by a paired prompt level MMD that exchanges whole prompts' answer sets
 across all 1024 swap patterns; it reports statistic -0.027, raw p 1.0, ten matched
-pairs. In the current implementation that paired permutation is the inferential
-MMD entry: when matched prompt pairs exist it is what enters the corrected family
-and the alert path, and the pooled response level permutation is retained as an
-exploratory statistic. At the time of this experiment it was reported as a
-diagnostic beside the pooled test, which is why the alerting conclusions below
-are about the pooled path. KS and the validity proportion test deliberately keep every stored run:
+pairs. At the time of this experiment it was reported as a diagnostic beside
+the pooled test, which is why the alerting conclusions below are about the
+pooled path. That whole-cluster swap was later found invalid for unequal prompt
+clusters and replaced by a within-prompt allocation-preserving permutation;
+lengths and availability also moved to paired prompt-level tests. See
+`STATISTICAL_AUDIT.md`. KS and the validity proportion test deliberately keep
+every stored run:
 different texts with equal lengths are genuinely different observations, and a
 failed call is a real event regardless of repeats. Third, the identical pooled p
 values across every stored cycle are one comparison of two fixed answer sets, not
@@ -430,8 +439,9 @@ The extended run (five Gemini cycles on the same database with the default
 configuration, 90 seconds after the comparison run so the per model quota window
 had cleared) exercises the missing pieces and executed clean end to end: five of
 five cycles stored results, 50 calls all successful, zero errors, no alert fired
-with the default two-cycle persistence rule, and the paired diagnostic identical
-in all five cycles at ten matched prompt pairs per cycle. It also carries the
+with the default two-cycle persistence rule, and the legacy paired diagnostic
+(whole-cluster swap) identical in all five cycles at ten matched prompt pairs per
+cycle. It also carries the
 record of the round's two statistical corrections. Under the earlier gating, this
 shape of run had flagged the refusal_probe category BH significant (adjusted p
 0.020); recounting showed the ten nominal runs per category were only two to four
@@ -452,8 +462,9 @@ distinct prompts per panel remains the honest fix of the information content.
 - The persistence rule is an operational alert filter, not a formal sequential
   procedure. The optional alpha-spending gate (off by default) is a quadratic
   spending schedule with Holm correction within the cycle, holding family-wise
-  error over its declared 30 cycle horizon assuming valid p values, and it
-  cannot go below the permutation floor of about 1/501.
+  error over its declared 30 cycle horizon assuming valid p values. The pooled
+  MMD floor is about 1/501; the prompt-level allocation test's floor is about
+  1/1001 when sampled, or 1/pattern-count when enumerated.
 - Localization at production sample size is weak (section 3) and is presented as
   diagnostic evidence, not a verified localization capability.
 - In the reliability study, regression is modeled as an invalid-response increase
@@ -471,7 +482,8 @@ distinct prompts per panel remains the honest fix of the information content.
   live APIs and measures a difference between two different models served by two
   different providers. Its category-level flag from the first recording was
   withdrawn after effective sample counting showed pseudoreplication, the monitor
-  now skips categories that cannot support calibrated inference, and the pooled
-  MMD and its paired prompt level diagnostic carry the reported dependence
-  structure. The section supports no claim about within-model temporal drift,
+  now skips categories that cannot support calibrated inference. The pooled MMD
+  and its legacy paired prompt level diagnostic were recorded, with the
+  unequal-cluster limitation documented in `STATISTICAL_AUDIT.md`. The section
+  supports no claim about within-model temporal drift,
   provider behavior in isolation, detection rate, or false alarm rate.

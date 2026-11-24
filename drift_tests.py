@@ -1,3 +1,6 @@
+import itertools
+import math
+
 import numpy as np
 from scipy import stats
 from scipy.stats import ks_2samp
@@ -379,6 +382,195 @@ def paired_cluster_mmd_test(X: List[List[float]],
         return (float(obs), 1.0, len(common))
     pvalue = count_larger / evaluated
     return (float(obs), float(max(0.0, min(1.0, pvalue))), len(common))
+
+def paired_mean_length_test(
+        reference_by_prompt: Dict[str, List[float]],
+        current_by_prompt: Dict[str, List[float]]) -> Tuple[float, float]:
+    """Paired t-test on per-prompt mean response lengths.
+
+    The deployed panel repeats fixed prompts across cycles. Averaging the
+    reference answers first gives one independent length contrast per prompt,
+    which avoids treating repeated answers to the same prompt as independent
+    observations. One difference per prompt also stays valid when temporal
+    correlation changes the variance of a prompt's contrast: the variance is
+    estimated from the observed prompt differences.
+    """
+    diffs: List[float] = []
+    for key, current_values in current_by_prompt.items():
+        reference_values = reference_by_prompt.get(key) or []
+        if not reference_values or not current_values:
+            continue
+        diffs.append(float(np.mean(reference_values))
+                     - float(np.mean(current_values)))
+    if len(diffs) < 2:
+        return float('nan'), 1.0
+    arr = np.asarray(diffs, dtype=float)
+    mean = float(arr.mean())
+    sd = float(arr.std(ddof=1))
+    if sd <= 1e-12:
+        return mean, 0.0 if abs(mean) > 1e-12 else 1.0
+    t_stat = mean / (sd / math.sqrt(len(arr)))
+    pvalue = 2.0 * stats.t.sf(abs(t_stat), df=len(arr) - 1)
+    return t_stat, float(max(0.0, min(1.0, pvalue)))
+
+
+def paired_validity_permutation_test(
+        reference_by_prompt: Dict[str, List[int]],
+        current_by_prompt: Dict[str, List[int]],
+        random_seed: int = 42,
+        n_permutations: int = 1000) -> Tuple[float, float]:
+    """Within-prompt randomization test for response availability.
+
+    Under the null, a prompt's answers are exchangeable across its cycles, so
+    which of its observations is the current one is random while the 3:1
+    allocation is fixed by design. This preserves prompt-specific success
+    rates and failed/empty rows, unlike a pooled two-proportion test.
+    """
+    common = sorted(set(reference_by_prompt) & set(current_by_prompt))
+    values: List[np.ndarray] = []
+    current_sizes: List[int] = []
+    for key in common:
+        reference = np.asarray(reference_by_prompt[key], dtype=float)
+        current = np.asarray(current_by_prompt[key], dtype=float)
+        if reference.size == 0 or current.size == 0:
+            continue
+        values.append(np.concatenate([reference, current]))
+        current_sizes.append(int(current.size))
+    if len(values) < 2:
+        return float('nan'), 1.0
+    n_current = float(sum(current_sizes))
+    n_reference = float(sum(v.size for v in values)) - n_current
+    if n_current < 1 or n_reference < 1:
+        return float('nan'), 1.0
+
+    patterns = max(1, int(n_permutations)) + 1  # identity included
+    current_successes = np.zeros((patterns, len(values)), dtype=float)
+    rng = np.random.default_rng(random_seed)
+    for j, (vals, size) in enumerate(zip(values, current_sizes)):
+        chosen = np.argpartition(rng.random((patterns, vals.size)),
+                                 size - 1, axis=1)[:, :size]
+        current_successes[:, j] = vals[chosen].sum(axis=1)
+        current_successes[0, j] = vals[vals.size - size:].sum()
+    total_successes = np.asarray([v.sum() for v in values], dtype=float)
+    reference_successes = total_successes - current_successes
+    statistic = (current_successes.sum(axis=1) / n_current
+                 - reference_successes.sum(axis=1) / n_reference)
+    observed = float(statistic[0])
+    pvalue = float(np.count_nonzero(np.abs(statistic) >= abs(observed) - 1e-12)
+                   / patterns)
+    return observed, float(max(0.0, min(1.0, pvalue)))
+
+
+def _mmd2_batch(K: np.ndarray, masks: np.ndarray) -> np.ndarray:
+    """Unbiased MMD² for each row of group-membership masks.
+
+    Batching keeps the sampled-permutation path fast while matching
+    _unbiased_mmd2_from_kernel, including its zero return when either group
+    has fewer than two observations.
+    """
+    reference = np.asarray(masks, dtype=float)
+    current = 1.0 - reference
+    m = reference.sum(axis=1)
+    n = current.sum(axis=1)
+    ok = (m >= 2) & (n >= 2)
+    out = np.zeros(reference.shape[0], dtype=float)
+    if not np.any(ok):
+        return out
+    idx = np.flatnonzero(ok)
+    k_xx = reference[idx] @ K @ reference[idx].T
+    k_yy = current[idx] @ K @ current[idx].T
+    k_xy = reference[idx] @ K @ current[idx].T
+    diag = np.diag(K)
+    mi, ni = m[idx], n[idx]
+    out[idx] = ((np.diag(k_xx) - reference[idx] @ diag) / (mi * (mi - 1.0))
+                + (np.diag(k_yy) - current[idx] @ diag) / (ni * (ni - 1.0))
+                - 2.0 * np.diag(k_xy) / (mi * ni))
+    return out
+
+
+def allocation_preserving_mmd_test(
+        X: List[List[float]],
+        Y: List[List[float]],
+        x_cluster_labels: List[str],
+        y_cluster_labels: List[str],
+        random_seed: int = 42,
+        n_permutations: int = 1000,
+        sigma: Optional[float] = None) -> Tuple[float, float, int, str]:
+    """Prompt-level MMD permutation that preserves the deployed 3:1 allocation.
+
+    Whole-cluster swapping is only exact when each prompt contributes equal
+    numbers of reference and current answers. The hosted 120/40 windows give
+    three reference answers and one current answer per prompt, so swapping a
+    whole prompt changes the group sizes and compares the observed statistic
+    with a different allocation. Here only the choice of *which* observation
+    is current is randomized within each prompt, keeping every prompt's
+    observed group sizes fixed. The null is exchangeability of cycles within a
+    prompt; temporal dependence across cycles is a limitation, not something
+    this permutation models.
+
+    Returns (statistic, pvalue, matched_prompts, method), where method is
+    'exhaustive' or 'sampled'. Prompt labels appearing on only one side are
+    excluded, as in paired_cluster_mmd_test().
+    """
+    unavailable = (float('nan'), 1.0, 0, 'unavailable')
+    if (not X or not Y
+            or len(X) != len(x_cluster_labels)
+            or len(Y) != len(y_cluster_labels)):
+        return unavailable
+    common = sorted({str(v) for v in x_cluster_labels}
+                    & {str(v) for v in y_cluster_labels})
+    if not common:
+        return unavailable
+    x_keep = [i for i, v in enumerate(x_cluster_labels) if str(v) in common]
+    y_keep = [j for j, v in enumerate(y_cluster_labels) if str(v) in common]
+    nx, ny = len(x_keep), len(y_keep)
+    if nx < 2 or ny < 2:
+        return (float('nan'), 1.0, len(common), 'unavailable')
+
+    labels = ([str(x_cluster_labels[i]) for i in x_keep]
+              + [str(y_cluster_labels[j]) for j in y_keep])
+    row_groups = [[i for i, label in enumerate(labels) if label == key]
+                  for key in common]
+    observed_current = [[i for i in group if i >= nx]
+                        for group in row_groups]
+    if any(len(group) < 2 for group in row_groups) or \
+            any(not current for current in observed_current):
+        return (float('nan'), 1.0, len(common), 'unavailable')
+
+    Z = np.vstack([np.asarray(X, dtype=float)[x_keep],
+                   np.asarray(Y, dtype=float)[y_keep]])
+    K, _ = _compute_kernel_matrix(Z, sigma)
+
+    choices = [list(itertools.combinations(group, len(current)))
+               for group, current in zip(row_groups, observed_current)]
+    total_patterns = 1
+    for option in choices:
+        total_patterns *= len(option)
+    if total_patterns <= 4096:
+        patterns = list(itertools.product(*choices))
+        method = 'exhaustive'
+    else:
+        rng = np.random.default_rng(random_seed)
+        patterns = [tuple(tuple(current) for current in observed_current)]
+        seen = {patterns[0]}
+        for _ in range(max(1, int(n_permutations))):
+            pattern = tuple(option[rng.integers(len(option))]
+                            for option in choices)
+            if pattern not in seen:
+                seen.add(pattern)
+                patterns.append(pattern)
+        method = 'sampled'
+
+    masks = np.ones((len(patterns), nx + ny), dtype=bool)
+    for row, pattern in enumerate(patterns):
+        for current_rows in pattern:
+            masks[row, list(current_rows)] = False
+    statistics = _mmd2_batch(K, masks)
+    observed = float(statistics[0])
+    pvalue = float(np.count_nonzero(statistics >= observed - 1e-12)
+                   / len(statistics))
+    return observed, float(max(0.0, min(1.0, pvalue))), len(common), method
+
 
 def benjamini_hochberg_correction(pvalues: List[float], alpha: float = 0.05) -> Tuple[List[float], List[bool]]:
     """

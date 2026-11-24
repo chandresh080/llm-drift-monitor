@@ -442,6 +442,9 @@ class TestPipelineIntegration:
             assert payload["mmd_permutation_unit"] == "prompt_cluster"
             assert payload["paired_cluster_prompt_pairs"] == 5
             assert payload["paired_cluster_method"] == "exhaustive"
+            # Length and availability tests also respect repeated prompts.
+            assert payload["proportion_test_method"] == "paired_permutation"
+            assert payload["ks_pvalue_pooled"] is not None
             # The pooled statistic is retained as exploratory only.
             assert payload["mmd_statistic_pooled"] is not None
             assert payload["mmd_pvalue_pooled"] is not None
