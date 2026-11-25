@@ -2,11 +2,11 @@
    Vanilla JS, no dependencies; every displayed value comes from the REST
    API on the same origin. Nothing is computed client side except formatting.
 
-   Layout contract: recent activity is the first section, followed by a
-   two-column workspace. Distribution history, detector results and response
-   samples occupy the main column; the verdict, window counts, effect sizes,
-   alerts and configuration occupy the side column. Evaluation is a separate
-   view.
+   Layout contract: Monitor opens with the action and latest verdict, followed
+   by a two-column workspace. Detector results, history and recent activity
+   lead the main column; response samples and category analysis stay secondary
+   disclosures. Alerts and configuration sit in the side column. Evaluation
+   and Demo are separate views.
 
    Loading contract: every data endpoint is fetched and rendered
    independently, so each panel appears at the earliest moment its own
@@ -63,6 +63,64 @@ const NUM_TESTS = 3;      // detector family: KS, availability, MMD
 
 const $ = (id) => document.getElementById(id);
 
+/* ---------- shared icon system ----------
+
+   Every icon is the same 16px, 1.8-stroke, round-cap outline. Markup hosts
+   declare data-icon; hydrateIcons() is the only place that writes the SVG, so
+   the shell, tabs, tables and disclosures cannot drift apart. Decorative
+   icons stay aria-hidden; controls keep their own text or aria-label. */
+const ICONS = {
+  activity: '<path d="M3 12h3.5l2.5-7 3.5 14 2.5-7H13"/>',
+  server: '<rect x="3" y="3.5" width="10" height="4" rx="1"/>'
+    + '<rect x="3" y="9.5" width="10" height="4" rx="1"/>'
+    + '<path d="M6 5.5h.01M6 11.5h.01"/>',
+  database: '<ellipse cx="8" cy="4.5" rx="4.5" ry="1.8"/>'
+    + '<path d="M3.5 4.5v7c0 1 2 1.8 4.5 1.8s4.5-.8 4.5-1.8v-7"/>'
+    + '<path d="M3.5 8c0 1 2 1.8 4.5 1.8s4.5-.8 4.5-1.8"/>',
+  brain: '<path d="M8 4.4A2.4 2.4 0 0 0 3.5 5.7 2.4 2.4 0 0 0 4 10.4a2.4 2.4 0 0 0 4 2.2V4.4Z"/>'
+    + '<path d="M8 4.4a2.4 2.4 0 0 1 4.5 1.3 2.4 2.4 0 0 1-.5 4.7 2.4 2.4 0 0 1-4 2.2V4.4Z"/>',
+  github: '<path d="M8 1.8a6.2 6.2 0 0 0-2 12.1v-2.3c-1.7.4-2.1-.7-2.1-.7"/>'
+    + '<path d="M4.4 11.5c-1.2-.3-1.7-.9-1.7-.9-.3 2 1.1 2.3 1.7 2.3v-1.4Z"/>'
+    + '<path d="M6.2 9.2c-.1.3-.4.5-.7.4-.6-.2-.9-.1-.9-.1 0 .3.4.5.7.6.3.1.5.5.5.9.2.4.7.6 1.5.5.7-.1 1-1 1-1 .3-.5.8-.8 1.5-.8.5 0 .8-.1 1-.3-.1 1.4.4 2.5.4 2.5s-.5.3-.6 1.1c-.1 1 .3 1.4.3 1.4a6.2 6.2 0 1 0-3.2-11.7v2.2c0 .6-.5 1.1-1.1 1.1Z"/>',
+  chart: '<path d="M3 13.5V3M3 13.5h10"/>'
+    + '<path d="M5.7 10.5 8 7.6l2.1 1.8 2.7-4"/>',
+  flask: '<path d="M6.4 2.5h3.2M7.2 2.5v5L3.6 14a1.8 1.8 0 0 0 1.6 2.7h5.6A1.8 1.8 0 0 0 12.4 14L8.8 7.5v-5"/>'
+    + '<path d="M5.5 12h5"/>',
+  radar: '<circle cx="8" cy="8" r="5.4"/><circle cx="8" cy="8" r="2"/>'
+    + '<path d="M8 8 12.2 3.8M8 1.8v1.4M8 12.8v1.4M1.8 8h1.4M12.8 8h1.4"/>',
+  history: '<path d="M3 8a5 5 0 1 1 1.5 4.5"/><path d="M3 4.5V8h3.5"/>'
+    + '<path d="M8 5.5V8l2 1.3"/>',
+  layers: '<path d="m8 2.5 5.5 3L8 8.5 2.5 5.5 8 2.5Z"/>'
+    + '<path d="m2.5 9 5.5 3 5.5-3M2.5 12.3 8 15.3l5.5-3"/>',
+  network: '<circle cx="3.5" cy="4" r="1.7"/><circle cx="12.5" cy="4" r="1.7"/>'
+    + '<circle cx="8" cy="12" r="1.7"/><path d="M4.9 5.2 7 10.6M11.1 5.2 9 10.6M5.2 4h5.6"/>',
+  bell: '<path d="M4.5 11.5V7a3.5 3.5 0 0 1 7 0v4.5l1.3 2H3.2l1.3-2Z"/>'
+    + '<path d="M6.7 13.5a1.3 1.3 0 0 0 2.6 0"/>',
+  settings: '<circle cx="8" cy="8" r="2.2"/>'
+    + '<path d="M8 1.8v1.7M8 12.5v1.7M1.8 8h1.7M12.5 8h1.7M3.6 3.6l1.2 1.2M11.2 11.2l1.2 1.2M12.4 3.6l-1.2 1.2M4.8 11.2l-1.2 1.2"/>',
+  book: '<path d="M8 4.2C6.6 3 4.9 2.8 2.8 3.2v9c2.1-.4 3.8-.2 5.2 1 1.4-1.2 3.1-1.4 5.2-1v-9c-2.1-.4-3.8-.2-5.2 1Z"/>'
+    + '<path d="M8 4.2v9"/>',
+  play: '<path d="M5 3.5 12.5 8 5 12.5V3.5Z"/>',
+  check: '<circle cx="8" cy="8" r="6"/><path d="m5.2 8.2 1.9 1.9 3.9-4.1"/>',
+  alert: '<path d="M8 2.4 14.4 13H1.6L8 2.4Z"/><path d="M8 6v3.2M8 11h.01"/>',
+  "chevron-right": '<path d="m6 4 4 4-4 4"/>',
+  clock: '<circle cx="8" cy="8" r="6"/><path d="M8 4.8V8l2.2 1.5"/>',
+  dash: '<circle cx="8" cy="8" r="6"/><path d="M5.3 8h5.4"/>',
+};
+
+function iconSvg(name, className = "ui-icon") {
+  return `<svg class="${className}" viewBox="0 0 16 16" aria-hidden="true" `
+    + `focusable="false">${ICONS[name] || ICONS.dash}</svg>`;
+}
+
+function hydrateIcons() {
+  if (!document.querySelectorAll) return;
+  document.querySelectorAll("[data-icon]").forEach((host) => {
+    host.innerHTML = iconSvg(host.dataset ? host.dataset.icon : "");
+    if (host.dataset) host.dataset.iconReady = "1";
+  });
+}
+
 function escapeHtml(text) {
   return String(text == null ? "" : text)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;")
@@ -85,6 +143,33 @@ function fmtTime(iso) {
 function fmtP(p) {
   if (p == null) return "n/a";
   return Number(p) < 0.001 ? "< 0.001" : Number(p).toFixed(3);
+}
+
+/* Artifact fields are machine keys. Show their meaning, never the key:
+   `paired_permutation` becomes "Paired permutation" and `drift` becomes
+   "Drift". Known statistical methods get their full names once, here. */
+const METHOD_LABELS = {
+  ks: "Kolmogorov–Smirnov",
+  fisher: "Fisher exact",
+  z: "Z test",
+  proportion_z: "Proportion z",
+  paired_permutation: "Paired permutation",
+  mmd: "Maximum mean discrepancy",
+  bh: "Benjamini–Hochberg",
+  benjamini_hochberg: "Benjamini–Hochberg",
+  "benjamini-hochberg": "Benjamini–Hochberg",
+};
+
+function humanizeKey(value) {
+  const key = String(value == null ? "" : value).trim();
+  if (!key) return "n/a";
+  if (METHOD_LABELS[key.toLowerCase()]) return METHOD_LABELS[key.toLowerCase()];
+  return key
+    .replace(/[_-]+/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^[a-z]/, (c) => c.toUpperCase());
 }
 
 function fmtWait(ms) {
@@ -235,9 +320,11 @@ function providerState() {
   if (state.health) {
     const status = state.health.provider_status;
     if (status === "ok") return "available";
-    // Only these two are measured provider failures. `unchecked` and any
-    // future value are unknown, never a confirmed inability to run cycles.
+    // Only measured failures count as unavailable. `unchecked` means the
+    // provider was simply not pinged and gets its own honest label; a future
+    // unrecognised value really is unknown.
     if (status === "unreachable" || status === "not_configured") return "unavailable";
+    if (status === "unchecked") return "unchecked";
     return "unknown";
   }
   if (state.config && state.config.provider_available === false) return "unavailable";
@@ -296,16 +383,26 @@ function providerStates() {
   return {
     available: ["status-ok", `${name} Available`, detail],
     unavailable: ["status-bad", `${name} Unavailable`, detail],
+    unchecked: ["status-muted", `${name} Unchecked`, detail],
     unknown: ["status-muted", `${name} Unknown`, detail],
     checking: ["status-muted", `${name} Checking`, detail],
   };
 }
 
+const STATUS_ICONS = {
+  "health-pill": "server",
+  "db-pill": "database",
+  "provider-pill": "brain",
+};
+
 function renderPill(id, found) {
   const pill = $(id);
   if (!pill) return;
   pill.className = `status ${found[0]}`.trim();
-  pill.innerHTML = `<span class="dot"></span>${escapeHtml(found[1])}`;
+  /* Rebuild from the shared icon system: the host is declared in the shell
+     and the text stays in its own span for responsive labels. */
+  pill.innerHTML = iconSvg(STATUS_ICONS[id] || "dash")
+    + `<span class="status-text">${escapeHtml(found[1])}</span>`;
   pill.title = found[2];
 }
 
@@ -371,6 +468,14 @@ function initTabs() {
     $("tab-btn-console").classList.toggle("tab-active", view === "console");
     $("tab-btn-evaluation").classList.toggle("tab-active", view === "evaluation");
     $("tab-btn-demo").classList.toggle("tab-active", view === "demo");
+    for (const [button, active] of [
+      ["tab-btn-console", view === "console"],
+      ["tab-btn-evaluation", view === "evaluation"],
+      ["tab-btn-demo", view === "demo"],
+    ]) {
+      if (active) $(button).setAttribute("aria-current", "page");
+      else $(button).removeAttribute("aria-current");
+    }
     if (view === "evaluation") {
       if (state.evaluation) {
         try { renderEvaluation(); } catch (err) { /* blocks render independently */ }
@@ -437,6 +542,8 @@ function renderVerdict() {
     meta.textContent = "";
     if (refEl) refEl.textContent = "n/a";
     if (curEl) curEl.textContent = "n/a";
+    const flaggedEl = $("summary-flagged");
+    if (flaggedEl) flaggedEl.textContent = "n/a";
     strip.hidden = true;
     strip.innerHTML = "";
     return;
@@ -459,6 +566,8 @@ function renderVerdict() {
     curEl.textContent = latest.current_size == null
       ? "n/a" : Number(latest.current_size).toLocaleString();
   }
+  const flaggedEl = $("summary-flagged");
+  if (flaggedEl) flaggedEl.textContent = fired == null ? "n/a" : String(fired);
 
   /* Quality signals stay separate from the distribution verdict. */
   const parts = [];
@@ -466,7 +575,8 @@ function renderVerdict() {
   if (sig.guardrail) parts.push("Invalid-response guardrail tripped");
   if (parts.length) {
     strip.hidden = false;
-    strip.innerHTML = `<span class="quality-label">Quality signal</span>`
+    strip.innerHTML = iconSvg("alert")
+      + `<span class="quality-label">Quality signal</span>`
       + escapeHtml(parts.join(" · "));
   } else {
     strip.hidden = true;
@@ -495,6 +605,7 @@ function renderDetectors() {
     {
       name: "Response length",
       method: "KS",
+      raw: l ? l.ks_pvalue : null,
       p: l ? l.ks_adjusted_pvalue : null,
       sig: l ? l.ks_significant : null,
     },
@@ -502,12 +613,14 @@ function renderDetectors() {
       name: "Response availability",
       method: l && l.proportion_z_test_method === "fisher" ? "Fisher exact"
         : "Fisher / z",
+      raw: l ? l.proportion_z_pvalue : null,
       p: l ? l.proportion_z_adjusted_pvalue : null,
       sig: l ? l.proportion_z_significant : null,
     },
     {
       name: "Semantic shift",
       method: "Paired MMD",
+      raw: l ? l.mmd_pvalue : null,
       p: l ? l.mmd_adjusted_pvalue : null,
       sig: l ? l.mmd_significant : null,
     },
@@ -515,14 +628,17 @@ function renderDetectors() {
   $("detector-rows").innerHTML = rows.map((r) => {
     let decision;
     let cls = "decision";
+    let mark = "";
     if (r.p == null && r.sig == null) {
       decision = "Not evaluated";
       cls += " decision-muted";
     } else if (Number(r.sig) === 1) {
       decision = "Flagged";
       cls += " decision-alert";
+      mark = iconSvg("alert");
     } else {
       decision = "No flag";
+      mark = iconSvg("check");
     }
     return `
       <tr data-testid="detector-row">
@@ -530,8 +646,9 @@ function renderDetectors() {
           <span class="detector-name">${escapeHtml(r.name)}</span>
           <span class="detector-method">${escapeHtml(r.method)}</span>
         </td>
+        <td class="num">${r.raw == null ? "n/a" : fmtP(r.raw)}</td>
         <td class="num">${r.p == null ? "n/a" : fmtP(r.p)}</td>
-        <td class="${cls}">${decision}</td>
+        <td class="${cls}">${mark}${decision}</td>
       </tr>`;
   }).join("");
 }
@@ -686,25 +803,15 @@ function sampleLength(data) {
    The icon carries its own accessible label and tooltip, so the meaning does
    not depend on colour alone. */
 function validityIcon(kind) {
-  const icons = {
-    ok: '<circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.4"/>'
-      + '<path d="M5.1 8.2 L7 10.1 L10.9 6.1" fill="none" stroke="currentColor" '
-      + 'stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>',
-    bad: '<circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.4"/>'
-      + '<path d="M5.7 5.7 L10.3 10.3 M10.3 5.7 L5.7 10.3" fill="none" '
-      + 'stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>',
-    neutral: '<circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.4"/>'
-      + '<path d="M5.5 8 L10.5 8" fill="none" stroke="currentColor" '
-      + 'stroke-width="1.5" stroke-linecap="round"/>',
-  };
+  const icon = { ok: "check", bad: "alert", neutral: "dash" }[kind] || "dash";
   const labels = {
     ok: "Non-empty response",
     bad: "Empty response",
     neutral: "Validity not recorded",
   };
-  return `<span class="s-icon s-${kind}" role="img" aria-label="${labels[kind]}" `
-    + `title="${labels[kind]}"><svg viewBox="0 0 16 16" width="16" height="16" `
-    + `aria-hidden="true" focusable="false">${icons[kind]}</svg></span>`;
+  const label = labels[kind] || labels.neutral;
+  return `<span class="s-icon s-${kind}" role="img" aria-label="${label}" `
+    + `title="${label}">${iconSvg(icon)}</span>`;
 }
 
 function sampleValidity(data) {
@@ -920,7 +1027,7 @@ function cycleStatus(c) {
     case "awaiting_evaluation": return ["Awaiting evaluation", "act-status is-wait"];
     case "failed": return ["Failed", "act-status is-bad"];
     case "interrupted": return ["Interrupted", "act-status is-warn"];
-    default: return [String(c.status || "Unknown"), "act-status"];
+    default: return [humanizeKey(c.status || "recorded"), "act-status"];
   }
 }
 
@@ -994,11 +1101,11 @@ function renderActivity() {
     }
     return `
       <tr data-testid="activity-row" title="Cycle id ${escapeHtml(c.cycle_id || "unknown")}">
-        <td class="act-cycle">#${escapeHtml(c.cycle_number)}</td>
-        <td class="act-time">${fmtTime(c.ended_at || c.started_at || c.timestamp)}</td>
-        <td class="num act-probes">${probeCell}</td>
-        <td class="${statusCls}">${statusText}</td>
-        <td class="act-outcome">${outcome}</td>
+        <td class="act-cycle" data-label="Cycle">#${escapeHtml(c.cycle_number)}</td>
+        <td class="act-time" data-label="Time">${fmtTime(c.ended_at || c.started_at || c.timestamp)}</td>
+        <td class="num act-probes" data-label="Probes">${probeCell}</td>
+        <td class="${statusCls}" data-label="Status">${statusText}</td>
+        <td class="act-outcome" data-label="Detector outcome">${outcome}</td>
       </tr>`;
   }).join("");
   el.innerHTML = `
@@ -1587,12 +1694,14 @@ function renderDemoScenarios(scenario) {
     + `${cfg.reference_window || "?"} reference / ${cfg.prompts_per_cycle || "?"} current · `
     + `alpha ${fmtP(cfg.alpha)}`;
   $("demo-scenario-desc").textContent =
-    `${scenario.description || ""} ${scenario.summary || ""}`.trim();
+    `${scenario.description || ""} ${(scenario.summary || {}).verdict || ""}`.trim();
   $("demo-scenario-buttons").innerHTML = demo.artifact.scenarios.map((s) => {
     const active = s.id === scenario.id;
+    const icon = /drift/i.test(s.id) ? "alert" : "check";
     return `<button class="demo-segment${active ? " selected" : ""}" type="button" `
       + `data-scenario="${escapeHtml(s.id)}" aria-pressed="${active}" `
-      + `data-testid="demo-scenario-btn">${escapeHtml(s.label || s.id)}</button>`;
+      + `data-testid="demo-scenario-btn">${iconSvg(icon)}`
+      + `${escapeHtml(s.label || humanizeKey(s.id))}</button>`;
   }).join("");
 }
 
@@ -1612,12 +1721,15 @@ function renderDemoCycles(scenario) {
     const label = !cycle.tests_run ? "Reference collection"
       : (alerts ? `${alerts} alert${alerts === 1 ? "" : "s"}` :
         (flagged ? "Flag recorded" : "No flag"));
+    const icon = state === "reference" ? "clock"
+      : (state === "clear" ? "check" : "alert");
     return `<button class="demo-cycle-card ${state}${active ? " selected" : ""}" `
       + `type="button" data-cycle="${escapeHtml(cycle.cycle_number)}" `
       + `aria-pressed="${active}" data-testid="demo-cycle" `
       + `title="Cycle ${escapeHtml(cycle.cycle_number)} · ${escapeHtml(label)}">`
+      + iconSvg(icon)
       + `<span class="demo-cycle-num">${escapeHtml(cycle.cycle_number)}</span>`
-      + `<span class="demo-cycle-label">${escapeHtml(cycle.phase || "cycle")}</span>`
+      + `<span class="demo-cycle-label">${escapeHtml(humanizeKey(cycle.phase || "cycle"))}</span>`
       + `<span class="demo-cycle-state">${escapeHtml(label)}</span>`
       + `</button>`;
   }).join("");
@@ -1785,19 +1897,22 @@ function renderDemoDetectors() {
     const adjusted = row ? row.adjusted_p : null;
     let decision = "Not evaluated";
     let cls = "decision decision-muted";
+    let mark = "";
     if (row && Number(row.significant) === 1) {
       decision = "Flagged";
       cls = "decision decision-alert";
+      mark = iconSvg("alert");
     } else if (row && raw != null) {
       decision = "No flag";
       cls = "decision";
+      mark = iconSvg("check");
     }
     return `<tr data-testid="demo-detector-row">`
       + `<td><span class="detector-name">${d.name}</span>`
-      + `<span class="detector-method">${escapeHtml((row && row.method) || d.name)}</span></td>`
+      + `<span class="detector-method">${escapeHtml(humanizeKey((row && row.method) || d.name))}</span></td>`
       + `<td class="num">${raw == null ? "n/a" : fmtP(Number(raw))}</td>`
       + `<td class="num">${adjusted == null ? "n/a" : fmtP(Number(adjusted))}</td>`
-      + `<td class="${cls}">${decision}</td></tr>`;
+      + `<td class="${cls}">${mark}${decision}</td></tr>`;
   }).join("");
 }
 
@@ -1815,18 +1930,23 @@ function renderDemoDecision() {
   const passed = Object.values(detectors).filter((row) => row && row.significant).length;
   const alerts = cycle.alerts || [];
   $("demo-cycle-tag").textContent =
-    `Cycle #${cycle.cycle_number} · ${cycle.adapter_mode || "unknown mode"}`;
+    `Cycle #${cycle.cycle_number} · ${humanizeKey(cycle.adapter_mode || "unspecified mode")}`;
   $("demo-count-ref").textContent = result.reference_size == null
     ? "n/a" : Number(result.reference_size).toLocaleString();
   $("demo-count-cur").textContent = result.current_size == null
     ? "n/a" : Number(result.current_size).toLocaleString();
   const effects = result.effects || {};
-  $("demo-eff-length").textContent = effects.length_shift_pct == null ? "n/a"
-    : `${effects.length_shift_pct > 0 ? "+" : ""}${effects.length_shift_pct}%`;
-  $("demo-eff-centroid").textContent = effects.centroid_distance == null
-    ? "n/a" : Number(effects.centroid_distance).toFixed(3);
-  $("demo-eff-paired").textContent = effects.paired_mmd_pvalue == null
-    ? "n/a" : fmtP(Number(effects.paired_mmd_pvalue));
+  const setEffect = (id, value) => {
+    const el = $(id);
+    el.textContent = value;
+    el.className = `effect-value${value === "n/a" ? " effect-missing" : ""}`;
+  };
+  setEffect("demo-eff-length", effects.length_shift_pct == null ? "n/a"
+    : `${effects.length_shift_pct > 0 ? "+" : ""}${effects.length_shift_pct}%`);
+  setEffect("demo-eff-centroid", effects.centroid_distance == null
+    ? "n/a" : Number(effects.centroid_distance).toFixed(3));
+  setEffect("demo-eff-paired", effects.paired_mmd_pvalue == null
+    ? "n/a" : fmtP(Number(effects.paired_mmd_pvalue)));
 
   if (!cycle.tests_run) {
     insight.className = "demo-insight";
@@ -1844,39 +1964,51 @@ function renderDemoDecision() {
       ? `${passed} of ${DEMO_DETECTORS.length} detectors reached BH significance, `
         + "but the consecutive-cycle rule did not fire in this cycle."
       : "All BH adjusted p-values stayed above alpha.");
-  insight.innerHTML = `<div class="demo-insight-icon">${alert ? "!" : "✓"}</div>`
-    + `<div><strong>${headline}</strong><p>${detail}</p></div>`;
+  insight.innerHTML = `<div class="demo-insight-icon">`
+    + `${iconSvg(alert ? "alert" : "check")}</div>`
+    + `<div><strong>${escapeHtml(headline)}</strong><p>${escapeHtml(detail)}</p></div>`;
 }
 
 function renderDemoAlert() {
   const cycle = demoCycle();
   const cfg = (demo.artifact && demo.artifact.configuration) || {};
-  const policy = `Policy: ${cfg.min_consecutive_cycles == null ? "?" : cfg.min_consecutive_cycles} `
-    + `consecutive flagged cycles · ${escapeHtml(cfg.correction || "correction")} · `
-    + `alpha ${fmtP(cfg.alpha)}.`;
+  const streak = cfg.min_consecutive_cycles == null ? 1
+    : Number(cfg.min_consecutive_cycles);
+  const policy = `${streak} consecutive flagged cycles · `
+    + `${humanizeKey(cfg.correction || "Benjamini–Hochberg")} · alpha ${fmtP(cfg.alpha)}.`;
   const alerts = (cycle && cycle.alerts) || [];
+  const flagged = Boolean((cycle.results || {}).distribution_shift_detected);
   $("demo-alert-meta").textContent = cycle
     ? `${alerts.length} for cycle #${cycle.cycle_number}` : "";
+  /* The rule is shown as a compact sequence, not a paragraph of policy copy. */
+  const steps = `<div class="policy-steps">`
+    + `<span class="policy-step${flagged ? " done" : ""}">${iconSvg("radar")}Flag</span>`
+    + `<span class="policy-line" aria-hidden="true"></span>`
+    + `<span class="policy-step${streak > 1 ? (alerts.length ? " fired" : " done") : ""}">`
+    + `${iconSvg("clock")}Repeat × ${streak}</span>`
+    + `<span class="policy-line" aria-hidden="true"></span>`
+    + `<span class="policy-step${alerts.length ? " fired" : ""}">`
+    + `${iconSvg("bell")}Alert</span></div>`
+    + `<p class="demo-policy">${escapeHtml(policy)}</p>`;
+
   if (!cycle || !cycle.tests_run) {
-    $("demo-alert").innerHTML = `<p class="empty-state">No alert decision in the `
-      + "reference window.</p>";
+    $("demo-alert").innerHTML =
+      '<p class="empty-state">No alert decision in the reference window.</p>' + steps;
     return;
   }
   if (alerts.length) {
     $("demo-alert").innerHTML = alerts.map((alert) => `
       <div class="demo-alert-item">
-        <span class="demo-alert-type">${escapeHtml(alert.type || "alert")}</span>
+        <span class="demo-alert-type">${escapeHtml(humanizeKey(alert.type || "alert"))}</span>
         <p>${escapeHtml(alert.message || "")}</p>
-      </div>`).join("") + `<p class="demo-policy">${policy}</p>`;
+      </div>`).join("") + steps;
     return;
   }
-  const flagged = Boolean((cycle.results || {}).distribution_shift_detected);
-  $("demo-alert").innerHTML = flagged
-    ? `<p class="empty-state">This cycle stored a distribution flag. No alert was `
-      + `emitted yet; the stored alert list is empty for this cycle.</p>`
-      + `<p class="demo-policy">${policy}</p>`
-    : `<p class="empty-state">No distribution flag in this cycle, so no alert was `
-      + `considered.</p><p class="demo-policy">${policy}</p>`;
+  $("demo-alert").innerHTML = (flagged
+    ? '<p class="empty-state">This cycle stored a distribution flag. No alert was '
+      + 'emitted yet; the stored alert list is empty for this cycle.</p>'
+    : '<p class="empty-state">No distribution flag in this cycle, so no alert was '
+      + 'considered.</p>') + steps;
 }
 
 function demoResponse(sample, side) {
@@ -1892,7 +2024,7 @@ function renderDemoSamples() {
     $("demo-samples").innerHTML = '<p class="empty-state">No response samples for this cycle.</p>';
     return;
   }
-  $("demo-samples").innerHTML = samples.map((sample) => {
+  $("demo-samples").innerHTML = samples.map((sample, i) => {
     const reference = sample.reference || {};
     const current = sample.current || {};
     const refLength = reference.length == null ? "n/a" : `${reference.length} ch`;
@@ -1903,17 +2035,22 @@ function renderDemoSamples() {
       ? `<span class="s-changed">changed</span>${delta == null ? "" : `
         <span class="s-delta">${delta > 0 ? "+" : ""}${delta} ch</span>`}`
       : '<span class="s-state">unchanged</span>';
-    return `<div class="demo-sample-row" data-testid="demo-sample">`
-      + `<div class="demo-sample-label"><span class="s-label">`
-      + `${escapeHtml(sample.label || sample.prompt_id)}</span>`
-      + `${sample.category ? `<span class="s-cat">${escapeHtml(sample.category)}</span>` : ""}</div>`
-      + `<div class="demo-sample-col"><span class="demo-sample-side">Reference</span>`
-      + `<span class="demo-sample-meta">${refLength} ${sampleValidity(reference)}</span>`
-      + `<code>${escapeHtml(demoResponse(sample, reference))}</code></div>`
-      + `<div class="demo-sample-col"><span class="demo-sample-side">Current</span>`
-      + `<span class="demo-sample-meta">${curLength} ${sampleValidity(current)}</span>`
-      + `<code>${escapeHtml(demoResponse(sample, current))}</code></div>`
-      + `<div class="demo-sample-change">${change}</div></div>`;
+    const label = sample.label || sample.prompt_id || "prompt";
+    const side = (name, data, text) => `<div class="demo-sample-col">`
+      + `<span class="demo-sample-side">${name}</span>`
+      + `<span class="demo-sample-meta">${escapeHtml(text)} ${sampleValidity(data)}</span>`
+      + `<code>${escapeHtml(demoResponse(sample, data))}</code></div>`;
+    return `<details class="demo-sample-row" data-testid="demo-sample"${i === 0 ? " open" : ""}>`
+      + `<summary title="Compare ${escapeHtml(label)}">`
+      + `<span class="demo-sample-prompt"><span class="s-label">${escapeHtml(label)}</span>`
+      + `${sample.category ? `<span class="s-cat">${escapeHtml(humanizeKey(sample.category))}</span>` : ""}`
+      + `</span><span class="demo-sample-counts"><b>${escapeHtml(refLength)}</b> to `
+      + `<b>${escapeHtml(curLength)}</b></span><span class="demo-sample-change">${change}</span>`
+      + `<span class="demo-sample-chevron">${iconSvg("chevron-right")}</span></summary>`
+      + `<div class="demo-sample-compare">`
+      + side("Reference", reference, refLength)
+      + side("Current", current, curLength)
+      + `</div></details>`;
   }).join("");
 }
 
@@ -1928,15 +2065,37 @@ function renderDemoMethodology() {
 
 /* ---------- evaluation tab ---------- */
 
+function setEvaluationError(message) {
+  const error = $("evaluation-error");
+  if (error) {
+    error.hidden = !message;
+    error.textContent = message || "";
+  }
+  if (message) {
+    for (const id of ["ev-delay", "ev-fa", "ev-detect", "ev-overhead"]) {
+      $(id).textContent = "n/a";
+    }
+    for (const id of [
+      "eval-tradeoff-chart", "eval-tradeoff", "eval-power-chart",
+      "eval-power", "eval-reliability", "ev-methodology",
+    ]) {
+      $(id).innerHTML = '<p class="empty-state">Evaluation results unavailable.</p>';
+    }
+  }
+}
+
 async function loadEvaluation() {
   loadProviderComparison();
   try {
     state.evaluation = await fetchJson("/evaluation");
   } catch (err) {
-    $("evaluation-body").innerHTML =
-      '<p class="empty-state">Evaluation results unavailable.</p>';
+    /* Do not keep rendering a stale benchmark as if it were the current
+       answer; the next tab visit must retry the failed endpoint. */
+    state.evaluation = null;
+    setEvaluationError("Evaluation results unavailable.");
     return;
   }
+  setEvaluationError("");
   renderEvaluation();
 }
 
@@ -2030,6 +2189,17 @@ function powerLookup(rows) {
   return map;
 }
 
+const RULE_LABELS = {
+  single: "Single cycle",
+  kofn: "k of n",
+  persist2: "Two consecutive cycles",
+  cusum: "CUSUM",
+};
+
+function policyLabel(rule) {
+  return RULE_LABELS[String(rule || "").toLowerCase()] || humanizeKey(rule);
+}
+
 function plainTable(headers, rows) {
   return `
     <table class="plain-table"><thead><tr>
@@ -2060,7 +2230,7 @@ function renderTradeoff(ev, h) {
       .map((r) => ({
         x: Number(r.mean_detection_delay_days),
         y: Number(r.false_alarms_per_100_days),
-        label: r.rule || "policy",
+        label: policyLabel(r.rule),
         shipped: r.rule === h.default_rule,
       }))
       .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
@@ -2073,7 +2243,7 @@ function renderTradeoff(ev, h) {
     $("eval-tradeoff").innerHTML = rows.length ? plainTable(
       ["Alert policy", "Delay (days)", "Detection rate", "False alarms / 100 d"],
       rows.map((r) => [
-        `${escapeHtml(r.rule || "policy")}${r.rule === h.default_rule ? " (shipped)" : ""}`,
+        `${escapeHtml(policyLabel(r.rule))}${r.rule === h.default_rule ? " (shipped)" : ""}`,
         Number(r.mean_detection_delay_days).toFixed(2),
         Number(r.detection_rate_pct).toFixed(1) + "%",
         Number(r.false_alarms_per_100_days).toFixed(2),
@@ -2235,7 +2405,9 @@ function svgScatter(points, opts) {
   const labelBelow = sy(shipped.y) < h * 0.6;
   const labelY = labelBelow ? sy(shipped.y) + 18 : sy(shipped.y) - 10;
   parts.push(`<text x="${sx(shipped.x).toFixed(1)}" y="${labelY.toFixed(1)}" font-size="11" font-family="ui-monospace, monospace" fill="#4F46E5" text-anchor="middle">${shipped.label}</text>`);
-  return `<svg viewBox="0 0 ${w} ${h}" class="chart" role="img">${parts.join("")}</svg>`
+  return `<svg viewBox="0 0 ${w} ${h}" class="chart" role="img" `
+    + `aria-label="Mean detection delay against false alarms by alert policy">`
+    + `${parts.join("")}</svg>`
     + legendHtml(points.map((p) => ({
         name: p.label + (p.shipped ? " (shipped)" : ""),
         color: p.shipped ? "#4F46E5" : "#3F3F46",
@@ -2271,13 +2443,21 @@ function svgLines(xs, series, opts) {
       parts.push(`<circle cx="${sx(x).toFixed(1)}" cy="${sy(v).toFixed(1)}" r="2.6" fill="${s.color}"/>`);
     });
   }
-  return `<svg viewBox="0 0 ${w} ${h}" class="chart" role="img">${parts.join("")}</svg>`
+  return `<svg viewBox="0 0 ${w} ${h}" class="chart" role="img" `
+    + `aria-label="Detection power by shift magnitude and detector">`
+    + `${parts.join("")}</svg>`
     + legendHtml(series);
 }
 
 /* ---------- run a check ---------- */
 
 let runInFlight = false;
+
+/* Keep the icon when the label changes to Running… and back. */
+function setRunButton(label) {
+  const btn = $("run-btn");
+  btn.innerHTML = iconSvg("play") + `<span>${escapeHtml(label)}</span>`;
+}
 
 async function runCheck() {
   const blocked = runBlockedReason();
@@ -2292,7 +2472,7 @@ async function runCheck() {
   runInFlight = true;
   const btn = $("run-btn"), note = $("run-note");
   btn.disabled = true;
-  btn.textContent = "Running…";
+  setRunButton("Running…");
   $("run-note").dataset.active = "1";
   try {
     /* Bounded wait for connectivity on a cold-started instance. */
@@ -2395,7 +2575,7 @@ async function runCheck() {
     note.textContent = "No new responses were recorded.";
   } finally {
     btn.disabled = Boolean(runBlockedReason());
-    btn.textContent = "Run check";
+    setRunButton("Run check");
     runInFlight = false;
     /* The note's dataset.active flag stays set: whatever the last run
        wrote (a rate limit, a verdict, a failure) should persist until the
@@ -2405,6 +2585,7 @@ async function runCheck() {
 
 /* ---------- start ---------- */
 
+hydrateIcons();
 $("run-btn").addEventListener("click", runCheck);
 initDemoEvents();
 initTabs();

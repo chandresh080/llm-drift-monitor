@@ -384,6 +384,9 @@ const settle = () => new Promise((r) => setImmediate(r));
   check("flagged count reads the canonical API field",
     getById("verdict-sub").textContent === "1 of 3 tests flagged",
     getById("verdict-sub").textContent);
+  check("summary metric repeats the flagged count as a value",
+    getById("summary-flagged").textContent === "1",
+    getById("summary-flagged").textContent);
 
   check("verdict meta is the check time only",
     getById("verdict-meta").textContent.startsWith("Last checked ")
@@ -461,7 +464,8 @@ const settle = () => new Promise((r) => setImmediate(r));
 
   check("configuration is a collapsed disclosure",
     fs.readFileSync(path.join(__dirname, "index.html"), "utf8")
-      .includes('<summary>Configuration</summary>'),
+      .includes('id="config-section"') && !fs.readFileSync(
+        path.join(__dirname, "index.html"), "utf8").includes('id="config-section" open'),
     "");
 
   check("run note uses the configured cycle size and interval",
@@ -499,6 +503,19 @@ const settle = () => new Promise((r) => setImmediate(r));
       && fs.readFileSync(path.join(__dirname, "app.css"), "utf8")
         .includes(".status-sep"),
     "");
+
+  vmEval("globalThis.__iconSample = iconSvg('activity'); "
+    + "globalThis.__iconCount = Object.keys(ICONS).length;");
+  check("shared icon system emits one consistent 16px outline",
+    globalThis.__iconSample.includes('class="ui-icon"')
+      && globalThis.__iconSample.includes('viewBox="0 0 16 16"')
+      && globalThis.__iconSample.includes('aria-hidden="true"')
+      && globalThis.__iconCount >= 12,
+    `${globalThis.__iconSample} / ${globalThis.__iconCount}`);
+  check("status re-renders keep their icon and labelled text node",
+    getById("health-pill").innerHTML.includes('class="ui-icon"')
+      && getById("health-pill").innerHTML.includes('class="status-text">API Online'),
+    getById("health-pill").innerHTML);
 
   console.log("scenario 1b: activity table, stored detector history, alerts");
 
@@ -622,9 +639,9 @@ const settle = () => new Promise((r) => setImmediate(r));
       && samplesHtml.includes("<span>Current</span>")
       && samplesHtml.includes("<span>Change</span>"),
     samplesHtml.slice(0, 220));
-  check("row values carry character counts and 16px validity icons",
+  check("row values carry character counts and shared 16px validity icons",
     samplesHtml.includes("11 ch") && samplesHtml.includes('class="s-icon s-ok"')
-      && samplesHtml.includes('width="16" height="16"')
+      && samplesHtml.includes('class="ui-icon"')
       && samplesHtml.includes('aria-label="Non-empty response"')
       && samplesHtml.includes("+1 ch"),
     samplesHtml.slice(0, 400));
@@ -699,8 +716,9 @@ const settle = () => new Promise((r) => setImmediate(r));
     getById("eval-tradeoff-chart").innerHTML.includes("<svg"), "");
 
   const tradeoffHtml = getById("eval-tradeoff").innerHTML;
-  check("persist2 marked shipped in the trade-off table",
-    tradeoffHtml.includes("shipped"), "");
+  check("the shipped policy is named, not shown as an internal rule key",
+    tradeoffHtml.includes("Two consecutive cycles (shipped)")
+      && !tradeoffHtml.includes("persist2"), tradeoffHtml.slice(0, 260));
 
   /* Headline numbers stay faithful. */
   check("overhead renders with the sample count basis",
@@ -720,7 +738,7 @@ const settle = () => new Promise((r) => setImmediate(r));
   await settle();
   check("trade-off chart still renders when power data is malformed",
     getById("eval-tradeoff-chart").innerHTML.includes("<svg")
-      && getById("eval-tradeoff").innerHTML.includes("persist2"),
+      && getById("eval-tradeoff").innerHTML.includes("Two consecutive cycles"),
     getById("eval-tradeoff-chart").innerHTML.slice(0, 120));
   check("malformed power block states unavailable instead of crashing",
     getById("eval-power-chart").innerHTML.includes("unavailable"),
@@ -773,6 +791,29 @@ const settle = () => new Promise((r) => setImmediate(r));
     getById("prov-cmp").innerHTML.includes("unavailable"),
     getById("prov-cmp").innerHTML.slice(0, 120));
   routeOverrides = {};
+
+  console.log("scenario 2d: evaluation failure keeps the benchmark shell intact");
+
+  routeOverrides = { "/evaluation": () => resp(null, { ok: false, status: 503 }) };
+  await loadEvaluation();
+  await settle();
+  check("evaluation error is a dedicated banner, not a replaced stat strip",
+    getById("evaluation-error").hidden === false
+      && getById("evaluation-error").textContent.includes("Evaluation results unavailable")
+      && getById("ev-delay").textContent === "n/a"
+      && getById("ev-fa").textContent === "n/a"
+      && getById("ev-detect").textContent === "n/a"
+      && getById("ev-overhead").textContent === "n/a"
+      && fs.readFileSync(path.join(__dirname, "index.html"), "utf8")
+        .includes('<p id="evaluation-error" class="banner"'),
+    getById("evaluation-error").textContent);
+  routeOverrides = {};
+  await loadEvaluation();
+  await settle();
+  check("evaluation recovers after an endpoint failure",
+    getById("evaluation-error").hidden === true
+      && getById("ev-delay").textContent === "0.97 d",
+    `${getById("evaluation-error").hidden} / ${getById("ev-delay").textContent}`);
 
   console.log("scenario 3: liveness failure is not API degradation when data answers");
 
@@ -1017,7 +1058,8 @@ const settle = () => new Promise((r) => setImmediate(r));
       && healthErr.timeout === false && healthErr.detail),
     JSON.stringify(healthErr));
 
-  /* An unchecked provider is unknown, not a measured failure. */
+  /* An unchecked provider was not pinged: it is neither available nor a
+     measured failure, and must not be called Unknown. */
   routeOverrides = { "/health": () => resp({
     status: "degraded", db: "ok", database: "available",
     provider_status: "unchecked", provider_error: null,
@@ -1025,12 +1067,19 @@ const settle = () => new Promise((r) => setImmediate(r));
   }) };
   vmEval("state.health = null; state.healthCheckedAt = 0; loadHealth();");
   await settle();
-  check("unchecked provider is Unknown, not Unavailable",
-    getById("provider-pill").innerHTML.includes("Gemini Unknown")
-      && !getById("provider-pill").innerHTML.includes("Gemini Unavailable"),
+  check("unchecked provider is Unchecked, not Unavailable or Unknown",
+    getById("provider-pill").innerHTML.includes("Gemini Unchecked")
+      && !getById("provider-pill").innerHTML.includes("Gemini Unavailable")
+      && !getById("provider-pill").innerHTML.includes("Gemini Unknown"),
     getById("provider-pill").innerHTML);
 
   console.log("scenario 3d: readiness request outcomes explain the provider pill");
+
+  vmEval("state.health = null; state.healthError = null; renderStatusGroup();");
+  check("pending readiness is Checking, not Available or Unknown",
+    getById("provider-pill").innerHTML.includes("Gemini Checking")
+      && !getById("provider-pill").innerHTML.includes("Gemini Unknown"),
+    getById("provider-pill").innerHTML);
 
   const healthyHealth = () => resp({
     status: "ok", db: "ok", database: "available", db_error: null,
@@ -1060,8 +1109,9 @@ const settle = () => new Promise((r) => setImmediate(r));
   routeOverrides = { "/health": uncheckedHealth };
   reloadHealth();
   await settle();
-  check("unchecked is Gemini Unknown with the reason in both tooltips",
-    getById("provider-pill").innerHTML.includes("Gemini Unknown")
+  check("unchecked is Gemini Unchecked with the reason in both tooltips",
+    getById("provider-pill").innerHTML.includes("Gemini Unchecked")
+      && !getById("provider-pill").innerHTML.includes("Gemini Unknown")
       && !getById("provider-pill").innerHTML.includes("Gemini Unavailable")
       && getById("provider-pill").title.includes("provider_status 'unchecked'")
       && getById("model-label").title === getById("provider-pill").title,
@@ -1210,7 +1260,7 @@ const settle = () => new Promise((r) => setImmediate(r));
   /* Regression for the deployed mismatch: runCheck() used to end with only
      loadAll(). That re-rendered an unresolved health snapshot while the API
      had already recovered, so the data cycle looked complete but the pill
-     stayed Unknown. Reproduce the old completion call first. */
+     stayed Unchecked. Reproduce the old completion call first. */
   routeOverrides = { "/health": healthyHealth };
   vmEval(`state.health = {
     status: 'degraded', db: 'ok', database: 'available', db_error: null,
@@ -1223,9 +1273,9 @@ const settle = () => new Promise((r) => setImmediate(r));
   const beforeCycle = healthRequestCount();
   await loadAll();
   await settle();
-  check("data-only completion reproduces stale Gemini Unknown",
+  check("data-only completion reproduces stale Gemini Unchecked",
     healthRequestCount() === beforeCycle
-      && getById("provider-pill").innerHTML.includes("Gemini Unknown")
+      && getById("provider-pill").innerHTML.includes("Gemini Unchecked")
       && getById("model-label").title === getById("provider-pill").title,
     `${healthRequestCount() - beforeCycle} / ${getById("provider-pill").innerHTML}`);
 
@@ -1396,8 +1446,8 @@ const settle = () => new Promise((r) => setImmediate(r));
     getById("run-note").textContent);
   check("503 does not leave the button disabled when storage permits writes",
     getById("run-btn").disabled === false
-      && getById("run-btn").textContent === "Run check",
-    `${getById("run-btn").disabled} / ${getById("run-btn").textContent}`);
+      && getById("run-btn").innerHTML.includes("Run check"),
+    `${getById("run-btn").disabled} / ${getById("run-btn").innerHTML}`);
 
   routeOverrides = {};
 
@@ -1531,31 +1581,34 @@ const settle = () => new Promise((r) => setImmediate(r));
   const page = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
   const css = fs.readFileSync(path.join(__dirname, "app.css"), "utf8");
 
-  check("recent activity is the first content section in the Monitor view",
-    page.indexOf('class="activity"') > page.indexOf('class="tabs"')
-      && page.indexOf('class="activity"') < page.indexOf('class="workspace"'),
+  check("the latest verdict leads Monitor ahead of the workspace",
+    page.indexOf('id="kpi-drift"') > page.indexOf('class="tabs"')
+      && page.indexOf('id="kpi-drift"') < page.indexOf('class="workspace"'),
     "");
-  check("Run check sits in the activity section header, aligned right",
-    page.indexOf('id="run-btn"') > page.indexOf('class="activity"')
-      && page.indexOf('id="run-btn"') < page.indexOf('id="activity-list"')
-      && page.indexOf('id="run-btn"') < page.indexOf('class="workspace"'),
+  check("Run check sits in the intro with its quota note",
+    page.indexOf('id="run-btn"') > page.indexOf('class="monitor-intro"')
+      && page.indexOf('id="run-btn"') < page.indexOf('id="run-note"')
+      && page.indexOf('id="run-note"') < page.indexOf('class="summary-panel"'),
     "");
-  check("a real two-column workspace follows the activity table",
+  check("a real two-column workspace follows the verdict",
     page.includes('class="workspace"')
       && page.indexOf('class="col-main"') < page.indexOf('class="col-side"'),
     "");
-  check("main column carries history, detectors and samples",
-    page.indexOf('data-testid="history-block"') < page.indexOf('data-testid="detector-table"')
-      && page.indexOf('data-testid="detector-table"') < page.indexOf('id="samples-section"')
+  check("main column carries detectors, history, activity and samples",
+    page.indexOf('data-testid="detector-block"') < page.indexOf('data-testid="history-block"')
+      && page.indexOf('data-testid="history-block"') < page.indexOf('class="activity"')
+      && page.indexOf('class="activity"') < page.indexOf('id="samples-section"')
       && page.indexOf('id="samples-section"') < page.indexOf('class="col-side"'),
     "");
-  check("side column carries verdict, counts, effects, alerts and configuration",
-    page.indexOf('id="kpi-drift"') > page.indexOf('class="col-side"')
-      && page.indexOf('id="count-ref"') > page.indexOf('id="kpi-drift"')
-      && page.indexOf('id="effect-row"') > page.indexOf('id="count-ref"')
-      && page.indexOf('id="alerts-list"') > page.indexOf('id="effect-row"')
-      && page.indexOf('id="config-section"') > page.indexOf('id="alerts-list"'),
+  check("side column carries alerts and configuration",
+    page.indexOf('class="col-side"') < page.indexOf('id="alerts-list"')
+      && page.indexOf('id="alerts-list"') < page.indexOf('id="config-section"'),
     "");
+  check("detector table exposes raw and adjusted p side by side",
+    page.indexOf('class="num">Raw p</th>') > page.indexOf("<th>Detector</th>")
+      && page.indexOf('class="num">Adjusted p</th>') > page.indexOf('class="num">Raw p</th>')
+      && getById("detector-rows").innerHTML.includes("<td class=\"num\">0.010</td>"),
+    getById("detector-rows").innerHTML.slice(0, 260));
   check("the CSS collapses the workspace to one column below 900px",
     css.includes("@media (max-width: 900px)")
       && /\.workspace\s*\{\s*grid-template-columns:\s*1fr;/.test(css),
@@ -1636,7 +1689,7 @@ const settle = () => new Promise((r) => setImmediate(r));
       && getById("demo-scenario-buttons").innerHTML.includes("Injected behavioral drift"),
     getById("demo-scenario-buttons").innerHTML.slice(0, 200));
   check("the default view is the final stable cycle with no flags",
-    getById("demo-cycle-tag").textContent.includes("#6 · stable")
+    getById("demo-cycle-tag").textContent.includes("#6 · Stable")
       && getById("demo-insight").innerHTML.includes("No shift")
       && !getById("demo-detector-rows").innerHTML.includes("Flagged")
       && getById("demo-samples").innerHTML.includes("unchanged"),
@@ -1657,7 +1710,7 @@ const settle = () => new Promise((r) => setImmediate(r));
 
   vmEval('selectDemoScenario("injected-drift")');
   check("switching scenarios updates detectors, charts and samples",
-    getById("demo-cycle-tag").textContent.includes("#6 · shifted")
+    getById("demo-cycle-tag").textContent.includes("#6 · Shifted")
       && getById("demo-detector-rows").innerHTML.includes("Flagged")
       && getById("demo-pvalues-chart").innerHTML.includes("Cycle #6")
       && getById("demo-samples").innerHTML.includes("changed"),

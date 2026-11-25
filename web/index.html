@@ -5,85 +5,146 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Drift Monitor</title>
 <meta name="description" content="Statistical monitoring of LLM response behaviour against a fixed canary baseline.">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2318181B'/%3E%3Cline x1='7' y1='21' x2='14' y2='21' stroke='%23A1A1AA' stroke-width='2.5' stroke-linecap='round'/%3E%3Cpath d='M14 21 L19 21 L25 11' fill='none' stroke='%236366F1' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2318181B'/%3E%3Cpath d='M6 21h6l4-13 4 13h6' fill='none' stroke='%236366F1' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
 
-<header class="topbar">
-  <div class="shell topbar-inner">
+<header class="app-header">
+  <div class="shell header-inner">
     <div class="brand">
-      <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
-        <line x1="3" y1="16" x2="10" y2="16" stroke="#A1A1AA" stroke-width="2.5" stroke-linecap="round"/>
-        <path d="M10 16 L15 16 L21 6" fill="none" stroke="#6366F1" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-      </svg>
+      <span class="brand-mark" data-icon="activity" aria-hidden="true"></span>
       <span class="brand-name">Drift Monitor</span>
       <span id="model-label" class="brand-model"></span>
     </div>
-    <div class="topbar-right">
-      <span id="health-pill" class="status"><span class="dot"></span>API Checking</span>
-      <span class="status-sep" aria-hidden="true"></span>
-      <span id="db-pill" class="status"><span class="dot"></span>Database Checking</span>
-      <span class="status-sep" aria-hidden="true"></span>
-      <span id="provider-pill" class="status"><span class="dot"></span>Gemini Checking</span>
-      <span class="status-sep" aria-hidden="true"></span>
-      <a class="gh-link" href="https://github.com/chandresh080/llm-drift-monitor"
-         target="_blank" rel="noopener">GitHub</a>
+    <div class="header-right">
+      <div class="status-group" aria-label="Service status">
+        <span id="health-pill" class="status status-muted" title="Waiting for the first response.">
+          <span class="ui-icon-host" data-icon="server" aria-hidden="true"></span>
+          <span class="status-text">API Checking</span>
+        </span>
+        <span class="status-sep" aria-hidden="true"></span>
+        <span id="db-pill" class="status status-muted" title="Waiting for the readiness check.">
+          <span class="ui-icon-host" data-icon="database" aria-hidden="true"></span>
+          <span class="status-text">Database Checking</span>
+        </span>
+        <span class="status-sep" aria-hidden="true"></span>
+        <span id="provider-pill" class="status status-muted" title="Waiting for the readiness check.">
+          <span class="ui-icon-host" data-icon="brain" aria-hidden="true"></span>
+          <span class="status-text">Gemini Checking</span>
+        </span>
+      </div>
+      <a class="header-link" href="https://github.com/chandresh080/llm-drift-monitor"
+         target="_blank" rel="noopener" aria-label="View the project on GitHub" title="GitHub repository">
+        <span class="ui-icon-host" data-icon="github" aria-hidden="true"></span>
+        <span>GitHub</span>
+      </a>
     </div>
   </div>
 </header>
 
 <main class="shell page">
 
-  <div id="banner" class="banner" hidden></div>
+  <div id="banner" class="banner" role="status" hidden></div>
 
-  <nav class="tabs" aria-label="Dashboard views">
-    <button class="tab tab-active" id="tab-btn-console" type="button">Monitor</button>
-    <button class="tab" id="tab-btn-evaluation" type="button">Evaluation</button>
-    <button class="tab" id="tab-btn-demo" type="button">Demo</button>
+  <nav id="view-nav" class="view-nav" aria-label="Dashboard views">
+    <button class="tab tab-active" id="tab-btn-console" type="button" aria-current="page">
+      <span class="ui-icon-host" data-icon="activity" aria-hidden="true"></span>
+      <span>Monitor</span>
+    </button>
+    <button class="tab" id="tab-btn-evaluation" type="button">
+      <span class="ui-icon-host" data-icon="chart" aria-hidden="true"></span>
+      <span>Evaluation</span>
+    </button>
+    <button class="tab" id="tab-btn-demo" type="button">
+      <span class="ui-icon-host" data-icon="flask" aria-hidden="true"></span>
+      <span>Demo</span>
+    </button>
   </nav>
 
   <!-- ================= MONITOR ================= -->
   <div id="tab-console">
 
-    <section class="activity">
-      <div class="section-head">
-        <div class="section-heading">
-          <h1 class="section-title">Recent activity</h1>
-          <span id="activity-count" class="section-meta"></span>
+    <section class="page-intro monitor-intro">
+      <div class="intro-copy">
+        <p class="eyebrow"><span class="ui-icon-host" data-icon="activity" aria-hidden="true"></span>Live monitoring</p>
+        <h1 class="page-title">Monitor</h1>
+        <p class="page-sub">Each check compares a new canary cycle with the stored reference window.</p>
+      </div>
+      <div class="intro-action">
+        <button id="run-btn" class="btn btn-primary" type="button">
+          <span class="ui-icon-host" data-icon="play" aria-hidden="true"></span>
+          <span>Run check</span>
+        </button>
+        <p id="run-note" class="run-note">Loading configuration…</p>
+      </div>
+    </section>
+
+    <section class="summary-panel" aria-labelledby="summary-heading">
+      <div class="summary-verdict">
+        <div class="section-label" id="summary-heading">
+          <span class="ui-icon-host" data-icon="radar" aria-hidden="true"></span>
+          Latest result
         </div>
-        <div class="head-actions">
-          <p id="run-note" class="run-note">Loading configuration…</p>
-          <button id="run-btn" class="btn btn-primary" type="button">Run check</button>
+        <p id="kpi-drift" class="verdict">…</p>
+        <p id="verdict-sub" class="verdict-sub">…</p>
+        <div id="quality-strip" class="quality-signal" hidden></div>
+        <span id="verdict-meta" class="section-meta"></span>
+      </div>
+      <div class="summary-metrics">
+        <div class="metric">
+          <span class="metric-label">Reference</span>
+          <span id="count-ref" class="metric-value">…</span>
+          <span class="metric-unit">responses</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Current</span>
+          <span id="count-cur" class="metric-value">…</span>
+          <span class="metric-unit">responses</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Detectors flagged</span>
+          <span id="summary-flagged" class="metric-value">n/a</span>
+          <span class="metric-unit">of 3 tests</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Mean length change</span>
+          <span id="eff-length" class="metric-value">n/a</span>
+          <span class="metric-unit">vs reference</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Centroid distance</span>
+          <span id="eff-centroid" class="metric-value">n/a</span>
+          <span class="metric-unit">paired MMD</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Refusal rate change</span>
+          <span id="eff-refusal" class="metric-value">n/a</span>
+          <span class="metric-unit">percentage points</span>
         </div>
       </div>
-      <div id="activity-list" class="activity-list"></div>
     </section>
 
     <div class="workspace">
 
       <div class="col-main">
 
-        <section class="panel" data-testid="history-block">
-          <div class="section-head">
-            <h2 class="section-title">Distribution history</h2>
-            <span class="section-meta">Adjusted p-values · historical cycles</span>
+        <section class="panel" data-testid="detector-block">
+          <div class="panel-head">
+            <div>
+              <h2 class="section-title">Detector results</h2>
+              <p class="section-meta">Latest evaluated cycle</p>
+            </div>
+            <span class="panel-icon" data-icon="radar" aria-hidden="true"></span>
           </div>
-          <div id="history-chart" class="chart-wrap"></div>
-          <p id="history-note" class="section-note"></p>
-        </section>
-
-        <section class="panel">
-          <div class="section-head">
-            <h2 class="section-title">Detector results</h2>
-            <span class="section-meta">Latest cycle</span>
+          <div class="table-scroll">
+            <table class="data-table detector-table" data-testid="detector-table">
+              <thead>
+                <tr><th>Detector</th><th class="num">Raw p</th><th class="num">Adjusted p</th><th>Decision</th></tr>
+              </thead>
+              <tbody id="detector-rows"></tbody>
+            </table>
           </div>
-          <table class="detector-table" data-testid="detector-table">
-            <thead>
-              <tr><th>Detector</th><th class="num">Adjusted p</th><th>Decision</th></tr>
-            </thead>
-            <tbody id="detector-rows"></tbody>
-          </table>
           <details class="disclosure">
             <summary>Methodology</summary>
             <div class="disclosure-body">
@@ -110,13 +171,35 @@
           </details>
         </section>
 
+        <section class="panel" data-testid="history-block">
+          <div class="panel-head">
+            <div>
+              <h2 class="section-title">Detector history</h2>
+              <p class="section-meta">Adjusted p-values · evaluated cycles only</p>
+            </div>
+            <span class="panel-icon" data-icon="history" aria-hidden="true"></span>
+          </div>
+          <div id="history-chart" class="chart-wrap"></div>
+          <p id="history-note" class="section-note"></p>
+        </section>
+
+        <section class="activity">
+          <div class="section-head">
+            <div class="section-heading">
+              <h2 class="section-title">Recent activity</h2>
+              <span id="activity-count" class="section-meta"></span>
+            </div>
+          </div>
+          <div id="activity-list" class="activity-list"></div>
+        </section>
+
         <details class="panel-disclosure" id="samples-section">
-          <summary>Response samples <span id="sample-count" class="summary-count"></span></summary>
+          <summary><span class="ui-icon-host" data-icon="layers" aria-hidden="true"></span>Response samples <span id="sample-count" class="summary-count"></span></summary>
           <div id="comparison-wrap" class="section-body"></div>
         </details>
 
         <details class="panel-disclosure" id="categories-section" hidden>
-          <summary>Category analysis</summary>
+          <summary><span class="ui-icon-host" data-icon="network" aria-hidden="true"></span>Category analysis</summary>
           <div id="categories-wrap" class="section-body"></div>
         </details>
 
@@ -124,46 +207,19 @@
 
       <aside class="col-side">
 
-        <section class="panel latest">
-          <div class="section-head">
-            <h2 class="section-title">Latest result</h2>
-            <span id="verdict-meta" class="section-meta">…</span>
-          </div>
-          <p id="kpi-drift" class="verdict">…</p>
-          <p id="verdict-sub" class="verdict-sub">…</p>
-          <div id="quality-strip" class="quality-signal" hidden></div>
-
-          <div class="counts">
-            <div class="count">
-              <span class="count-label">Reference</span>
-              <span id="count-ref" class="count-value">…</span>
-            </div>
-            <div class="count">
-              <span class="count-label">Current</span>
-              <span id="count-cur" class="count-value">…</span>
-            </div>
-          </div>
-
-          <div class="effect-list" id="effect-row" data-testid="effects">
-            <div class="effect"><span class="effect-label">Mean length change</span>
-              <span id="eff-length" class="effect-value">n/a</span></div>
-            <div class="effect"><span class="effect-label">Centroid distance</span>
-              <span id="eff-centroid" class="effect-value">n/a</span></div>
-            <div class="effect"><span class="effect-label">Refusal rate change</span>
-              <span id="eff-refusal" class="effect-value">n/a</span></div>
-          </div>
-        </section>
-
         <section class="panel">
-          <div class="section-head">
-            <h2 class="section-title">Alerts</h2>
-            <span id="alert-count" class="section-meta"></span>
+          <div class="panel-head">
+            <div>
+              <h2 class="section-title">Alerts</h2>
+              <p id="alert-count" class="section-meta"></p>
+            </div>
+            <span class="panel-icon" data-icon="bell" aria-hidden="true"></span>
           </div>
           <div id="alerts-list"></div>
         </section>
 
         <details class="panel-disclosure" id="config-section">
-          <summary>Configuration</summary>
+          <summary><span class="ui-icon-host" data-icon="settings" aria-hidden="true"></span>Configuration</summary>
           <div class="section-body">
             <dl class="config-list">
               <div><dt>Target model</dt><dd id="cfg-model">…</dd></div>
@@ -194,11 +250,16 @@
   <!-- ================= EVALUATION ================= -->
   <div id="tab-evaluation" hidden>
 
-    <section class="eval-head">
-      <h1 class="page-title">Evaluation</h1>
-      <p class="page-sub">Benchmark results from controlled simulations with known shifts,
-        not measurements from the hosted demo.</p>
+    <section class="page-intro eval-intro">
+      <div class="intro-copy">
+        <p class="eyebrow"><span class="ui-icon-host" data-icon="chart" aria-hidden="true"></span>Benchmark evidence</p>
+        <h1 class="page-title">Evaluation</h1>
+        <p class="page-sub">Controlled simulations with known shifts, kept separate from live production measurements.</p>
+      </div>
+      <span class="source-tag">Static benchmark data</span>
     </section>
+
+    <p id="evaluation-error" class="banner" data-testid="eval-error" hidden></p>
 
     <section class="stat-strip" id="evaluation-body" data-testid="eval-metrics">
       <div class="stat">
@@ -219,86 +280,90 @@
       </div>
     </section>
 
-    <section class="panel">
-      <div class="section-head">
-        <h2 class="section-title">Detection delay vs false-alarm trade-off</h2>
-        <span class="section-meta">static benchmark data</span>
-      </div>
-      <div id="eval-tradeoff-chart" class="chart-wrap"></div>
-      <div id="eval-tradeoff"></div>
+    <div class="eval-grid">
+      <section class="panel chart-panel">
+        <div class="panel-head">
+          <div>
+            <h2 class="section-title">Detection delay vs false-alarm trade-off</h2>
+            <p class="section-meta">static benchmark data</p>
+          </div>
+        </div>
+        <div id="eval-tradeoff-chart" class="chart-wrap"></div>
+        <div id="eval-tradeoff" class="table-scroll"></div>
+      </section>
+
+      <section class="panel chart-panel">
+        <div class="panel-head">
+          <div>
+            <h2 class="section-title">Detector power curves</h2>
+            <p class="section-meta">controlled simulations, not live traffic</p>
+          </div>
+        </div>
+        <div id="eval-power-chart" class="chart-wrap"></div>
+        <div id="eval-power" class="table-scroll"></div>
+      </section>
+    </div>
+
+    <section class="eval-secondary">
+      <details class="panel-disclosure">
+        <summary><span class="ui-icon-host" data-icon="book" aria-hidden="true"></span>Methodology and limitations</summary>
+        <div class="section-body prose-body">
+          <p id="ev-methodology">…</p>
+        </div>
+      </details>
+
+      <details class="panel-disclosure">
+        <summary><span class="ui-icon-host" data-icon="layers" aria-hidden="true"></span>Distribution shift vs quality regression</summary>
+        <div id="eval-reliability" class="section-body table-scroll"></div>
+      </details>
+
+      <details class="panel-disclosure">
+        <summary><span class="ui-icon-host" data-icon="server" aria-hidden="true"></span>Recorded provider comparison: Groq vs Gemini</summary>
+        <div id="prov-cmp" class="section-body table-scroll"></div>
+        <p id="prov-cmp-verdict" class="section-note"></p>
+      </details>
     </section>
-
-    <section class="panel">
-      <div class="section-head">
-        <h2 class="section-title">Detector power curves</h2>
-        <span class="section-meta">controlled simulations, not live traffic</span>
-      </div>
-      <div id="eval-power-chart" class="chart-wrap"></div>
-      <div id="eval-power"></div>
-    </section>
-
-    <details class="panel-disclosure">
-      <summary>Methodology and limitations</summary>
-      <div class="section-body">
-        <p id="ev-methodology">…</p>
-      </div>
-    </details>
-
-    <details class="panel-disclosure">
-      <summary>Distribution shift vs quality regression</summary>
-      <div id="eval-reliability" class="section-body"></div>
-    </details>
-
-    <details class="panel-disclosure">
-      <summary>Recorded provider comparison: Groq vs Gemini</summary>
-      <div id="prov-cmp" class="section-body"></div>
-      <p id="prov-cmp-verdict" class="section-note"></p>
-    </details>
 
   </div>
 
   <!-- ================= DEMO ================= -->
   <div id="tab-demo" hidden>
 
-    <section class="demo-head">
-      <div>
-        <h1 class="page-title">Controlled demo</h1>
-        <p class="page-sub">Two fixed scenarios processed by the real detector pipeline.
-          Synthetic responses, static artifact, no live model calls.</p>
+    <section class="page-intro demo-intro">
+      <div class="intro-copy">
+        <p class="eyebrow"><span class="ui-icon-host" data-icon="flask" aria-hidden="true"></span>Simulation</p>
+        <h1 class="page-title">Controlled drift simulation</h1>
+        <p class="page-sub">Two deterministic scenarios processed by the real detector pipeline.</p>
       </div>
-      <p class="demo-provenance">
-        <span class="demo-provenance-dot" aria-hidden="true"></span>
-        Read-only artifact · no /runs calls
-      </p>
+      <div class="demo-provenance">
+        <span class="source-tag">Synthetic simulation</span>
+        <span>Read-only artifact · no live model calls</span>
+      </div>
     </section>
 
     <p id="demo-error" class="demo-error" data-testid="demo-error" hidden></p>
 
     <div id="demo-body">
-      <section class="panel demo-scenario-panel">
-        <div class="section-head">
-          <div class="section-heading">
+      <section class="panel scenario-panel">
+        <div class="panel-head">
+          <div>
             <h2 class="section-title">Scenario</h2>
-            <span id="demo-scenario-meta" class="section-meta"></span>
+            <p id="demo-scenario-meta" class="section-meta"></p>
           </div>
+          <span class="panel-icon" data-icon="flask" aria-hidden="true"></span>
         </div>
         <div id="demo-scenario-buttons" class="demo-segmented" role="group"
-             aria-label="Demo scenario" data-testid="demo-scenarios">
-          <button class="demo-segment" type="button" data-scenario="stable"
-                  data-testid="demo-scenario-btn">Stable behavior</button>
-          <button class="demo-segment" type="button" data-scenario="injected-drift"
-                  data-testid="demo-scenario-btn">Injected behavioral drift</button>
-        </div>
+             aria-label="Demo scenario" data-testid="demo-scenarios"></div>
         <p id="demo-scenario-desc" class="section-note"></p>
       </section>
 
-      <section class="demo-timeline">
+      <section class="timeline-section">
         <div class="section-head">
           <div class="section-heading">
             <h2 class="section-title">Cycle timeline</h2>
             <span id="demo-cycle-meta" class="section-meta"></span>
           </div>
-          <span class="section-meta">Select a cycle to inspect the decision</span>
+          <span class="section-meta">Select a cycle to inspect its decision</span>
         </div>
         <div id="demo-cycle-list" class="demo-cycle-list" data-testid="demo-cycles"></div>
       </section>
@@ -308,9 +373,12 @@
         <div class="col-main">
 
           <section class="panel">
-            <div class="section-head">
-              <h2 class="section-title">Detector trajectory</h2>
-              <span class="section-meta">Benjamini-Hochberg adjusted p · alpha 0.05</span>
+            <div class="panel-head">
+              <div>
+                <h2 class="section-title">Detector trajectory</h2>
+                <p class="section-meta">Benjamini–Hochberg adjusted p · alpha 0.05</p>
+              </div>
+              <span class="panel-icon" data-icon="radar" aria-hidden="true"></span>
             </div>
             <div id="demo-pvalues-chart" class="chart-wrap"
                  data-testid="demo-pvalues-chart"></div>
@@ -318,9 +386,12 @@
           </section>
 
           <section class="panel">
-            <div class="section-head">
-              <h2 class="section-title">Response length by cycle</h2>
-              <span class="section-meta">Mean stored characters</span>
+            <div class="panel-head">
+              <div>
+                <h2 class="section-title">Response length by cycle</h2>
+                <p class="section-meta">Mean stored characters</p>
+              </div>
+              <span class="panel-icon" data-icon="chart" aria-hidden="true"></span>
             </div>
             <div id="demo-length-chart" class="chart-wrap"
                  data-testid="demo-length-chart"></div>
@@ -328,21 +399,26 @@
           </section>
 
           <section class="panel">
-            <div class="section-head">
-              <h2 class="section-title">Detector results</h2>
-              <span id="demo-detector-meta" class="section-meta"></span>
+            <div class="panel-head">
+              <div>
+                <h2 class="section-title">Detector results</h2>
+                <p id="demo-detector-meta" class="section-meta"></p>
+              </div>
+              <span class="panel-icon" data-icon="radar" aria-hidden="true"></span>
             </div>
-            <table class="detector-table" data-testid="demo-detector-table">
-              <thead>
-                <tr><th>Detector</th><th class="num">Raw p</th>
-                  <th class="num">Adjusted p</th><th>Decision</th></tr>
-              </thead>
-              <tbody id="demo-detector-rows"></tbody>
-            </table>
+            <div class="table-scroll">
+              <table class="data-table detector-table" data-testid="demo-detector-table">
+                <thead>
+                  <tr><th>Detector</th><th class="num">Raw p</th>
+                    <th class="num">Adjusted p</th><th>Decision</th></tr>
+                </thead>
+                <tbody id="demo-detector-rows"></tbody>
+              </table>
+            </div>
             <details class="disclosure">
               <summary>Correction and decision rule</summary>
               <div class="disclosure-body">
-                <p>The three p-values are corrected together with Benjamini-Hochberg.
+                <p>The three p-values are corrected together with Benjamini–Hochberg.
                   Response availability is reported as a quality signal, not as a
                   distribution verdict. A distribution flag must repeat for two
                   consecutive cycles before a drift alert is emitted.</p>
@@ -351,8 +427,7 @@
           </section>
 
           <details class="panel-disclosure" id="demo-samples-section" open>
-            <summary>Before and after responses
-              <span id="demo-sample-count" class="summary-count"></span></summary>
+            <summary><span class="ui-icon-host" data-icon="layers" aria-hidden="true"></span>Before and after responses <span id="demo-sample-count" class="summary-count"></span></summary>
             <div id="demo-samples" class="section-body" data-testid="demo-samples"></div>
           </details>
 
@@ -361,9 +436,12 @@
         <aside class="col-side">
 
           <section class="panel latest">
-            <div class="section-head">
-              <h2 class="section-title">Cycle decision</h2>
-              <span id="demo-cycle-tag" class="section-meta"></span>
+            <div class="panel-head">
+              <div>
+                <h2 class="section-title">Cycle decision</h2>
+                <p id="demo-cycle-tag" class="section-meta"></p>
+              </div>
+              <span class="panel-icon" data-icon="radar" aria-hidden="true"></span>
             </div>
             <div id="demo-insight" class="demo-insight" data-testid="demo-insight"></div>
             <div class="counts">
@@ -387,16 +465,19 @@
           </section>
 
           <section class="panel">
-            <div class="section-head">
-              <h2 class="section-title">Alert explanation</h2>
-              <span id="demo-alert-meta" class="section-meta"></span>
+            <div class="panel-head">
+              <div>
+                <h2 class="section-title">Alert explanation</h2>
+                <p id="demo-alert-meta" class="section-meta"></p>
+              </div>
+              <span class="panel-icon" data-icon="bell" aria-hidden="true"></span>
             </div>
             <div id="demo-alert" class="demo-alert" data-testid="demo-alert"></div>
           </section>
 
           <details class="panel-disclosure" id="demo-method-section" open>
-            <summary>How this demo is produced</summary>
-            <div class="section-body">
+            <summary><span class="ui-icon-host" data-icon="book" aria-hidden="true"></span>How this demo is produced</summary>
+            <div class="section-body prose-body">
               <p id="demo-method-disclosure"></p>
               <p id="demo-method-pipeline" class="section-note"></p>
               <p id="demo-method-limitation" class="section-note"></p>
@@ -410,11 +491,13 @@
   </div>
 
   <footer class="footer">
-    <a href="https://github.com/chandresh080/llm-drift-monitor" target="_blank" rel="noopener">GitHub</a>
-    <span class="footer-sep">·</span>
-    <a href="/docs">API</a>
-    <span class="footer-sep">·</span>
-    <a href="https://github.com/chandresh080/llm-drift-monitor/blob/main/METRICS.md" target="_blank" rel="noopener">Methodology</a>
+    <a href="https://github.com/chandresh080/llm-drift-monitor" target="_blank" rel="noopener">
+      <span class="ui-icon-host" data-icon="github" aria-hidden="true"></span>GitHub</a>
+    <span class="footer-sep" aria-hidden="true"></span>
+    <a href="/docs"><span class="ui-icon-host" data-icon="book" aria-hidden="true"></span>API</a>
+    <span class="footer-sep" aria-hidden="true"></span>
+    <a href="https://github.com/chandresh080/llm-drift-monitor/blob/main/METRICS.md" target="_blank" rel="noopener">
+      <span class="ui-icon-host" data-icon="book" aria-hidden="true"></span>Methodology</a>
   </footer>
 
 </main>
