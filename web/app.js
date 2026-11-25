@@ -59,6 +59,11 @@ const REQUEST_TIMEOUT_MS = 15000;
    bounds how long an unresolved status can linger on screen. /config can
    override the value if the backend TTL changes. */
 const DEFAULT_HEALTH_REFRESH_MS = 60000;
+/* A failed readiness request gets one quick retry: a cold Render instance
+   can outlast the browser timeout, then answer from its own 60s ping cache.
+   Further retries use the normal TTL interval, so a broken deployment is not
+   pinged in a tight loop. */
+const HEALTH_RETRY_MS = 5000;
 const NUM_TESTS = 3;      // detector family: KS, availability, MMD
 
 const $ = (id) => document.getElementById(id);
@@ -320,10 +325,11 @@ function providerState() {
   if (state.health) {
     const status = state.health.provider_status;
     if (status === "ok") return "available";
-    // Only measured failures count as unavailable. `unchecked` means the
-    // provider was simply not pinged and gets its own honest label; a future
-    // unrecognised value really is unknown.
-    if (status === "unreachable" || status === "not_configured") return "unavailable";
+    // Keep the backend's distinction: `unreachable` is a measured failure,
+    // `not_configured` is a missing key, `unchecked` was never pinged, and
+    // only a value we do not recognise is genuinely unknown.
+    if (status === "unreachable") return "unavailable";
+    if (status === "not_configured") return "not_configured";
     if (status === "unchecked") return "unchecked";
     return "unknown";
   }
@@ -361,7 +367,12 @@ function providerTooltip() {
     return "The readiness response reported provider_status 'unchecked'; "
       + "the provider was not pinged.";
   }
-  if (status === "unreachable" || status === "not_configured") {
+  if (status === "not_configured") {
+    return (h && h.provider_error)
+      || (state.config && state.config.provider_error)
+      || "The target provider is not configured; new checks cannot run.";
+  }
+  if (status === "unreachable") {
     return (h && h.provider_error)
       || (state.config && state.config.provider_error)
       || "The target provider cannot run new cycles.";
@@ -383,6 +394,7 @@ function providerStates() {
   return {
     available: ["status-ok", `${name} Available`, detail],
     unavailable: ["status-bad", `${name} Unavailable`, detail],
+    not_configured: ["status-warn", `${name} Not Configured`, detail],
     unchecked: ["status-muted", `${name} Unchecked`, detail],
     unknown: ["status-muted", `${name} Unknown`, detail],
     checking: ["status-muted", `${name} Checking`, detail],
@@ -1390,19 +1402,47 @@ function providerStatusSettled(health) {
     || status === "not_configured";
 }
 
+/* Every loadHealth() invocation gets a sequence number. Startup, the TTL
+   interval and run completion can overlap; only the newest invocation may
+   write state. This is what stops a slow failure from arriving after a newer
+   success and turning a healthy Gemini back into "Unknown". */
+let healthRequestSeq = 0;
+let healthRetryTimer = null;
+
+function clearHealthRetry() {
+  if (healthRetryTimer !== null) {
+    clearTimeout(healthRetryTimer);
+    healthRetryTimer = null;
+  }
+}
+
+function scheduleHealthRetry() {
+  if (healthRetryTimer !== null) return;
+  healthRetryTimer = setTimeout(() => {
+    healthRetryTimer = null;
+    loadHealth();
+  }, HEALTH_RETRY_MS);
+}
+
 /* Readiness is separate from liveness and never blocks the first render.
    The provider ping costs quota, so a fresh settled answer is reused for the
-   backend TTL. A failed or unresolved readiness call is retried on the next
-   refresh instead of claiming the provider is down. */
+   backend TTL. A failed or unresolved readiness call is retried once quickly
+   and then by the normal TTL interval, instead of claiming the provider is
+   down forever. */
 async function loadHealth() {
+  const requestSeq = ++healthRequestSeq;
   const now = Date.now();
   if (state.health && !state.healthError
       && providerStatusSettled(state.health)
-      && now - state.healthCheckedAt < healthRefreshMs()) return;
+      && now - state.healthCheckedAt < healthRefreshMs()) return false;
   try {
     // Readiness must be fresh: never let a browser heuristic reuse an old
     // dependency snapshot. The API also sends Cache-Control: no-store.
     const payload = await fetchJson("/health", { cache: "no-store" });
+    // A superseded request must not rewrite a newer verdict, even if that
+    // newer verdict was served from the TTL cache and made no HTTP request.
+    if (requestSeq !== healthRequestSeq) return false;
+    clearHealthRetry();
     state.health = payload;
     state.healthError = null;
     // Stamp the response time, not the request start: a slow ping must not
@@ -1418,6 +1458,8 @@ async function loadHealth() {
       });
     }
   } catch (err) {
+    if (requestSeq !== healthRequestSeq) return false;
+    clearHealthRetry();
     state.health = null;
     state.healthError = {
       httpStatus: err.status || null,
@@ -1430,6 +1472,7 @@ async function loadHealth() {
     // A failed readiness fetch is not proof the database is down; other
     // DB-backed endpoints remain the authority for the DB pill.
     console.warn("readiness fetch failed", state.healthError);
+    scheduleHealthRetry();
   }
   renderStatusGroup();
   renderRunNote();
@@ -1437,6 +1480,7 @@ async function loadHealth() {
   /* A deployment without provider credentials has no target_model on
      /config; readiness supplies the model name, so refresh the label. */
   if (state.config && !state.config.target_model) renderConfig();
+  return true;
 }
 
 function loadAll() {
@@ -2592,6 +2636,13 @@ initTabs();
 loadLive();        // API reachability as soon as liveness answers
 loadHealth();      // database + provider readiness, non-blocking
 ensureAwake();     // data panels, each rendering individually as they land
+/* Returning to a backgrounded tab can resume long after a failed or stale
+   readiness result. Refresh then; the TTL cache keeps it cheap. */
+if (typeof document.addEventListener === "function") {
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") loadHealth();
+  });
+}
 /* Periodic refresh only when connected and visible; failed endpoints are
    retried here. If nothing answers anymore, resume the wake loop. */
 setInterval(() => {

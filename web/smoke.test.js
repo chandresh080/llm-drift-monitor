@@ -92,10 +92,15 @@ const documentStub = {
 };
 
 /* setInterval is stubbed before app.js loads: the script installs periodic
-   loops and a test must not keep the event loop alive. */
+   loops and a test must not keep the event loop alive. setTimeout is stubbed
+   too, so a failed readiness check cannot fire a retry during another
+   scenario. Delayed fixtures use the saved real timer. */
+const realSetTimeout = global.setTimeout.bind(global);
 const timers = [];
 global.setInterval = (fn, ms) => { timers.push({ fn, ms }); return timers.length; };
 global.clearInterval = () => {};
+global.setTimeout = (fn, ms) => { timers.push({ fn, ms }); return timers.length; };
+global.clearTimeout = (id) => { if (id) timers[id - 1] = null; };
 
 global.document = documentStub;
 global.window = global;
@@ -958,7 +963,8 @@ const settle = () => new Promise((r) => setImmediate(r));
   await settle();
   check("header names the model when /config cannot build the adapter",
     getById("model-label").textContent === "Gemini 3.1 Flash-Lite"
-      && getById("provider-pill").innerHTML.includes("Gemini Unavailable"),
+      && getById("provider-pill").innerHTML.includes("Gemini Not Configured")
+      && getById("provider-pill").title.includes("API key is required"),
     `${getById("model-label").textContent} / ${getById("provider-pill").innerHTML}`);
   check("configuration panel names the same model instead of null",
     getById("cfg-model").textContent === "gemini-3.1-flash-lite",
@@ -1117,6 +1123,19 @@ const settle = () => new Promise((r) => setImmediate(r));
       && getById("model-label").title === getById("provider-pill").title,
     getById("provider-pill").title);
 
+  routeOverrides = { "/health": () => resp({
+    status: "degraded", db: "ok", database: "available", db_error: null,
+    provider: "gemini-3.1-flash-lite", provider_status: "not_configured",
+    provider_error: "Gemini API key is required.",
+  }) };
+  reloadHealth();
+  await settle();
+  check("not_configured is Gemini Not Configured with the backend reason",
+    getById("provider-pill").innerHTML.includes("Gemini Not Configured")
+      && getById("provider-pill").title.includes("API key is required")
+      && getById("model-label").title === getById("provider-pill").title,
+    `${getById("provider-pill").innerHTML} / ${getById("provider-pill").title}`);
+
   routeOverrides = { "/health": () => resp(
     { detail: "Service Unavailable" }, { ok: false, status: 503 }) };
   reloadHealth();
@@ -1129,6 +1148,9 @@ const settle = () => new Promise((r) => setImmediate(r));
   check("readiness HTTP failure does not rewrite database availability",
     getById("db-pill").innerHTML.includes("Database Available"),
     getById("db-pill").innerHTML);
+  check("failed readiness schedules one short retry, not a tight loop",
+    timers.some((t) => t && t.ms === 5000 && typeof t.fn === "function"),
+    JSON.stringify(timers.filter((t) => t && t.ms === 5000).map((t) => t.ms)));
 
   routeOverrides = { "/health": () => {
     const err = new Error("deadline exceeded");
@@ -1146,11 +1168,58 @@ const settle = () => new Promise((r) => setImmediate(r));
   routeOverrides = { "/health": healthyHealth };
   reloadHealth();
   await settle();
-  vmEval("globalThis.__recoveredHealth = state.healthError;");
+  vmEval(`globalThis.__recoveredHealth = state.healthError;
+    globalThis.__retryCleared = healthRetryTimer === null;`);
   check("a subsequent healthy response recovers Gemini Available",
     getById("provider-pill").innerHTML.includes("Gemini Available")
       && globalThis.__recoveredHealth === null,
     `${getById("provider-pill").innerHTML} / ${JSON.stringify(globalThis.__recoveredHealth)}`);
+  check("a successful response clears the failure retry",
+    globalThis.__retryCleared === true,
+    String(globalThis.__retryCleared));
+
+  console.log("scenario 3d-2: overlapping readiness responses are ordered");
+
+  /* Reproduce the deployed discrepancy: an older request that failed slowly
+     must never overwrite a newer request that already returned ok. */
+  const beforeOverlap = requestedUrls.filter((u) => u === "/health").length;
+  routeOverrides = { "/health": () => new Promise((_, reject) =>
+    realSetTimeout(() => reject(new TypeError("stale network failure")), 40)) };
+  reloadHealth();
+  routeOverrides = { "/health": healthyHealth };
+  vmEval("loadHealth();");
+  await new Promise((r) => realSetTimeout(r, 80));
+  await settle();
+  vmEval(`globalThis.__overlapState = {
+    status: state.health && state.health.provider_status,
+    error: state.healthError,
+  };`);
+  check("a newer successful response wins over an older failed response",
+    requestedUrls.filter((u) => u === "/health").length === beforeOverlap + 2
+      && getById("provider-pill").innerHTML.includes("Gemini Available")
+      && globalThis.__overlapState.status === "ok"
+      && globalThis.__overlapState.error === null,
+    `${JSON.stringify(globalThis.__overlapState)} / ${getById("provider-pill").innerHTML}`);
+
+  /* The reverse ordering must also hold: a slow success cannot erase a
+     newer failure and make an unreachable provider look healthy. */
+  routeOverrides = { "/health": () => new Promise((resolve) =>
+    realSetTimeout(() => resolve(healthyHealth()), 40)) };
+  reloadHealth();
+  routeOverrides = { "/health": () => resp(
+    { detail: "Service Unavailable" }, { ok: false, status: 503 }) };
+  vmEval("loadHealth();");
+  await settle();
+  await new Promise((r) => realSetTimeout(r, 80));
+  await settle();
+  check("a newer failed response wins over an older successful response",
+    getById("provider-pill").innerHTML.includes("Gemini Unknown")
+      && getById("provider-pill").title.includes("HTTP 503"),
+    `${getById("provider-pill").innerHTML} / ${getById("provider-pill").title}`);
+
+  routeOverrides = { "/health": healthyHealth };
+  reloadHealth();
+  await settle();
 
   console.log("scenario 3e: readiness refresh uses state, not only HTTP caching");
 
@@ -1174,6 +1243,10 @@ const settle = () => new Promise((r) => setImmediate(r));
   check("frontend TTL follows the backend provider ping TTL",
     globalThis.__healthRefreshMs === 60000,
     String(globalThis.__healthRefreshMs));
+  check("periodic refresh is scheduled at the backend TTL, not faster",
+    timers.some((t) => t && t.ms === 60000 && typeof t.fn === "function")
+      && !timers.some((t) => t && t.ms === 10000),
+    JSON.stringify(timers.filter((t) => t).map((t) => t.ms)));
 
   /* A fresh `unchecked` result must not freeze the indicator. */
   routeOverrides = { "/health": uncheckedHealth };
