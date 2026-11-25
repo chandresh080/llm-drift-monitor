@@ -6,6 +6,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+from contextlib import contextmanager
 
 import numpy as np
 import pytest
@@ -1043,6 +1044,212 @@ class TestStorageSelection:
         assert calls == [(storage, seed)]
 
 
+class TestPostgresConnectionRecovery:
+    """Mocked pool-level failures from the observed Neon SSL close."""
+
+    class FakeCursor:
+        def __init__(self, connection):
+            self._connection = connection
+            self._description = [("one",)]
+
+        def execute(self, sql, params=None):
+            import psycopg
+
+            if not self._connection.alive:
+                raise psycopg.OperationalError(
+                    "consuming input failed: SSL connection has been closed unexpectedly")
+            if self._connection.fail_query and sql.strip():
+                self._connection.fail_query = False
+                raise psycopg.OperationalError(
+                    "consuming input failed: SSL connection has been closed unexpectedly")
+            self._description = [("one",)]
+
+        @property
+        def description(self):
+            return self._description
+
+        def fetchone(self):
+            return (1,)
+
+        def fetchall(self):
+            return [(1,)]
+
+    class FakeConnection:
+        def __init__(self, alive=True, fail_query=False):
+            self.alive = alive
+            self.fail_query = fail_query
+            self.autocommit = False
+
+        def execute(self, sql, params=None):
+            cursor = self.cursor()
+            cursor.execute(sql, params)
+            return cursor
+
+        def cursor(self):
+            return TestPostgresConnectionRecovery.FakeCursor(self)
+
+        def commit(self):
+            return None
+
+    class FakePool:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.closed = False
+            self.checkouts = 0
+            self.fail_first_query = False
+            self.stale_first = True
+
+        def connection(self, timeout=None):
+            @contextmanager
+            def checkout():
+                # The real pool retries checked-out connections with its
+                # backoff policy until one passes `check` or the timeout ends.
+                for _ in range(4):
+                    self.checkouts += 1
+                    conn = TestPostgresConnectionRecovery.FakeConnection(
+                        alive=not (self.stale_first and self.checkouts == 1),
+                        fail_query=self.fail_first_query and self.checkouts == 1)
+                    check = self.kwargs.get("check")
+                    try:
+                        if check:
+                            check(conn)
+                    except Exception:
+                        continue
+                    yield conn
+                    return
+                raise RuntimeError("no checked-out connection passed the check")
+
+            return checkout()
+
+        def close(self):
+            self.closed = True
+
+    @staticmethod
+    def _storage(monkeypatch, fail_first_query=False):
+        import psycopg_pool
+        import storage as storage_module
+        from psycopg_pool import ConnectionPool
+
+        # Capture the real API before replacing the constructor under test.
+        check_callback = ConnectionPool.check_connection
+        monkeypatch.setattr(TestPostgresConnectionRecovery.FakePool,
+                            "check_connection", staticmethod(check_callback),
+                            raising=False)
+        monkeypatch.setattr(psycopg_pool, "ConnectionPool",
+                            TestPostgresConnectionRecovery.FakePool)
+        monkeypatch.setattr(storage_module.PostgresStorage, "_init_db",
+                            lambda self: None)
+        storage = storage_module.PostgresStorage("postgresql://db.example/monitor")
+        if fail_first_query:
+            storage._pool.fail_first_query = True
+            storage._pool.stale_first = False
+        return storage, check_callback
+
+    def test_stale_ssl_connection_is_checked_and_replaced(self, monkeypatch):
+        storage, check_callback = self._storage(monkeypatch)
+        kwargs = storage._pool.kwargs
+
+        assert kwargs["check"] is check_callback
+        assert kwargs["max_size"] == 2
+        assert kwargs["max_lifetime"] <= 900
+        assert kwargs["max_idle"] <= 600
+        assert kwargs["kwargs"]["connect_timeout"] >= 8
+
+        storage.check_connection()
+        # The first warm socket failed the checkout callback; the second was
+        # used for SELECT 1. No SQL was attempted on the dead connection.
+        assert storage._pool.checkouts == 2
+        assert storage.is_reachable is True
+        assert storage.storage_error is None
+
+    def test_query_interruption_marks_unavailable_then_recovers(self, monkeypatch):
+        storage, _ = self._storage(monkeypatch, fail_first_query=True)
+
+        with pytest.raises(Exception, match="SSL connection has been closed"):
+            storage.count_all_runs()
+        assert storage.is_reachable is False
+        assert "SSL connection has been closed" in storage.storage_error
+
+        storage.check_connection()
+        assert storage.is_reachable is True
+        assert storage.storage_error is None
+        assert storage._pool.checkouts >= 2
+
+    def test_close_is_idempotent(self, monkeypatch):
+        storage, _ = self._storage(monkeypatch)
+        assert storage._pool.closed is False
+        storage.close()
+        storage.close()
+        assert storage._pool.closed is True
+
+    def test_local_sqlite_check_remains_writable(self, tmp_path):
+        storage = DriftMonitorStorage(str(tmp_path / "sqlite-check.db"))
+        assert storage.check_connection() is None
+        assert storage.is_reachable is True
+        assert storage.accepts_writes is True
+        assert storage.info()["reachable"] is True
+
+
+class TestTransientStorageFailureSurface:
+    """A configured durable backend can be live-unavailable."""
+
+    class Adapter:
+        model_id = "gemini-3.1-flash-lite"
+
+        def ping(self):
+            return True
+
+    class UnreachablePostgres(DriftMonitorStorage):
+        backend = "postgres"
+        is_durable = True
+
+        def check_connection(self):
+            raise RuntimeError(
+                "consuming input failed: SSL connection has been closed unexpectedly")
+
+    @staticmethod
+    def _monitor(tmp_path, storage):
+        return StubMonitor(storage, adapter=TestTransientStorageFailureSurface.Adapter())
+
+    def test_health_reports_live_database_failure(self, monkeypatch, tmp_path):
+        from api import health
+
+        storage = self.UnreachablePostgres(str(tmp_path / "unreachable.db"))
+        monkeypatch.setattr("api._get_storage", lambda: storage)
+        monkeypatch.setattr("api._get_monitor",
+                            lambda: self._monitor(tmp_path, storage))
+        monkeypatch.setattr("api._provider_health",
+                            {"at": 0.0, "ok": None, "status": None, "error": None})
+
+        payload = health(probe=False)
+        assert payload["database"] == "unavailable"
+        assert payload["storage_backend"] == "postgres"
+        assert payload["storage_durable"] is True
+        assert payload["storage"]["reachable"] is False
+        assert payload["storage"]["new_checks_enabled"] is False
+        assert payload["diagnostics"]["db_ready"] is False
+        assert "SSL connection has been closed" in payload["db_error"]
+
+    def test_run_is_rejected_before_queueing_without_sqlite_fallback(
+            self, monkeypatch, tmp_path):
+        from api import _daily_usage, _last_enqueue, _run_queue, _runs
+
+        storage = self.UnreachablePostgres(str(tmp_path / "unreachable-runs.db"))
+        client = TestRunThrottle.reset_state(monkeypatch)
+        monkeypatch.setattr("api._get_monitor",
+                            lambda: self._monitor(tmp_path, storage))
+
+        rejected = client.post("/runs")
+        assert rejected.status_code == 503
+        assert "persistent storage is unavailable" in rejected.json()["detail"]
+        assert _run_queue.qsize() == 0
+        assert _runs == {}
+        assert _last_enqueue[0] == 0.0
+        assert _daily_usage["count"] == 0
+        assert storage.count_all_runs() == 0
+        assert storage.get_manifest() == {}
+
+
 class TestDurablePersistence:
     def test_sqlite_records_survive_a_process_restart(self, tmp_path):
         db_path = tmp_path / "restart.db"
@@ -1166,6 +1373,34 @@ class TestPostgresIntegration:
                 second.clear_all()
                 second.close()
             first.close()
+
+    def test_live_check_recovers_after_terminated_connection(self):
+        """Exercise the checkout check against the disposable database only."""
+        import psycopg
+
+        url = os.environ["TEST_DATABASE_URL"]
+        storage = self._storage()
+        try:
+            storage.check_connection()
+            assert storage.is_reachable is True
+            with storage._pool.connection() as connection:
+                backend_pid = connection.execute(
+                    "SELECT pg_backend_pid()").fetchone()[0]
+            admin = psycopg.connect(url, autocommit=True)
+            try:
+                admin.execute("SELECT pg_terminate_backend(%s)", (backend_pid,))
+            finally:
+                admin.close()
+
+            # The checked-out socket is now dead; the next live check must
+            # discard it and obtain a fresh one instead of reporting success.
+            storage.check_connection()
+            assert storage.is_reachable is True
+            assert storage.storage_error is None
+            with storage._db() as conn:
+                assert conn.execute("SELECT 1").fetchone()[0] == 1
+        finally:
+            storage.close()
 
     def test_baseline_import_is_idempotent(self):
         from storage import import_baseline

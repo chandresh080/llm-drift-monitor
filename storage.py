@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -142,10 +143,16 @@ class DriftMonitorStorage:
     # A configured PostgreSQL URL that cannot initialize falls back to a
     # local SQLite file for reads only. See create_storage().
     accepts_writes = True
+    # Configuration (backend/durable), current reachability and write safety
+    # are separate facts. Reachability is refreshed by an explicit read check
+    # from /health and POST /runs, not inferred from the backend flag.
+    is_reachable = True
 
     def __init__(self, db_path: str = "data/drift_monitor.db"):
         self.db_path = db_path
         self.storage_error: Optional[str] = None
+        self.is_reachable = True
+        self._state_lock = threading.Lock()
         # Ensure data directory exists. In memory databases have no path to
         # create, and an empty dirname must not become a makedirs call.
         parent = os.path.dirname(self.db_path)
@@ -952,12 +959,38 @@ class DriftMonitorStorage:
                 "reference_window": reference_window,
             }
 
+    def _record_storage_state(self, reachable: bool,
+                              error: Optional[str] = None) -> None:
+        with self._state_lock:
+            self.is_reachable = reachable
+            self.storage_error = error
+
+    def check_connection(self) -> None:
+        """Perform a real, cheap read that proves storage is usable now.
+
+        The caller (/health or POST /runs) decides when to refresh this state.
+        Dashboard reads use the cache and must not reconnect on every poll.
+        """
+        if not self.accepts_writes:
+            raise RuntimeError(
+                self.storage_error or
+                "Persistent storage is unavailable; new monitoring writes "
+                "are disabled.")
+        try:
+            with self._db() as conn:
+                conn.execute("SELECT 1").fetchone()
+        except Exception as exc:
+            self._record_storage_state(False, _safe_error_text(exc))
+            raise
+        self._record_storage_state(True, None)
+
     def info(self) -> Dict[str, Any]:
         """Non-secret storage identity for startup logs and /config."""
         return {
             "backend": self.backend,
             "location": self.location,
             "durable": self.is_durable,
+            "reachable": self.is_reachable,
             "storage_error": self.storage_error,
             "accepts_writes": self.accepts_writes,
         }
@@ -1154,13 +1187,25 @@ class PostgresStorage(DriftMonitorStorage):
         self.resolved_path = None
         self.location = "DATABASE_URL (external PostgreSQL)"
         self.storage_error = None
+        self.is_reachable = True
+        self._state_lock = threading.Lock()
+        # psycopg_pool 3.3.3 checks every checkout when given a `check`
+        # callback (available since 3.2). Neon can close an idle SSL session
+        # while our one warm connection sits in the pool; without this check
+        # that dead socket is handed to the next query and fails mid-use.
+        # Recycling warm connections periodically covers providers that close
+        # sessions without an intervening checkout. Defaults are kept for
+        # reconnect backoff: no tight retry loop against a suspended compute.
         self._pool = ConnectionPool(
             conninfo=database_url,
             min_size=1,
             max_size=2,
-            timeout=10,
+            timeout=15,
             open=True,
-            kwargs={"connect_timeout": 8},
+            kwargs={"connect_timeout": 10},
+            check=ConnectionPool.check_connection,
+            max_lifetime=900,
+            max_idle=120,
         )
         try:
             self._init_db()
@@ -1170,12 +1215,33 @@ class PostgresStorage(DriftMonitorStorage):
 
     @contextmanager
     def _db(self):
-        with self._pool.connection() as connection:
-            yield _PgConnection(connection)
+        try:
+            with self._pool.connection() as connection:
+                yield _PgConnection(connection)
+        except Exception as exc:
+            # A dropped socket or a failed acquisition means the configured
+            # backend is not currently usable. Never replay the SQL here: a
+            # write may have committed before the client lost the reply.
+            if self._is_connection_error(exc):
+                self._record_storage_state(False, _safe_error_text(exc))
+            raise
+        self._record_storage_state(True, None)
+
+    @staticmethod
+    def _is_connection_error(exc: BaseException) -> bool:
+        try:
+            import psycopg
+            from psycopg_pool import PoolClosed, PoolTimeout, TooManyRequests
+        except ImportError:  # pragma: no cover - dependency is declared
+            return True
+        return isinstance(exc, (psycopg.OperationalError,
+                                psycopg.InterfaceError, PoolTimeout,
+                                PoolClosed, TooManyRequests))
 
     def close(self) -> None:
         """Return the pooled connections on shutdown or failed initialization."""
-        self._pool.close()
+        if not getattr(self._pool, "closed", False):
+            self._pool.close()
 
     def _init_db(self):
         with self._db() as conn:
@@ -1276,6 +1342,7 @@ def create_storage(db_path: str = "data/drift_monitor.db",
         storage = DriftMonitorStorage(db_path)
         storage.backend = "sqlite-fallback"
         storage.is_durable = False
+        storage.is_reachable = False
         storage.accepts_writes = False
         storage.storage_error = _safe_error_text(exc)
         return storage

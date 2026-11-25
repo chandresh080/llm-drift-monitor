@@ -98,11 +98,16 @@ def _record_run(run_id: str, record: Dict[str, Any]) -> None:
 # would construct its own monitor instance, each paying the config parse and
 # adapter setup cost. The lock turns the race into a queue.
 _monitor_lock = threading.Lock()
+_monitor_instance: Optional[LLMDriftMonitor] = None
 
 
 @lru_cache(maxsize=1)
 def _build_monitor() -> LLMDriftMonitor:
-    return LLMDriftMonitor(config_path=os.environ.get("DRIFT_MONITOR_CONFIG", "config/config.yaml"))
+    global _monitor_instance
+    monitor = LLMDriftMonitor(
+        config_path=os.environ.get("DRIFT_MONITOR_CONFIG", "config/config.yaml"))
+    _monitor_instance = monitor
+    return monitor
 
 
 def _get_monitor() -> LLMDriftMonitor:
@@ -121,24 +126,31 @@ def _get_storage() -> DriftMonitorStorage:
     return _get_monitor().storage
 
 
-def _storage_state(storage: Optional[DriftMonitorStorage]) -> Dict[str, Any]:
+def _storage_state(storage: Optional[DriftMonitorStorage],
+                   reachable: Optional[bool] = None) -> Dict[str, Any]:
     """One non-secret storage identity for /config, /health and run gating.
 
-    Backend, durability and write capability are separate facts. A configured
-    PostgreSQL URL that fails to initialize leaves an ephemeral SQLite object
-    that serves reads only; it must never be reported as durable or writable.
+    Backend, durability, current reachability and write capability are
+    separate facts. A configured PostgreSQL URL that fails to initialize
+    leaves an ephemeral SQLite object that serves reads only; it must never
+    be reported as durable or writable. A configured durable backend whose
+    live check failed is still durable, but not currently safe for new cycles.
     """
     backend = getattr(storage, "backend", "unknown") if storage else "unknown"
     durable = bool(getattr(storage, "is_durable", False)) if storage else False
     accepts_writes = bool(getattr(storage, "accepts_writes", True)) if storage else False
     fallback = backend == "sqlite-fallback"
+    is_reachable = (bool(getattr(storage, "is_reachable", True))
+                    if storage else False)
+    if reachable is not None:
+        is_reachable = bool(reachable)
     if fallback:
         note = ("DATABASE_URL is configured but PostgreSQL is unavailable. "
                 "The dashboard serves stored data read-only; new checks are "
                 "disabled until the database is fixed and the service redeployed.")
     elif durable:
-        note = ("Managed PostgreSQL via DATABASE_URL. Durability depends on "
-                "the provider plan; Render Free Postgres expires after 30 days.")
+        note = ("Managed PostgreSQL via DATABASE_URL. /health checks live "
+                "reachability; durability depends on the provider plan.")
     else:
         note = ("SQLite on the container filesystem. History is lost when the "
                 "instance recycles. Set DATABASE_URL to a managed PostgreSQL "
@@ -147,28 +159,38 @@ def _storage_state(storage: Optional[DriftMonitorStorage]) -> Dict[str, Any]:
     return {
         "backend": backend,
         "durable": durable,
+        "reachable": is_reachable,
         "location": getattr(storage, "location", None) if storage else None,
         "note": note,
         # Connection strings must never be echoed, even in a failure note.
         "error": _safe_error_text(Exception(error)) if error else None,
         "fallback": fallback,
         "accepts_writes": accepts_writes,
-        "new_checks_enabled": accepts_writes and not fallback,
+        "new_checks_enabled": accepts_writes and is_reachable and not fallback,
     }
 
 
 def _ensure_new_checks_allowed() -> None:
-    """Reject new cycles when the configured persistent database is missing."""
+    """Reject new cycles unless storage passes a live read check."""
     detail = (
         "New checks are disabled: persistent storage is unavailable. "
-        "DATABASE_URL is configured but PostgreSQL could not be initialized, "
+        "DATABASE_URL is configured but the database could not be reached, "
         "so this service serves stored data read-only. Fix the database "
-        "configuration and redeploy.")
+        "connection and try again.")
     try:
-        state = _storage_state(_get_monitor().storage)
-    except Exception:
-        # No monitor means no storage object at all; never enqueue a cycle
-        # that cannot be recorded somewhere durable.
+        storage = _get_monitor().storage
+        checker = getattr(storage, "check_connection", None)
+        if callable(checker):
+            # This is a cheap SELECT on POST /runs only; dashboard polls do
+            # not call it. It replaces stale pooled connections via the pool's
+            # checkout callback, and never retries a failed write.
+            if checker() is False:
+                raise RuntimeError("database check failed")
+        state = _storage_state(storage)
+    except Exception as exc:
+        # No monitor, no storage object, or a failed live check: never enqueue
+        # a cycle that cannot be recorded somewhere durable.
+        logger.warning("new checks blocked by storage: %s", _safe_error_text(exc))
         state = {"new_checks_enabled": False}
     if not state["new_checks_enabled"]:
         _metrics["runs_rejected_total"] += 1
@@ -1288,6 +1310,23 @@ def preload_embedder() -> None:
                      daemon=True).start()
 
 
+@app.on_event("shutdown")
+def close_storage_pool() -> None:
+    """Close the process' pool on Render stop; startup builds a fresh one."""
+    global _monitor_instance
+    monitor = _monitor_instance
+    if monitor is None:
+        return
+    try:
+        monitor.storage.close()
+    except Exception as exc:
+        logger.warning("storage shutdown cleanup failed: %s", _safe_error_text(exc))
+    finally:
+        _monitor_instance = None
+        # A later start in the same process must not reuse a closed pool.
+        _build_monitor.cache_clear()
+
+
 @app.get("/health/live")
 def liveness() -> Dict[str, str]:
     """Liveness: is this process serving. Returns without touching the
@@ -1326,13 +1365,19 @@ def health(probe: bool = True) -> Dict[str, Any]:
     }
 
     # Database readiness is measured on its own. A provider problem can never
-    # rewrite this result.
+    # rewrite this result. This is a real read: a cached "backend=postgres"
+    # flag is never treated as proof that Neon is reachable.
     db_ok = True
     db_error = None
     storage = None
     try:
         storage = _get_storage()
-        storage.count_successful_runs()
+        checker = getattr(storage, "check_connection", None)
+        if callable(checker):
+            if checker() is False:
+                raise RuntimeError("database check failed")
+        else:
+            storage.count_successful_runs()
         db_ok = True
     except Exception as exc:
         db_ok = False
@@ -1355,7 +1400,7 @@ def health(probe: bool = True) -> Dict[str, Any]:
             "provider_ready": False,
             "duration_ms": round((time.monotonic() - started) * 1000, 1),
         })
-        state = _storage_state(storage)
+        state = _storage_state(storage, reachable=db_ok)
         return {
             "status": "degraded",
             "db": "ok" if db_ok else "unavailable",
@@ -1416,7 +1461,7 @@ def health(probe: bool = True) -> Dict[str, Any]:
     diagnostics["provider_ready"] = bool(provider_ok)
     diagnostics["duration_ms"] = round((time.monotonic() - started) * 1000, 1)
     status = "ok" if (db_ok and provider_ok) else "degraded"
-    state = _storage_state(storage)
+    state = _storage_state(storage, reachable=db_ok)
     return {
         "status": status,
         "db": "ok" if db_ok else "unavailable",

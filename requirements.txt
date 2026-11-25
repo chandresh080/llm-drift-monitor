@@ -16,5 +16,8 @@ fastapi>=0.100.0
 uvicorn>=0.20.0
 httpx>=0.24.0
 # Optional durable backend: selected only when DATABASE_URL is set. The
-# small pool keeps the hosted 512 MiB instance within budget.
-psycopg[binary,pool]>=3.1
+# small pool keeps the hosted 512 MiB instance within budget. psycopg_pool
+# >=3.2 is required for the checkout `check` callback used to discard stale
+# Neon SSL connections.
+psycopg[binary,pool]>=3.2,<4
+psycopg-pool>=3.2,<4
