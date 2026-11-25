@@ -1802,3 +1802,17 @@ class TestStaticAssets:
         client = self.client()
         response = client.get("/static/..%2F..%2Fapi.py")
         assert response.status_code == 404
+
+    def test_demo_artifact_is_served_from_the_committed_data_directory(self):
+        client = self.client()
+        response = client.get("/static/data/demo-scenarios.json")
+        assert response.status_code == 200
+        assert response.headers.get("cache-control") == "no-store"
+        assert response.json()["schema_version"] == 1
+
+    def test_only_the_exact_demo_artifact_name_is_served(self):
+        client = self.client()
+        response = client.get("/static/data/..%2Findex.html")
+        assert response.status_code == 404
+        response = client.get("/static/data/unknown.json")
+        assert response.status_code == 404

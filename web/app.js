@@ -38,6 +38,20 @@ const state = {
   wakeStartedAt: null,
 };
 
+/* Demo state is deliberately separate from live monitoring state. The Demo
+   view reads one committed artifact and never calls /runs or any data
+   endpoint that describes production storage. */
+const demo = {
+  artifact: null,       // validated static artifact
+  scenarioId: null,
+  cycleNumber: null,
+  error: null,
+  loaded: false,
+  loading: false,
+};
+
+const DEMO_ARTIFACT_URL = "/static/data/demo-scenarios.json";
+
 const WAKE_WAIT_MS = 5000;
 const REQUEST_TIMEOUT_MS = 15000;
 /* Match api.PROVIDER_HEALTH_TTL_SECONDS (60s). The API reuses a fresh ping
@@ -353,8 +367,10 @@ function initTabs() {
   const show = (view) => {
     $("tab-console").hidden = view !== "console";
     $("tab-evaluation").hidden = view !== "evaluation";
+    $("tab-demo").hidden = view !== "demo";
     $("tab-btn-console").classList.toggle("tab-active", view === "console");
     $("tab-btn-evaluation").classList.toggle("tab-active", view === "evaluation");
+    $("tab-btn-demo").classList.toggle("tab-active", view === "demo");
     if (view === "evaluation") {
       if (state.evaluation) {
         try { renderEvaluation(); } catch (err) { /* blocks render independently */ }
@@ -362,9 +378,11 @@ function initTabs() {
         loadEvaluation();
       }
     }
+    if (view === "demo") loadDemoArtifact();
   };
   $("tab-btn-console").addEventListener("click", () => show("console"));
   $("tab-btn-evaluation").addEventListener("click", () => show("evaluation"));
+  $("tab-btn-demo").addEventListener("click", () => show("demo"));
 }
 
 /* ---------- split signal families ---------- */
@@ -1402,6 +1420,512 @@ function renderPairedDiagnostic() {
   }
 }
 
+/* ---------- demo tab ---------- */
+
+/* The Demo view is intentionally isolated from live state. It fetches one
+   committed artifact, validates it, and renders from that object only. A
+   missing or malformed artifact becomes an explicit state; no panel falls
+   back to live data or to an invented verdict. */
+
+const DEMO_DETECTORS = [
+  { key: "length", name: "Length", shape: "circle", color: "#4F46E5" },
+  { key: "availability", name: "Availability", shape: "square", color: "#0F766E" },
+  { key: "semantic", name: "Semantic", shape: "triangle", color: "#A1A1AA" },
+];
+
+function validateDemoArtifact(artifact) {
+  if (!artifact || typeof artifact !== "object") {
+    throw new Error("artifact is not an object");
+  }
+  if (artifact.schema_version !== 1) throw new Error("unsupported schema version");
+  if (!artifact.methodology || typeof artifact.methodology !== "object") {
+    throw new Error("methodology missing");
+  }
+  if (!artifact.configuration || typeof artifact.configuration !== "object") {
+    throw new Error("configuration missing");
+  }
+  if (!Array.isArray(artifact.scenarios) || artifact.scenarios.length === 0) {
+    throw new Error("no scenarios");
+  }
+  for (const scenario of artifact.scenarios) {
+    if (!scenario || typeof scenario.id !== "string"
+        || !Array.isArray(scenario.cycles) || scenario.cycles.length === 0) {
+      throw new Error("malformed scenario");
+    }
+    for (const cycle of scenario.cycles) {
+      if (!cycle || !Number.isFinite(Number(cycle.cycle_number))) {
+        throw new Error("malformed cycle");
+      }
+    }
+  }
+  return true;
+}
+
+async function loadDemoArtifact() {
+  if (demo.loaded || demo.loading) return;
+  demo.loading = true;
+  try {
+    const artifact = await fetchJson(DEMO_ARTIFACT_URL, { cache: "no-store" });
+    validateDemoArtifact(artifact);
+    demo.artifact = artifact;
+    demo.loaded = true;
+    demo.error = null;
+    const first = artifact.scenarios[0];
+    demo.scenarioId = first.id;
+    demo.cycleNumber = first.cycles[first.cycles.length - 1].cycle_number;
+  } catch (err) {
+    demo.loaded = false;
+    demo.artifact = null;
+    const reason = err && err.status ? `HTTP ${err.status}`
+      : (err && err.message ? String(err.message).slice(0, 90) : "unknown error");
+    demo.error = `Demo artifact unavailable (${reason}). `
+      + "Monitor and Evaluation are unaffected.";
+  } finally {
+    demo.loading = false;
+    renderDemo();
+  }
+}
+
+function demoScenario() {
+  if (!demo.artifact || !Array.isArray(demo.artifact.scenarios)) return null;
+  return demo.artifact.scenarios.find((s) => s && s.id === demo.scenarioId) || null;
+}
+
+function demoCycle() {
+  const scenario = demoScenario();
+  if (!scenario) return null;
+  return scenario.cycles.find(
+    (c) => Number(c.cycle_number) === Number(demo.cycleNumber)) || null;
+}
+
+function initDemoEvents() {
+  $("demo-scenario-buttons").addEventListener("click", (event) => {
+    const button = event && event.target && event.target.closest
+      ? event.target.closest("button[data-scenario]") : null;
+    if (button && button.dataset && button.dataset.scenario) {
+      selectDemoScenario(button.dataset.scenario);
+    }
+  });
+  $("demo-cycle-list").addEventListener("click", (event) => {
+    const button = event && event.target && event.target.closest
+      ? event.target.closest("button[data-cycle]") : null;
+    if (button && button.dataset && button.dataset.cycle) {
+      selectDemoCycle(button.dataset.cycle);
+    }
+  });
+}
+
+function selectDemoScenario(id) {
+  const scenario = (demo.artifact && demo.artifact.scenarios || [])
+    .find((s) => s && s.id === id);
+  if (!scenario) return;
+  demo.scenarioId = id;
+  const last = scenario.cycles[scenario.cycles.length - 1];
+  demo.cycleNumber = last.cycle_number;
+  renderDemo();
+}
+
+function selectDemoCycle(number) {
+  const scenario = demoScenario();
+  if (!scenario) return;
+  const value = Number(number);
+  if (!scenario.cycles.some((c) => Number(c.cycle_number) === value)) return;
+  demo.cycleNumber = value;
+  renderDemo();
+}
+
+function demoRenderSafe(id, label, fn) {
+  try {
+    fn();
+  } catch (err) {
+    const el = $(id);
+    if (el) {
+      el.innerHTML = `<p class="empty-state">${escapeHtml(label)} unavailable.</p>`;
+    }
+  }
+}
+
+function renderDemo() {
+  const errorBox = $("demo-error");
+  const body = $("demo-body");
+  if (!errorBox || !body) return;
+  if (!demo.artifact || demo.error) {
+    errorBox.hidden = false;
+    errorBox.textContent = demo.error || "Demo artifact unavailable.";
+    body.hidden = true;
+    return;
+  }
+  const scenario = demoScenario();
+  if (!scenario) {
+    demo.error = "Demo artifact has no selectable scenario.";
+    renderDemo();
+    return;
+  }
+  errorBox.hidden = true;
+  errorBox.textContent = "";
+  body.hidden = false;
+
+  if (!scenario.cycles.some((c) => Number(c.cycle_number) === Number(demo.cycleNumber))) {
+    const last = scenario.cycles[scenario.cycles.length - 1];
+    demo.cycleNumber = last.cycle_number;
+  }
+  renderDemoScenarios(scenario);
+  renderDemoCycles(scenario);
+  demoRenderSafe("demo-pvalues-chart", "Detector trajectory", renderDemoPValueChart);
+  demoRenderSafe("demo-length-chart", "Response length chart", renderDemoLengthChart);
+  demoRenderSafe("demo-detector-rows", "Detector results", renderDemoDetectors);
+  demoRenderSafe("demo-insight", "Cycle decision", renderDemoDecision);
+  demoRenderSafe("demo-alert", "Alert explanation", renderDemoAlert);
+  demoRenderSafe("demo-samples", "Response samples", renderDemoSamples);
+  renderDemoMethodology();
+}
+
+function renderDemoScenarios(scenario) {
+  const cfg = demo.artifact.configuration || {};
+  $("demo-scenario-meta").textContent =
+    `${cfg.prompt_panel_version || "panel"} panel · `
+    + `${cfg.reference_window || "?"} reference / ${cfg.prompts_per_cycle || "?"} current · `
+    + `alpha ${fmtP(cfg.alpha)}`;
+  $("demo-scenario-desc").textContent =
+    `${scenario.description || ""} ${scenario.summary || ""}`.trim();
+  $("demo-scenario-buttons").innerHTML = demo.artifact.scenarios.map((s) => {
+    const active = s.id === scenario.id;
+    return `<button class="demo-segment${active ? " selected" : ""}" type="button" `
+      + `data-scenario="${escapeHtml(s.id)}" aria-pressed="${active}" `
+      + `data-testid="demo-scenario-btn">${escapeHtml(s.label || s.id)}</button>`;
+  }).join("");
+}
+
+function renderDemoCycles(scenario) {
+  const list = $("demo-cycle-list");
+  const evaluated = scenario.cycles.filter((c) => c.tests_run).length;
+  $("demo-cycle-meta").textContent =
+    `${scenario.cycles.length} cycles · ${evaluated} evaluated · `
+    + `${scenario.summary ? scenario.summary.verdict : "no summary"}`;
+  list.innerHTML = scenario.cycles.map((cycle) => {
+    const active = Number(cycle.cycle_number) === Number(demo.cycleNumber);
+    const result = cycle.results || {};
+    const flagged = Boolean(result.distribution_shift_detected);
+    const alerts = (cycle.alerts || []).length;
+    const state = !cycle.tests_run ? "reference"
+      : (alerts ? "alert" : (flagged ? "flagged" : "clear"));
+    const label = !cycle.tests_run ? "Reference collection"
+      : (alerts ? `${alerts} alert${alerts === 1 ? "" : "s"}` :
+        (flagged ? "Flag recorded" : "No flag"));
+    return `<button class="demo-cycle-card ${state}${active ? " selected" : ""}" `
+      + `type="button" data-cycle="${escapeHtml(cycle.cycle_number)}" `
+      + `aria-pressed="${active}" data-testid="demo-cycle" `
+      + `title="Cycle ${escapeHtml(cycle.cycle_number)} · ${escapeHtml(label)}">`
+      + `<span class="demo-cycle-num">${escapeHtml(cycle.cycle_number)}</span>`
+      + `<span class="demo-cycle-label">${escapeHtml(cycle.phase || "cycle")}</span>`
+      + `<span class="demo-cycle-state">${escapeHtml(label)}</span>`
+      + `</button>`;
+  }).join("");
+}
+
+function demoSelectedMarker(shape, x, y, color, title) {
+  const common = `fill="${color}" stroke="${color}" stroke-width="0"`;
+  let mark;
+  if (shape === "square") {
+    mark = `<rect x="${(x - 3.2).toFixed(1)}" y="${(y - 3.2).toFixed(1)}" `
+      + `width="6.4" height="6.4" ${common}>`;
+  } else if (shape === "triangle") {
+    mark = `<polygon points="${x.toFixed(1)},${(y - 4).toFixed(1)} `
+      + `${(x - 3.8).toFixed(1)},${(y + 3.5).toFixed(1)} `
+      + `${(x + 3.8).toFixed(1)},${(y + 3.5).toFixed(1)}" ${common}>`;
+  } else {
+    mark = `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.4" ${common}>`;
+  }
+  return mark + `<title>${escapeHtml(title)}</title></`
+    + (shape === "square" ? "rect" : shape === "triangle" ? "polygon" : "circle") + `>`;
+}
+
+function renderDemoPValueChart() {
+  const scenario = demoScenario();
+  const cycles = (scenario && scenario.cycles) || [];
+  const cfg = (demo.artifact && demo.artifact.configuration) || {};
+  const alpha = Number(cfg.alpha) || 0.05;
+  const w = 560, h = 178, m = { top: 12, right: 14, bottom: 32, left: 36 };
+  const iw = w - m.left - m.right, ih = h - m.top - m.bottom;
+  const last = Math.max(1, cycles.length - 1);
+  const sx = (i) => m.left + (cycles.length === 1 ? iw / 2 : (i / last) * iw);
+  const sy = (v) => m.top + ih - Math.max(0, Math.min(1, v)) * ih;
+  const parts = [];
+
+  for (const value of [0, 0.25, 0.5, 0.75, 1]) {
+    const y = sy(value);
+    parts.push(`<line x1="${m.left}" y1="${y}" x2="${w - m.right}" y2="${y}" stroke="#F1F1F3"/>`);
+    parts.push(`<text x="${m.left - 5}" y="${y + 3}" font-size="10" fill="#71717A" `
+      + `text-anchor="end">${value}</text>`);
+  }
+  const alphaY = sy(alpha);
+  parts.push(`<line x1="${m.left}" y1="${alphaY}" x2="${w - m.right}" y2="${alphaY}" `
+    + `stroke="#DC2626" stroke-width="1" stroke-dasharray="4 3"/>`);
+  parts.push(`<text x="${w - m.right}" y="${alphaY - 4}" font-size="10" fill="#DC2626" `
+    + `text-anchor="end">alpha ${alpha}</text>`);
+
+  const selectedIndex = cycles.findIndex(
+    (c) => Number(c.cycle_number) === Number(demo.cycleNumber));
+  if (selectedIndex >= 0 && cycles.length > 1) {
+    const x = sx(selectedIndex).toFixed(1);
+    parts.push(`<line x1="${x}" y1="${m.top}" x2="${x}" y2="${h - m.bottom}" `
+      + `stroke="#A1A1AA" stroke-width="1" stroke-dasharray="2 3"/>`);
+  }
+
+  cycles.forEach((cycle, i) => {
+    const x = sx(i);
+    parts.push(`<line x1="${x}" y1="${h - m.bottom}" x2="${x}" `
+      + `y2="${h - m.bottom + 4}" stroke="#D4D4D8"/>`);
+    parts.push(`<text x="${x}" y="${h - m.bottom + 14}" font-size="10" fill="#71717A" `
+      + `text-anchor="middle">#${escapeHtml(cycle.cycle_number)}</text>`);
+  });
+
+  for (const detector of DEMO_DETECTORS) {
+    let path = "";
+    let open = false;
+    cycles.forEach((cycle, i) => {
+      const row = ((cycle.results || {}).detectors || {})[detector.key];
+      const value = row ? row.adjusted_p : null;
+      if (value == null) { open = false; return; }
+      path += `${open ? "L" : "M"}${sx(i).toFixed(1)} ${sy(Number(value)).toFixed(1)} `;
+      open = true;
+    });
+    if (path && cycles.length > 1) {
+      parts.push(`<path d="${path.trim()}" fill="none" stroke="${detector.color}" `
+        + `stroke-width="1.5"/>`);
+    }
+    cycles.forEach((cycle, i) => {
+      const row = ((cycle.results || {}).detectors || {})[detector.key];
+      const value = row ? row.adjusted_p : null;
+      if (value == null) return;
+      const title = `Cycle #${cycle.cycle_number} · ${detector.name} adjusted p `
+        + `${fmtP(Number(value))}${row.significant ? " (flagged)" : ""}`;
+      parts.push(demoSelectedMarker(detector.shape, sx(i), sy(Number(value)),
+        detector.color, title));
+    });
+  }
+  parts.push(`<text x="${m.left + iw / 2}" y="${h - 3}" font-size="10" fill="#71717A" `
+    + `text-anchor="middle">cycle</text>`);
+
+  const legend = `<div class="chart-legend">`
+    + DEMO_DETECTORS.map((d) => `<span class="legend-item">`
+      + `<span class="legend-marker mk-${d.shape}" style="color:${d.color}"></span>`
+      + `${d.name}</span>`).join("")
+    + `<span class="legend-item"><span class="legend-dash"></span>${alpha} threshold</span>`
+    + `</div>`;
+  const evaluated = cycles.filter((c) => c.tests_run).length;
+  $("demo-pvalues-note").textContent =
+    `${evaluated} evaluated cycles · baseline cycles have no p-values. `
+    + "The dotted guide marks the selected cycle.";
+  $("demo-pvalues-chart").innerHTML = `<svg viewBox="0 0 ${w} ${h}" class="chart" `
+    + `role="img" aria-label="Adjusted p-values by demo cycle">${parts.join("")}</svg>${legend}`;
+}
+
+function renderDemoLengthChart() {
+  const scenario = demoScenario();
+  const cycles = (scenario && scenario.cycles) || [];
+  const values = cycles.map((c) => Number(c.mean_response_length))
+    .filter((v) => Number.isFinite(v));
+  if (!values.length) {
+    $("demo-length-chart").innerHTML = '<p class="empty-state">No response lengths recorded.</p>';
+    $("demo-length-note").textContent = "";
+    return;
+  }
+  const min = Math.min(...values), max = Math.max(...values);
+  const pad = max === min ? Math.max(10, Math.abs(max) * 0.1) : (max - min) * 0.15;
+  const low = Math.max(0, min - pad), high = max + pad;
+  const w = 560, h = 150, m = { top: 12, right: 14, bottom: 30, left: 42 };
+  const iw = w - m.left - m.right, ih = h - m.top - m.bottom;
+  const slot = iw / Math.max(1, cycles.length);
+  const barWidth = Math.max(12, Math.min(38, slot * 0.56));
+  const sy = (v) => m.top + ih - ((v - low) / (high - low)) * ih;
+  const parts = [];
+  for (let i = 0; i <= 2; i++) {
+    const value = low + ((high - low) * i / 2);
+    const y = sy(value);
+    parts.push(`<line x1="${m.left}" y1="${y}" x2="${w - m.right}" y2="${y}" stroke="#F1F1F3"/>`);
+    parts.push(`<text x="${m.left - 5}" y="${y + 3}" font-size="10" fill="#71717A" `
+      + `text-anchor="end">${Math.round(value)}</text>`);
+  }
+  cycles.forEach((cycle, i) => {
+    const value = Number(cycle.mean_response_length);
+    if (!Number.isFinite(value)) return;
+    const x = m.left + slot * (i + 0.5);
+    const y = sy(value);
+    const selected = Number(cycle.cycle_number) === Number(demo.cycleNumber);
+    const color = selected ? "#4F46E5" : "#C7C7D1";
+    parts.push(`<rect x="${(x - barWidth / 2).toFixed(1)}" y="${y.toFixed(1)}" `
+      + `width="${barWidth.toFixed(1)}" height="${(h - m.bottom - y).toFixed(1)}" `
+      + `fill="${color}" rx="2"><title>Cycle #${escapeHtml(cycle.cycle_number)} · `
+      + `${Math.round(value)} characters</title></rect>`);
+    parts.push(`<text x="${x.toFixed(1)}" y="${h - m.bottom + 14}" font-size="10" `
+      + `fill="#71717A" text-anchor="middle">#${escapeHtml(cycle.cycle_number)}</text>`);
+  });
+  parts.push(`<text x="${m.left + iw / 2}" y="${h - 3}" font-size="10" fill="#71717A" `
+    + `text-anchor="middle">cycle</text>`);
+  $("demo-length-note").textContent =
+    `Mean stored answer length from ${values.length} of ${cycles.length} cycles. `
+    + "The selected cycle is accented.";
+  $("demo-length-chart").innerHTML = `<svg viewBox="0 0 ${w} ${h}" class="chart" `
+    + `role="img" aria-label="Mean response length by demo cycle">${parts.join("")}</svg>`
+    + '<div class="chart-legend"><span class="legend-item">'
+    + '<span class="legend-swatch" style="background:#4F46E5"></span>selected cycle</span></div>';
+}
+
+function renderDemoDetectors() {
+  const cycle = demoCycle();
+  const result = cycle && cycle.results;
+  const detectors = (result && result.detectors) || {};
+  $("demo-detector-meta").textContent = cycle
+    ? `Cycle #${cycle.cycle_number} · ${cycle.tests_run ? "evaluated" : "not evaluated"}`
+    : "No cycle selected";
+  $("demo-detector-rows").innerHTML = DEMO_DETECTORS.map((d) => {
+    const row = detectors[d.key];
+    const raw = row ? row.raw_p : null;
+    const adjusted = row ? row.adjusted_p : null;
+    let decision = "Not evaluated";
+    let cls = "decision decision-muted";
+    if (row && Number(row.significant) === 1) {
+      decision = "Flagged";
+      cls = "decision decision-alert";
+    } else if (row && raw != null) {
+      decision = "No flag";
+      cls = "decision";
+    }
+    return `<tr data-testid="demo-detector-row">`
+      + `<td><span class="detector-name">${d.name}</span>`
+      + `<span class="detector-method">${escapeHtml((row && row.method) || d.name)}</span></td>`
+      + `<td class="num">${raw == null ? "n/a" : fmtP(Number(raw))}</td>`
+      + `<td class="num">${adjusted == null ? "n/a" : fmtP(Number(adjusted))}</td>`
+      + `<td class="${cls}">${decision}</td></tr>`;
+  }).join("");
+}
+
+function renderDemoDecision() {
+  const cycle = demoCycle();
+  const insight = $("demo-insight");
+  if (!cycle) {
+    insight.className = "demo-insight";
+    insight.innerHTML = "<strong>Select a cycle to see the decision</strong>"
+      + "<p>Choose a cycle from the timeline.</p>";
+    return;
+  }
+  const result = cycle.results || {};
+  const detectors = result.detectors || {};
+  const passed = Object.values(detectors).filter((row) => row && row.significant).length;
+  const alerts = cycle.alerts || [];
+  $("demo-cycle-tag").textContent =
+    `Cycle #${cycle.cycle_number} · ${cycle.adapter_mode || "unknown mode"}`;
+  $("demo-count-ref").textContent = result.reference_size == null
+    ? "n/a" : Number(result.reference_size).toLocaleString();
+  $("demo-count-cur").textContent = result.current_size == null
+    ? "n/a" : Number(result.current_size).toLocaleString();
+  const effects = result.effects || {};
+  $("demo-eff-length").textContent = effects.length_shift_pct == null ? "n/a"
+    : `${effects.length_shift_pct > 0 ? "+" : ""}${effects.length_shift_pct}%`;
+  $("demo-eff-centroid").textContent = effects.centroid_distance == null
+    ? "n/a" : Number(effects.centroid_distance).toFixed(3);
+  $("demo-eff-paired").textContent = effects.paired_mmd_pvalue == null
+    ? "n/a" : fmtP(Number(effects.paired_mmd_pvalue));
+
+  if (!cycle.tests_run) {
+    insight.className = "demo-insight";
+    insight.innerHTML = "<strong>Reference collection</strong>"
+      + "<p>This cycle is part of the baseline window. Detector results begin at "
+      + `cycle ${escapeHtml((demoScenario() || {}).tests_start_cycle || "?")}.</p>`;
+    return;
+  }
+  const alert = alerts[0];
+  insight.className = `demo-insight ${alert ? "alert" : "clear"}`;
+  const headline = alert ? "Alert fired" : (passed ? "Flag recorded" : "No shift");
+  const detail = alert
+    ? "The distribution flag repeated in consecutive cycles, so the stored alert policy fired."
+    : (passed
+      ? `${passed} of ${DEMO_DETECTORS.length} detectors reached BH significance, `
+        + "but the consecutive-cycle rule did not fire in this cycle."
+      : "All BH adjusted p-values stayed above alpha.");
+  insight.innerHTML = `<div class="demo-insight-icon">${alert ? "!" : "✓"}</div>`
+    + `<div><strong>${headline}</strong><p>${detail}</p></div>`;
+}
+
+function renderDemoAlert() {
+  const cycle = demoCycle();
+  const cfg = (demo.artifact && demo.artifact.configuration) || {};
+  const policy = `Policy: ${cfg.min_consecutive_cycles == null ? "?" : cfg.min_consecutive_cycles} `
+    + `consecutive flagged cycles · ${escapeHtml(cfg.correction || "correction")} · `
+    + `alpha ${fmtP(cfg.alpha)}.`;
+  const alerts = (cycle && cycle.alerts) || [];
+  $("demo-alert-meta").textContent = cycle
+    ? `${alerts.length} for cycle #${cycle.cycle_number}` : "";
+  if (!cycle || !cycle.tests_run) {
+    $("demo-alert").innerHTML = `<p class="empty-state">No alert decision in the `
+      + "reference window.</p>";
+    return;
+  }
+  if (alerts.length) {
+    $("demo-alert").innerHTML = alerts.map((alert) => `
+      <div class="demo-alert-item">
+        <span class="demo-alert-type">${escapeHtml(alert.type || "alert")}</span>
+        <p>${escapeHtml(alert.message || "")}</p>
+      </div>`).join("") + `<p class="demo-policy">${policy}</p>`;
+    return;
+  }
+  const flagged = Boolean((cycle.results || {}).distribution_shift_detected);
+  $("demo-alert").innerHTML = flagged
+    ? `<p class="empty-state">This cycle stored a distribution flag. No alert was `
+      + `emitted yet; the stored alert list is empty for this cycle.</p>`
+      + `<p class="demo-policy">${policy}</p>`
+    : `<p class="empty-state">No distribution flag in this cycle, so no alert was `
+      + `considered.</p><p class="demo-policy">${policy}</p>`;
+}
+
+function demoResponse(sample, side) {
+  if (sample && sample.redacted) return "(withheld: safety boundary prompt)";
+  return respText(side);
+}
+
+function renderDemoSamples() {
+  const cycle = demoCycle();
+  const samples = (cycle && cycle.samples) || [];
+  $("demo-sample-count").textContent = samples.length ? `· ${samples.length} prompts` : "";
+  if (!samples.length) {
+    $("demo-samples").innerHTML = '<p class="empty-state">No response samples for this cycle.</p>';
+    return;
+  }
+  $("demo-samples").innerHTML = samples.map((sample) => {
+    const reference = sample.reference || {};
+    const current = sample.current || {};
+    const refLength = reference.length == null ? "n/a" : `${reference.length} ch`;
+    const curLength = current.length == null ? "n/a" : `${current.length} ch`;
+    const delta = reference.length != null && current.length != null
+      ? Number(current.length) - Number(reference.length) : null;
+    const change = sample.changed
+      ? `<span class="s-changed">changed</span>${delta == null ? "" : `
+        <span class="s-delta">${delta > 0 ? "+" : ""}${delta} ch</span>`}`
+      : '<span class="s-state">unchanged</span>';
+    return `<div class="demo-sample-row" data-testid="demo-sample">`
+      + `<div class="demo-sample-label"><span class="s-label">`
+      + `${escapeHtml(sample.label || sample.prompt_id)}</span>`
+      + `${sample.category ? `<span class="s-cat">${escapeHtml(sample.category)}</span>` : ""}</div>`
+      + `<div class="demo-sample-col"><span class="demo-sample-side">Reference</span>`
+      + `<span class="demo-sample-meta">${refLength} ${sampleValidity(reference)}</span>`
+      + `<code>${escapeHtml(demoResponse(sample, reference))}</code></div>`
+      + `<div class="demo-sample-col"><span class="demo-sample-side">Current</span>`
+      + `<span class="demo-sample-meta">${curLength} ${sampleValidity(current)}</span>`
+      + `<code>${escapeHtml(demoResponse(sample, current))}</code></div>`
+      + `<div class="demo-sample-change">${change}</div></div>`;
+  }).join("");
+}
+
+function renderDemoMethodology() {
+  const method = (demo.artifact && demo.artifact.methodology) || {};
+  const cfg = (demo.artifact && demo.artifact.configuration) || {};
+  $("demo-method-disclosure").textContent = method.disclosure || "";
+  $("demo-method-pipeline").textContent = method.pipeline || "";
+  $("demo-method-limitation").textContent =
+    `${method.limitation || ""} ${cfg.embedding_model ? `Embeddings: ${cfg.embedding_model}.` : ""}`.trim();
+}
+
 /* ---------- evaluation tab ---------- */
 
 async function loadEvaluation() {
@@ -1882,6 +2406,7 @@ async function runCheck() {
 /* ---------- start ---------- */
 
 $("run-btn").addEventListener("click", runCheck);
+initDemoEvents();
 initTabs();
 loadLive();        // API reachability as soon as liveness answers
 loadHealth();      // database + provider readiness, non-blocking

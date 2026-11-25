@@ -32,6 +32,9 @@
    - rate limit rejections surface the server's Retry-After message
    - a read-only storage fallback disables new checks and explains why
    - Monitor and Evaluation stay separate views
+   - Demo reads one committed static artifact, never a live data endpoint;
+     scenario and cycle switches update charts, detectors and samples; a
+     missing or malformed artifact is an explicit isolated error state
 
    Used by CI; run locally with: node web/smoke.test.js */
 
@@ -262,10 +265,13 @@ const evaluation = {
 
 let routeOverrides = {};
 
-/* The provider comparison fixture is the committed artifact itself, so the
-   smoke test also pins that the exported JSON stays renderable. */
+/* The provider comparison and demo fixtures are the committed artifacts
+   themselves, so the smoke test also pins that the exported JSON stays
+   renderable. The Demo artifact must never be replaced by live API data. */
 const providerComparison = JSON.parse(
   fs.readFileSync(path.join(__dirname, "provider_comparison.json"), "utf8"));
+const demoArtifact = JSON.parse(
+  fs.readFileSync(path.join(__dirname, "data", "demo-scenarios.json"), "utf8"));
 
 function resp(json, opts = {}) {
   return { ok: opts.ok !== false, status: opts.status || 200,
@@ -320,6 +326,7 @@ const fixtures = {
     category_window_cycles: 3, min_samples_per_category: 8, rows: [] }),
   "/evaluation": () => resp(evaluation),
   "/static/provider_comparison.json": () => resp(providerComparison),
+  "/static/data/demo-scenarios.json": () => resp(demoArtifact),
 };
 
 function getFixture(url) {
@@ -1565,11 +1572,14 @@ const settle = () => new Promise((r) => setImmediate(r));
   check("the phrase No shift detected is not repeated across sections",
     !page.includes("No shift detected") && !script.includes("No shift detected"),
     "");
-  check("Monitor and Evaluation are separate views with Monitor default",
+  check("Monitor, Evaluation and Demo are separate views with Monitor default",
     page.includes('id="tab-btn-console"') && page.includes("Monitor")
       && page.includes('id="tab-btn-evaluation"') && page.includes("Evaluation")
+      && page.includes('id="tab-btn-demo"') && page.includes("Demo")
       && page.includes('id="tab-console"') && page.includes('id="tab-evaluation" hidden')
-      && page.includes('class="tab tab-active" id="tab-btn-console"'),
+      && page.includes('id="tab-demo" hidden')
+      && page.includes('class="tab tab-active" id="tab-btn-console"')
+      && page.includes('class="tab" id="tab-btn-demo"'),
     "");
   check("response samples and configuration are collapsed disclosures",
     page.includes('id="samples-section"') && !page.includes('id="samples-section" open')
@@ -1595,6 +1605,113 @@ const settle = () => new Promise((r) => setImmediate(r));
   check("the demonstration-environment disclaimer is gone",
     !page.includes("Demonstration environment"),
     "");
+
+  console.log("scenario 8: demo tab reads one static, isolated artifact");
+
+  const beforeDemoUrls = requestedUrls.length;
+  getById("tab-btn-demo").listeners.click[0]();
+  await settle(); await settle();
+  const demoUrls = requestedUrls.slice(beforeDemoUrls);
+
+  check("Demo is a third view and hides both live views",
+    getById("tab-demo").hidden === false
+      && getById("tab-console").hidden === true
+      && getById("tab-evaluation").hidden === true
+      && getById("tab-btn-demo").classList.contains("tab-active"),
+    `${getById("tab-demo").hidden} / ${getById("tab-btn-demo").innerHTML}`);
+  check("Demo fetches the committed artifact and no live data endpoint",
+    demoUrls.length === 1 && demoUrls[0] === "/static/data/demo-scenarios.json"
+      && !demoUrls.some((u) => u.includes("/runs")),
+    demoUrls.join(", "));
+  check("revisiting the tab reuses the validated artifact",
+    (() => {
+      const before = requestedUrls.length;
+      getById("tab-btn-demo").listeners.click[0]();
+      return requestedUrls.length === before;
+    })(),
+    "");
+  check("both stored scenarios render as a segmented selector",
+    (getById("demo-scenario-buttons").innerHTML.match(/data-testid="demo-scenario-btn"/g) || [])
+      .length === 2
+      && getById("demo-scenario-buttons").innerHTML.includes("Injected behavioral drift"),
+    getById("demo-scenario-buttons").innerHTML.slice(0, 200));
+  check("the default view is the final stable cycle with no flags",
+    getById("demo-cycle-tag").textContent.includes("#6 · stable")
+      && getById("demo-insight").innerHTML.includes("No shift")
+      && !getById("demo-detector-rows").innerHTML.includes("Flagged")
+      && getById("demo-samples").innerHTML.includes("unchanged"),
+    `noShift=${getById("demo-insight").innerHTML.includes("No shift")} `
+      + `flagged=${getById("demo-detector-rows").innerHTML.includes("Flagged")} `
+      + `unchanged=${getById("demo-samples").innerHTML.includes("unchanged")}`);
+  check("the p-value chart draws the alpha rule and three detector legends",
+    getById("demo-pvalues-chart").innerHTML.includes("alpha 0.05")
+      && getById("demo-pvalues-chart").innerHTML.includes("mk-circle")
+      && getById("demo-pvalues-chart").innerHTML.includes("mk-square")
+      && getById("demo-pvalues-chart").innerHTML.includes("mk-triangle"),
+    getById("demo-pvalues-chart").innerHTML.slice(-240));
+  check("the method disclosure names synthetic data and the real pipeline",
+    getById("demo-method-disclosure").textContent.includes("synthetic")
+      && getById("demo-method-pipeline").textContent.includes("run_monitoring_cycle()")
+      && getById("demo-method-limitation").textContent.includes("Evaluation view"),
+    getById("demo-method-disclosure").textContent.slice(0, 100));
+
+  vmEval('selectDemoScenario("injected-drift")');
+  check("switching scenarios updates detectors, charts and samples",
+    getById("demo-cycle-tag").textContent.includes("#6 · shifted")
+      && getById("demo-detector-rows").innerHTML.includes("Flagged")
+      && getById("demo-pvalues-chart").innerHTML.includes("Cycle #6")
+      && getById("demo-samples").innerHTML.includes("changed"),
+    `tag=${getById("demo-cycle-tag").textContent} `
+      + `flagged=${getById("demo-detector-rows").innerHTML.includes("Flagged")} `
+      + `chart=${getById("demo-pvalues-chart").innerHTML.includes("Cycle #6")} `
+      + `changed=${getById("demo-samples").innerHTML.includes("changed")}`);
+  check("the timeline distinguishes flagged and alert cycles",
+    getById("demo-cycle-list").innerHTML.includes('data-cycle="4"')
+      && getById("demo-cycle-list").innerHTML.includes("demo-cycle-card flagged")
+      && getById("demo-cycle-list").innerHTML.includes("demo-cycle-card alert"),
+    getById("demo-cycle-list").innerHTML.slice(0, 260));
+
+  vmEval("selectDemoCycle(4)");
+  check("the first flagged cycle explains why no alert fired",
+    getById("demo-insight").innerHTML.includes("Flag recorded")
+      && getById("demo-alert").innerHTML.includes("No alert was emitted yet")
+      && !getById("demo-alert").innerHTML.includes("Behavioral drift detected"),
+    getById("demo-alert").innerHTML.slice(0, 180));
+  vmEval("selectDemoCycle(5)");
+  check("the repeated flag shows the stored alert and the two-cycle policy",
+    getById("demo-cycle-tag").textContent.includes("#5")
+      && getById("demo-detector-meta").textContent.includes("#5")
+      && getById("demo-pvalues-chart").innerHTML.includes("Cycle #5")
+      && getById("demo-insight").innerHTML.includes("Alert fired")
+      && getById("demo-alert").innerHTML.includes("Behavioral drift detected")
+      && getById("demo-alert").innerHTML.includes("2 consecutive flagged cycles"),
+    `${getById("demo-cycle-tag").textContent} / ${getById("demo-alert").innerHTML.slice(0, 180)}`);
+
+  console.log("scenario 8b: a missing or malformed artifact is an explicit state");
+  vmEval("demo.loaded = false; demo.artifact = null; demo.error = null;");
+  routeOverrides = { "/static/data/demo-scenarios.json": () => {
+    throw new Error("asset missing");
+  } };
+  await vmEval("loadDemoArtifact()");
+  await settle();
+  check("a missing artifact hides the demo body without touching live views",
+    getById("demo-error").hidden === false
+      && getById("demo-body").hidden === true
+      && getById("demo-error").textContent.includes("Demo artifact unavailable")
+      && getById("demo-error").textContent.includes("Monitor and Evaluation are unaffected"),
+    getById("demo-error").textContent);
+
+  vmEval("demo.loaded = false; demo.artifact = null; demo.error = null;");
+  routeOverrides = { "/static/data/demo-scenarios.json": () =>
+    resp({ schema_version: 99, scenarios: [] }) };
+  await vmEval("loadDemoArtifact()");
+  await settle();
+  check("a malformed artifact is rejected instead of partially rendered",
+    getById("demo-error").hidden === false
+      && getById("demo-body").hidden === true
+      && getById("demo-error").textContent.includes("unsupported schema version"),
+    getById("demo-error").textContent);
+  routeOverrides = {};
 
   if (failures) {
     console.log(`\n${failures} check(s) failed`);

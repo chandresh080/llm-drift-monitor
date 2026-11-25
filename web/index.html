@@ -40,6 +40,7 @@
   <nav class="tabs" aria-label="Dashboard views">
     <button class="tab tab-active" id="tab-btn-console" type="button">Monitor</button>
     <button class="tab" id="tab-btn-evaluation" type="button">Evaluation</button>
+    <button class="tab" id="tab-btn-demo" type="button">Demo</button>
   </nav>
 
   <!-- ================= MONITOR ================= -->
@@ -254,6 +255,158 @@
       <p id="prov-cmp-verdict" class="section-note"></p>
     </details>
 
+  </div>
+
+  <!-- ================= DEMO ================= -->
+  <div id="tab-demo" hidden>
+
+    <section class="demo-head">
+      <div>
+        <h1 class="page-title">Controlled demo</h1>
+        <p class="page-sub">Two fixed scenarios processed by the real detector pipeline.
+          Synthetic responses, static artifact, no live model calls.</p>
+      </div>
+      <p class="demo-provenance">
+        <span class="demo-provenance-dot" aria-hidden="true"></span>
+        Read-only artifact · no /runs calls
+      </p>
+    </section>
+
+    <p id="demo-error" class="demo-error" data-testid="demo-error" hidden></p>
+
+    <div id="demo-body">
+      <section class="panel demo-scenario-panel">
+        <div class="section-head">
+          <div class="section-heading">
+            <h2 class="section-title">Scenario</h2>
+            <span id="demo-scenario-meta" class="section-meta"></span>
+          </div>
+        </div>
+        <div id="demo-scenario-buttons" class="demo-segmented" role="group"
+             aria-label="Demo scenario" data-testid="demo-scenarios">
+          <button class="demo-segment" type="button" data-scenario="stable"
+                  data-testid="demo-scenario-btn">Stable behavior</button>
+          <button class="demo-segment" type="button" data-scenario="injected-drift"
+                  data-testid="demo-scenario-btn">Injected behavioral drift</button>
+        </div>
+        <p id="demo-scenario-desc" class="section-note"></p>
+      </section>
+
+      <section class="demo-timeline">
+        <div class="section-head">
+          <div class="section-heading">
+            <h2 class="section-title">Cycle timeline</h2>
+            <span id="demo-cycle-meta" class="section-meta"></span>
+          </div>
+          <span class="section-meta">Select a cycle to inspect the decision</span>
+        </div>
+        <div id="demo-cycle-list" class="demo-cycle-list" data-testid="demo-cycles"></div>
+      </section>
+
+      <div class="workspace demo-workspace">
+
+        <div class="col-main">
+
+          <section class="panel">
+            <div class="section-head">
+              <h2 class="section-title">Detector trajectory</h2>
+              <span class="section-meta">Benjamini-Hochberg adjusted p · alpha 0.05</span>
+            </div>
+            <div id="demo-pvalues-chart" class="chart-wrap"
+                 data-testid="demo-pvalues-chart"></div>
+            <p id="demo-pvalues-note" class="section-note"></p>
+          </section>
+
+          <section class="panel">
+            <div class="section-head">
+              <h2 class="section-title">Response length by cycle</h2>
+              <span class="section-meta">Mean stored characters</span>
+            </div>
+            <div id="demo-length-chart" class="chart-wrap"
+                 data-testid="demo-length-chart"></div>
+            <p id="demo-length-note" class="section-note"></p>
+          </section>
+
+          <section class="panel">
+            <div class="section-head">
+              <h2 class="section-title">Detector results</h2>
+              <span id="demo-detector-meta" class="section-meta"></span>
+            </div>
+            <table class="detector-table" data-testid="demo-detector-table">
+              <thead>
+                <tr><th>Detector</th><th class="num">Raw p</th>
+                  <th class="num">Adjusted p</th><th>Decision</th></tr>
+              </thead>
+              <tbody id="demo-detector-rows"></tbody>
+            </table>
+            <details class="disclosure">
+              <summary>Correction and decision rule</summary>
+              <div class="disclosure-body">
+                <p>The three p-values are corrected together with Benjamini-Hochberg.
+                  Response availability is reported as a quality signal, not as a
+                  distribution verdict. A distribution flag must repeat for two
+                  consecutive cycles before a drift alert is emitted.</p>
+              </div>
+            </details>
+          </section>
+
+          <details class="panel-disclosure" id="demo-samples-section" open>
+            <summary>Before and after responses
+              <span id="demo-sample-count" class="summary-count"></span></summary>
+            <div id="demo-samples" class="section-body" data-testid="demo-samples"></div>
+          </details>
+
+        </div>
+
+        <aside class="col-side">
+
+          <section class="panel latest">
+            <div class="section-head">
+              <h2 class="section-title">Cycle decision</h2>
+              <span id="demo-cycle-tag" class="section-meta"></span>
+            </div>
+            <div id="demo-insight" class="demo-insight" data-testid="demo-insight"></div>
+            <div class="counts">
+              <div class="count">
+                <span class="count-label">Reference</span>
+                <span id="demo-count-ref" class="count-value">n/a</span>
+              </div>
+              <div class="count">
+                <span class="count-label">Current</span>
+                <span id="demo-count-cur" class="count-value">n/a</span>
+              </div>
+            </div>
+            <div class="effect-list" data-testid="demo-effects">
+              <div class="effect"><span class="effect-label">Mean length change</span>
+                <span id="demo-eff-length" class="effect-value">n/a</span></div>
+              <div class="effect"><span class="effect-label">Centroid distance</span>
+                <span id="demo-eff-centroid" class="effect-value">n/a</span></div>
+              <div class="effect"><span class="effect-label">Paired MMD raw p</span>
+                <span id="demo-eff-paired" class="effect-value">n/a</span></div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="section-head">
+              <h2 class="section-title">Alert explanation</h2>
+              <span id="demo-alert-meta" class="section-meta"></span>
+            </div>
+            <div id="demo-alert" class="demo-alert" data-testid="demo-alert"></div>
+          </section>
+
+          <details class="panel-disclosure" id="demo-method-section" open>
+            <summary>How this demo is produced</summary>
+            <div class="section-body">
+              <p id="demo-method-disclosure"></p>
+              <p id="demo-method-pipeline" class="section-note"></p>
+              <p id="demo-method-limitation" class="section-note"></p>
+            </div>
+          </details>
+
+        </aside>
+
+      </div>
+    </div>
   </div>
 
   <footer class="footer">

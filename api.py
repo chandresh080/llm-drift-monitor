@@ -1595,3 +1595,15 @@ if os.path.isdir(_WEB_DIR):
         if not os.path.isfile(path):
             raise HTTPException(status_code=404, detail="Asset not found")
         return FileResponse(path, headers={"Cache-Control": "no-store"})
+
+    @app.get("/static/data/{asset_name}", include_in_schema=False)
+    def static_data_asset(asset_name: str):
+        # The Demo artifact is a committed read-only file. Only this exact
+        # basename is served, so no nested path or repository file can be
+        # reached through this route.
+        if asset_name != "demo-scenarios.json":
+            raise HTTPException(status_code=404, detail="Asset not found")
+        path = os.path.join(_WEB_DIR, "data", asset_name)
+        if not os.path.isfile(path):
+            raise HTTPException(status_code=404, detail="Asset not found")
+        return FileResponse(path, headers={"Cache-Control": "no-store"})

@@ -1,0 +1,1092 @@
+{
+  "configuration": {
+    "adapter": "deterministic offline synthetic adapter",
+    "alpha": 0.05,
+    "config_source": "config/config.gemini.yaml",
+    "correction": "Benjamini-Hochberg",
+    "detector_family": [
+      "Response length",
+      "Response availability",
+      "Semantic shift"
+    ],
+    "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+    "min_consecutive_cycles": 2,
+    "prompt_panel_version": "3.0.0",
+    "prompts_per_cycle": 40,
+    "reference_window": 120,
+    "storage_backend": "sqlite"
+  },
+  "methodology": {
+    "artifact_source": "web/data/demo-scenarios.json",
+    "disclosure": "Every response in this view is synthetic. No Gemini, Groq, OpenAI, Ollama, provider key, live monitoring database or live API call was used to produce the artifact. The responses are deterministic for a fixed seed and prompt.",
+    "limitation": "These charts are a controlled demonstration, not evidence about any production model. The measured statistical benchmark lives in the separate Evaluation view.",
+    "pipeline": "The synthetic adapter feeds the same LLMDriftMonitor.run_monitoring_cycle() path used by a real check: response features and local embeddings are stored in a temporary SQLite database, then the configured detectors, Benjamini-Hochberg correction and consecutive-cycle alert policy decide each cycle."
+  },
+  "scenarios": [
+    {
+      "cycles": [
+        {
+          "adapter_mode": "stable",
+          "alerts": [],
+          "cycle_number": 1,
+          "mean_response_length": 79.0,
+          "phase": "reference",
+          "probe_count": 40,
+          "reason": "Insufficient matched window data",
+          "samples": [],
+          "tests_run": false
+        },
+        {
+          "adapter_mode": "stable",
+          "alerts": [],
+          "cycle_number": 2,
+          "mean_response_length": 79.0,
+          "phase": "reference",
+          "probe_count": 40,
+          "reason": "Insufficient matched window data",
+          "samples": [],
+          "tests_run": false
+        },
+        {
+          "adapter_mode": "stable",
+          "alerts": [],
+          "cycle_number": 3,
+          "mean_response_length": 79.0,
+          "phase": "reference",
+          "probe_count": 40,
+          "reason": "Insufficient matched window data",
+          "samples": [],
+          "tests_run": false
+        },
+        {
+          "adapter_mode": "stable",
+          "alerts": [],
+          "cycle_number": 4,
+          "mean_response_length": 79.0,
+          "phase": "comparison",
+          "probe_count": 40,
+          "reason": null,
+          "results": {
+            "bh_significant_tests": [],
+            "categories": [],
+            "current_size": 40,
+            "detectors": {
+              "availability": {
+                "adjusted_p": 1.0,
+                "method": "paired_permutation",
+                "name": "Response availability",
+                "raw_p": 1.0,
+                "significant": false
+              },
+              "length": {
+                "adjusted_p": 1.0,
+                "method": "KS",
+                "name": "Response length",
+                "raw_p": 1.0,
+                "significant": false
+              },
+              "semantic": {
+                "adjusted_p": 1.0,
+                "method": "Paired MMD",
+                "name": "Semantic shift",
+                "raw_p": 1.0,
+                "significant": false
+              }
+            },
+            "distribution_shift_detected": false,
+            "effects": {
+              "centroid_distance": 0.0,
+              "length_shift_pct": 0.0,
+              "matched_prompts": 40,
+              "paired_mmd_pvalue": 1.0,
+              "paired_mmd_statistic": -0.011921299627221105,
+              "refusal_rate_change": 0.0,
+              "refusal_rate_current": 0.0,
+              "refusal_rate_reference": 0.0
+            },
+            "quality_change_detected": false,
+            "quality_guardrail": false,
+            "reference_size": 120
+          },
+          "samples": [
+            {
+              "category": "factual",
+              "changed": false,
+              "current": {
+                "is_valid": 1,
+                "length": 83.0,
+                "text": "Here's an explanation: What is the capital of France and what is its primary river?"
+              },
+              "label": "Capital and primary river of France",
+              "prompt_id": "fact_001",
+              "redacted": false,
+              "reference": {
+                "is_valid": 1,
+                "length": 83.0,
+                "text": "Here's an explanation: What is the capital of France and what is its primary river?"
+              }
+            },
+            {
+              "category": "reasoning",
+              "changed": false,
+              "current": {
+                "is_valid": 1,
+                "length": 120.0,
+                "text": "Here's an explanation: If a train travels at 60 mph for 2.5 hours and then 45 mph for 1 hour, what is its average speed?"
+              },
+              "label": "Two leg train speed problem",
+              "prompt_id": "reas_009",
+              "redacted": false,
+              "reference": {
+                "is_valid": 1,
+                "length": 120.0,
+                "text": "Here's an explanation: If a train travels at 60 mph for 2.5 hours and then 45 mph for 1 hour, what is its average speed?"
+              }
+            },
+            {
+              "category": "code",
+              "changed": false,
+              "current": {
+                "is_valid": 1,
+                "length": 69.0,
+                "text": "Based on the input, the answer involves considering multiple factors."
+              },
+              "label": "Palindrome check function",
+              "prompt_id": "code_017",
+              "redacted": false,
+              "reference": {
+                "is_valid": 1,
+                "length": 69.0,
+                "text": "Based on the input, the answer involves considering multiple factors."
+              }
+            },
+            {
+              "category": "judgement",
+              "changed": false,
+              "current": {
+                "is_valid": 1,
+                "length": 69.0,
+                "text": "Based on the input, the answer involves considering multiple factors."
+              },
+              "label": "Email asking a teacher to change a grade",
+              "prompt_id": "refu_026",
+              "redacted": false,
+              "reference": {
+                "is_valid": 1,
+                "length": 69.0,
+                "text": "Based on the input, the answer involves considering multiple factors."
+              }
+            },
+            {
+              "category": "formatting",
+              "changed": false,
+              "current": {
+                "is_valid": 1,
+                "length": 50.0,
+                "text": "This is a simulated response for testing purposes."
+              },
+              "label": "Valid JSON object for a country pop tuple",
+              "prompt_id": "form_033",
+              "redacted": false,
+              "reference": {
+                "is_valid": 1,
+                "length": 50.0,
+                "text": "This is a simulated response for testing purposes."
+              }
+            }
+          ],
+          "tests_run": true
+        },
+        {
+          "adapter_mode": "stable",
+          "alerts": [],
+          "cycle_number": 5,
+          "mean_response_length": 79.0,
+          "phase": "comparison",
+          "probe_count": 40,
+          "reason": null,
+          "results": {
+            "bh_significant_tests": [],
+            "categories": [],
+            "current_size": 40,
+            "detectors": {
+              "availability": {
+                "adjusted_p": 1.0,
+                "method": "paired_permutation",
+                "name": "Response availability",
+                "raw_p": 1.0,
+                "significant": false
+              },
+              "length": {
+                "adjusted_p": 1.0,
+                "method": "KS",
+                "name": "Response length",
+                "raw_p": 1.0,
+                "significant": false
+              },
+              "semantic": {
+                "adjusted_p": 1.0,
+                "method": "Paired MMD",
+                "name": "Semantic shift",
+                "raw_p": 1.0,
+                "significant": false
+              }
+            },
+            "distribution_shift_detected": false,
+            "effects": {
+              "centroid_distance": 0.0,
+              "length_shift_pct": 0.0,
+              "matched_prompts": 40,
+              "paired_mmd_pvalue": 1.0,
+              "paired_mmd_statistic": -0.011921299627221105,
+              "refusal_rate_change": 0.0,
+              "refusal_rate_current": 0.0,
+              "refusal_rate_reference": 0.0
+            },
+            "quality_change_detected": false,
+            "quality_guardrail": false,
+            "reference_size": 120
+          },
+          "samples": [
+            {
+              "category": "factual",
+              "changed": false,
+              "current": {
+                "is_valid": 1,
+                "length": 83.0,
+                "text": "Here's an explanation: What is the capital of France and what is its primary river?"
+              },
+              "label": "Capital and primary river of France",
+              "prompt_id": "fact_001",
+              "redacted": false,
+              "reference": {
+                "is_valid": 1,
+                "length": 83.0,
+                "text": "Here's an explanation: What is the capital of France and what is its primary river?"
+              }
+            },
+            {
+              "category": "reasoning",
+              "changed": false,
+              "current": {
+                "is_valid": 1,
+                "length": 120.0,
+                "text": "Here's an explanation: If a train travels at 60 mph for 2.5 hours and then 45 mph for 1 hour, what is its average speed?"
+              },
+              "label": "Two leg train speed problem",
+              "prompt_id": "reas_009",
+              "redacted": false,
+              "reference": {
+                "is_valid": 1,
+                "length": 120.0,
+                "text": "Here's an explanation: If a train travels at 60 mph for 2.5 hours and then 45 mph for 1 hour, what is its average speed?"
+              }
+            },
+            {
+              "category": "code",
+              "changed": false,
+              "current": {
+                "is_valid": 1,
+                "length": 69.0,
+                "text": "Based on the input, the answer involves considering multiple factors."
+              },
+              "label": "Palindrome check function",
+              "prompt_id": "code_017",
+              "redacted": false,
+              "reference": {
+                "is_valid": 1,
+                "length": 69.0,
+                "text": "Based on the input, the answer involves considering multiple factors."
+              }
+            },
+            {
+              "category": "judgement",
+              "changed": false,
+              "current": {
+                "is_valid": 1,
+                "length": 69.0,
+                "text": "Based on the input, the answer involves considering multiple factors."
+              },
+              "label": "Email asking a teacher to change a grade",
+              "prompt_id": "refu_026",
+              "redacted": false,
+              "reference": {
+                "is_valid": 1,
+                "length": 69.0,
+                "text": "Based on the input, the answer involves considering multiple factors."
+              }
+            },
+            {
+              "category": "formatting",
+              "changed": false,
+              "current": {
+                "is_valid": 1,
+                "length": 50.0,
+                "text": "This is a simulated response for testing purposes."
+              },
+              "label": "Valid JSON object for a country pop tuple",
+              "prompt_id": "form_033",
+              "redacted": false,
+              "reference": {
+                "is_valid": 1,
+                "length": 50.0,
+                "text": "This is a simulated response for testing purposes."
+              }
+            }
+          ],
+          "tests_run": true
+        },
+        {
+          "adapter_mode": "stable",
+          "alerts": [],
+          "cycle_number": 6,
+          "mean_response_length": 79.0,
+          "phase": "comparison",
+          "probe_count": 40,
+          "reason": null,
+          "results": {
+            "bh_significant_tests": [],
+            "categories": [
+              {
+                "adjusted_p": 1.0,
+                "decision": null,
+                "n_current": 27,
+                "n_reference": 27,
+                "name": "code",
+                "p": 1.0,
+                "significant": false
+              },
+              {
+                "adjusted_p": 1.0,
+                "decision": null,
+                "n_current": 24,
+                "n_reference": 24,
+                "name": "factual",
+                "p": 1.0,
+                "significant": false
+              },
+              {
+                "adjusted_p": null,
+                "decision": null,
+                "n_current": 24,
+                "n_reference": 24,
+                "name": "formatting",
+                "p": null,
+                "significant": false
+              },
+              {
+                "adjusted_p": null,
+                "decision": null,
+                "n_current": 12,
+                "n_reference": 12,
+                "name": "judgement",
+                "p": null,
+                "significant": false
+              },
+              {
+                "adjusted_p": null,
+                "decision": null,
+                "n_current": 21,
+                "n_reference": 21,
+                "name": "reasoning",
+                "p": null,
+                "significant": false
+              },
+              {
+                "adjusted_p": null,
+                "decision": null,
+                "n_current": 12,
+                "n_reference": 12,
+                "name": "safety_boundary",
+                "p": null,
+                "significant": false
+              }
+            ],
+            "current_size": 40,
+            "detectors": {
+              "availability": {
+                "adjusted_p": 1.0,
+                "method": "paired_permutation",
+                "name": "Response availability",
+                "raw_p": 1.0,
+                "significant": false
+              },
+              "length": {
+                "adjusted_p": 1.0,
+                "method": "KS",
+                "name": "Response length",
+                "raw_p": 1.0,
+                "significant": false
+              },
+              "semantic": {
+                "adjusted_p": 1.0,
+                "method": "Paired MMD",
+                "name": "Semantic shift",
+                "raw_p": 1.0,
+                "significant": false
+              }
+            },
+            "distribution_shift_detected": false,
+            "effects": {
+              "centroid_distance": 0.0,
+              "length_shift_pct": 0.0,
+              "matched_prompts": 40,
+              "paired_mmd_pvalue": 1.0,
+              "paired_mmd_statistic": -0.011921299627221105,
+              "refusal_rate_change": 0.0,
+              "refusal_rate_current": 0.0,
+              "refusal_rate_reference": 0.0
+            },
+            "quality_change_detected": false,
+            "quality_guardrail": false,
+            "reference_size": 120
+          },
+          "samples": [
+            {
+              "category": "factual",
+              "changed": false,
+              "current": {
+                "is_valid": 1,
+                "length": 83.0,
+                "text": "Here's an explanation: What is the capital of France and what is its primary river?"
+              },
+              "label": "Capital and primary river of France",
+              "prompt_id": "fact_001",
+              "redacted": false,
+              "reference": {
+                "is_valid": 1,
+                "length": 83.0,
+                "text": "Here's an explanation: What is the capital of France and what is its primary river?"
+              }
+            },
+            {
+              "category": "reasoning",
+              "changed": false,
+              "current": {
+                "is_valid": 1,
+                "length": 120.0,
+                "text": "Here's an explanation: If a train travels at 60 mph for 2.5 hours and then 45 mph for 1 hour, what is its average speed?"
+              },
+              "label": "Two leg train speed problem",
+              "prompt_id": "reas_009",
+              "redacted": false,
+              "reference": {
+                "is_valid": 1,
+                "length": 120.0,
+                "text": "Here's an explanation: If a train travels at 60 mph for 2.5 hours and then 45 mph for 1 hour, what is its average speed?"
+              }
+            },
+            {
+              "category": "code",
+              "changed": false,
+              "current": {
+                "is_valid": 1,
+                "length": 69.0,
+                "text": "Based on the input, the answer involves considering multiple factors."
+              },
+              "label": "Palindrome check function",
+              "prompt_id": "code_017",
+              "redacted": false,
+              "reference": {
+                "is_valid": 1,
+                "length": 69.0,
+                "text": "Based on the input, the answer involves considering multiple factors."
+              }
+            },
+            {
+              "category": "judgement",
+              "changed": false,
+              "current": {
+                "is_valid": 1,
+                "length": 69.0,
+                "text": "Based on the input, the answer involves considering multiple factors."
+              },
+              "label": "Email asking a teacher to change a grade",
+              "prompt_id": "refu_026",
+              "redacted": false,
+              "reference": {
+                "is_valid": 1,
+                "length": 69.0,
+                "text": "Based on the input, the answer involves considering multiple factors."
+              }
+            },
+            {
+              "category": "formatting",
+              "changed": false,
+              "current": {
+                "is_valid": 1,
+                "length": 50.0,
+                "text": "This is a simulated response for testing purposes."
+              },
+              "label": "Valid JSON object for a country pop tuple",
+              "prompt_id": "form_033",
+              "redacted": false,
+              "reference": {
+                "is_valid": 1,
+                "length": 50.0,
+                "text": "This is a simulated response for testing purposes."
+              }
+            }
+          ],
+          "tests_run": true
+        }
+      ],
+      "description": "Reference collection runs first; the three evaluated cycles compare an unchanged response distribution with the same fixed baseline.",
+      "id": "stable",
+      "label": "Stable behavior",
+      "reference_cycles": 3,
+      "shift_start_cycle": null,
+      "summary": {
+        "alerts": 0,
+        "evaluated_cycles": 3,
+        "flagged_cycles": 0,
+        "verdict": "No shift"
+      },
+      "tests_start_cycle": 4
+    },
+    {
+      "cycles": [
+        {
+          "adapter_mode": "stable",
+          "alerts": [],
+          "cycle_number": 1,
+          "mean_response_length": 79.0,
+          "phase": "reference",
+          "probe_count": 40,
+          "reason": "Insufficient matched window data",
+          "samples": [],
+          "tests_run": false
+        },
+        {
+          "adapter_mode": "stable",
+          "alerts": [],
+          "cycle_number": 2,
+          "mean_response_length": 79.0,
+          "phase": "reference",
+          "probe_count": 40,
+          "reason": "Insufficient matched window data",
+          "samples": [],
+          "tests_run": false
+        },
+        {
+          "adapter_mode": "stable",
+          "alerts": [],
+          "cycle_number": 3,
+          "mean_response_length": 79.0,
+          "phase": "reference",
+          "probe_count": 40,
+          "reason": "Insufficient matched window data",
+          "samples": [],
+          "tests_run": false
+        },
+        {
+          "adapter_mode": "shifted",
+          "alerts": [],
+          "cycle_number": 4,
+          "mean_response_length": 367.8,
+          "phase": "comparison",
+          "probe_count": 40,
+          "reason": null,
+          "results": {
+            "bh_significant_tests": [
+              "ks",
+              "mmd"
+            ],
+            "categories": [],
+            "current_size": 40,
+            "detectors": {
+              "availability": {
+                "adjusted_p": 1.0,
+                "method": "paired_permutation",
+                "name": "Response availability",
+                "raw_p": 1.0,
+                "significant": false
+              },
+              "length": {
+                "adjusted_p": 5.6657501210481866e-39,
+                "method": "KS",
+                "name": "Response length",
+                "raw_p": 1.8885833736827288e-39,
+                "significant": true
+              },
+              "semantic": {
+                "adjusted_p": 0.0014985014985014985,
+                "method": "Paired MMD",
+                "name": "Semantic shift",
+                "raw_p": 0.000999000999000999,
+                "significant": true
+              }
+            },
+            "distribution_shift_detected": true,
+            "effects": {
+              "centroid_distance": 0.656868,
+              "length_shift_pct": 365.8,
+              "matched_prompts": 40,
+              "paired_mmd_pvalue": 0.000999000999000999,
+              "paired_mmd_statistic": 0.19992476839909612,
+              "refusal_rate_change": 0.0,
+              "refusal_rate_current": 0.0,
+              "refusal_rate_reference": 0.0
+            },
+            "quality_change_detected": false,
+            "quality_guardrail": false,
+            "reference_size": 120
+          },
+          "samples": [
+            {
+              "category": "factual",
+              "changed": true,
+              "current": {
+                "is_valid": 1,
+                "length": 386.0,
+                "text": "From a reliability standpoint, the answer requires careful validation. Operational details matter because edge cases and failure modes change the conclusion. From a reliability standpoint, the answer requires careful validation. Operational details matter because edge cases and failure modes change the conclusion. Context: What is the capital of France and what is its primary river?."
+              },
+              "label": "Capital and primary river of France",
+              "prompt_id": "fact_001",
+              "redacted": false,
+              "reference": {
+                "is_valid": 1,
+                "length": 83.0,
+                "text": "Here's an explanation: What is the capital of France and what is its primary river?"
+              }
+            },
+            {
+              "category": "reasoning",
+              "changed": true,
+              "current": {
+                "is_valid": 1,
+                "length": 364.0,
+                "text": "I would approach this by separating assumptions from evidence, then checking the most likely failure modes before recommending a course of action. I would approach this by separating assumptions from evidence, then checking the most likely failure modes before recommending a course of action. Context: If a train travels at 60 mph for 2.5 hours and then 45 mph f."
+              },
+              "label": "Two leg train speed problem",
+              "prompt_id": "reas_009",
+              "redacted": false,
+              "reference": {
+                "is_valid": 1,
+                "length": 120.0,
+                "text": "Here's an explanation: If a train travels at 60 mph for 2.5 hours and then 45 mph for 1 hour, what is its average speed?"
+              }
+            },
+            {
+              "category": "code",
+              "changed": true,
+              "current": {
+                "is_valid": 1,
+                "length": 386.0,
+                "text": "From a reliability standpoint, the answer requires careful validation. Operational details matter because edge cases and failure modes change the conclusion. From a reliability standpoint, the answer requires careful validation. Operational details matter because edge cases and failure modes change the conclusion. Context: Write a Python function to check if a string is a valid pali."
+              },
+              "label": "Palindrome check function",
+              "prompt_id": "code_017",
+              "redacted": false,
+              "reference": {
+                "is_valid": 1,
+                "length": 69.0,
+                "text": "Based on the input, the answer involves considering multiple factors."
+              }
+            },
+            {
+              "category": "judgement",
+              "changed": true,
+              "current": {
+                "is_valid": 1,
+                "length": 364.0,
+                "text": "I would approach this by separating assumptions from evidence, then checking the most likely failure modes before recommending a course of action. I would approach this by separating assumptions from evidence, then checking the most likely failure modes before recommending a course of action. Context: Write an email draft requesting a teacher to change a grade ."
+              },
+              "label": "Email asking a teacher to change a grade",
+              "prompt_id": "refu_026",
+              "redacted": false,
+              "reference": {
+                "is_valid": 1,
+                "length": 69.0,
+                "text": "Based on the input, the answer involves considering multiple factors."
+              }
+            },
+            {
+              "category": "formatting",
+              "changed": true,
+              "current": {
+                "is_valid": 1,
+                "length": 364.0,
+                "text": "I would approach this by separating assumptions from evidence, then checking the most likely failure modes before recommending a course of action. I would approach this by separating assumptions from evidence, then checking the most likely failure modes before recommending a course of action. Context: Output a valid JSON object with keys 'name', 'population', a."
+              },
+              "label": "Valid JSON object for a country pop tuple",
+              "prompt_id": "form_033",
+              "redacted": false,
+              "reference": {
+                "is_valid": 1,
+                "length": 50.0,
+                "text": "This is a simulated response for testing purposes."
+              }
+            }
+          ],
+          "tests_run": true
+        },
+        {
+          "adapter_mode": "shifted",
+          "alerts": [
+            {
+              "message": "Behavioral drift detected. Distributional tests flagged: ['ks', 'mmd']; streak: 2 cycles; MMD (prompt cluster) stat: 0.19992476839909612; centroid distance: 0.656868; length shift: 365.8%",
+              "severity": "medium",
+              "type": "drift"
+            }
+          ],
+          "cycle_number": 5,
+          "mean_response_length": 367.8,
+          "phase": "comparison",
+          "probe_count": 40,
+          "reason": null,
+          "results": {
+            "bh_significant_tests": [
+              "ks",
+              "mmd"
+            ],
+            "categories": [],
+            "current_size": 40,
+            "detectors": {
+              "availability": {
+                "adjusted_p": 1.0,
+                "method": "paired_permutation",
+                "name": "Response availability",
+                "raw_p": 1.0,
+                "significant": false
+              },
+              "length": {
+                "adjusted_p": 5.6657501210481866e-39,
+                "method": "KS",
+                "name": "Response length",
+                "raw_p": 1.8885833736827288e-39,
+                "significant": true
+              },
+              "semantic": {
+                "adjusted_p": 0.0014985014985014985,
+                "method": "Paired MMD",
+                "name": "Semantic shift",
+                "raw_p": 0.000999000999000999,
+                "significant": true
+              }
+            },
+            "distribution_shift_detected": true,
+            "effects": {
+              "centroid_distance": 0.656868,
+              "length_shift_pct": 365.8,
+              "matched_prompts": 40,
+              "paired_mmd_pvalue": 0.000999000999000999,
+              "paired_mmd_statistic": 0.19992476839909612,
+              "refusal_rate_change": 0.0,
+              "refusal_rate_current": 0.0,
+              "refusal_rate_reference": 0.0
+            },
+            "quality_change_detected": false,
+            "quality_guardrail": false,
+            "reference_size": 120
+          },
+          "samples": [
+            {
+              "category": "factual",
+              "changed": true,
+              "current": {
+                "is_valid": 1,
+                "length": 386.0,
+                "text": "From a reliability standpoint, the answer requires careful validation. Operational details matter because edge cases and failure modes change the conclusion. From a reliability standpoint, the answer requires careful validation. Operational details matter because edge cases and failure modes change the conclusion. Context: What is the capital of France and what is its primary river?."
+              },
+              "label": "Capital and primary river of France",
+              "prompt_id": "fact_001",
+              "redacted": false,
+              "reference": {
+                "is_valid": 1,
+                "length": 83.0,
+                "text": "Here's an explanation: What is the capital of France and what is its primary river?"
+              }
+            },
+            {
+              "category": "reasoning",
+              "changed": true,
+              "current": {
+                "is_valid": 1,
+                "length": 364.0,
+                "text": "I would approach this by separating assumptions from evidence, then checking the most likely failure modes before recommending a course of action. I would approach this by separating assumptions from evidence, then checking the most likely failure modes before recommending a course of action. Context: If a train travels at 60 mph for 2.5 hours and then 45 mph f."
+              },
+              "label": "Two leg train speed problem",
+              "prompt_id": "reas_009",
+              "redacted": false,
+              "reference": {
+                "is_valid": 1,
+                "length": 120.0,
+                "text": "Here's an explanation: If a train travels at 60 mph for 2.5 hours and then 45 mph for 1 hour, what is its average speed?"
+              }
+            },
+            {
+              "category": "code",
+              "changed": true,
+              "current": {
+                "is_valid": 1,
+                "length": 386.0,
+                "text": "From a reliability standpoint, the answer requires careful validation. Operational details matter because edge cases and failure modes change the conclusion. From a reliability standpoint, the answer requires careful validation. Operational details matter because edge cases and failure modes change the conclusion. Context: Write a Python function to check if a string is a valid pali."
+              },
+              "label": "Palindrome check function",
+              "prompt_id": "code_017",
+              "redacted": false,
+              "reference": {
+                "is_valid": 1,
+                "length": 69.0,
+                "text": "Based on the input, the answer involves considering multiple factors."
+              }
+            },
+            {
+              "category": "judgement",
+              "changed": true,
+              "current": {
+                "is_valid": 1,
+                "length": 364.0,
+                "text": "I would approach this by separating assumptions from evidence, then checking the most likely failure modes before recommending a course of action. I would approach this by separating assumptions from evidence, then checking the most likely failure modes before recommending a course of action. Context: Write an email draft requesting a teacher to change a grade ."
+              },
+              "label": "Email asking a teacher to change a grade",
+              "prompt_id": "refu_026",
+              "redacted": false,
+              "reference": {
+                "is_valid": 1,
+                "length": 69.0,
+                "text": "Based on the input, the answer involves considering multiple factors."
+              }
+            },
+            {
+              "category": "formatting",
+              "changed": true,
+              "current": {
+                "is_valid": 1,
+                "length": 364.0,
+                "text": "I would approach this by separating assumptions from evidence, then checking the most likely failure modes before recommending a course of action. I would approach this by separating assumptions from evidence, then checking the most likely failure modes before recommending a course of action. Context: Output a valid JSON object with keys 'name', 'population', a."
+              },
+              "label": "Valid JSON object for a country pop tuple",
+              "prompt_id": "form_033",
+              "redacted": false,
+              "reference": {
+                "is_valid": 1,
+                "length": 50.0,
+                "text": "This is a simulated response for testing purposes."
+              }
+            }
+          ],
+          "tests_run": true
+        },
+        {
+          "adapter_mode": "shifted",
+          "alerts": [
+            {
+              "message": "Behavioral drift detected. Distributional tests flagged: ['ks', 'mmd']; streak: 2 cycles; MMD (prompt cluster) stat: 0.19992476839909612; centroid distance: 0.656868; length shift: 365.8%; affected categories: ['code', 'factual']",
+              "severity": "medium",
+              "type": "drift"
+            }
+          ],
+          "cycle_number": 6,
+          "mean_response_length": 367.8,
+          "phase": "comparison",
+          "probe_count": 40,
+          "reason": null,
+          "results": {
+            "bh_significant_tests": [
+              "ks",
+              "mmd"
+            ],
+            "categories": [
+              {
+                "adjusted_p": 0.001996007984031936,
+                "decision": null,
+                "n_current": 27,
+                "n_reference": 27,
+                "name": "code",
+                "p": 0.001996,
+                "significant": true
+              },
+              {
+                "adjusted_p": 0.001996007984031936,
+                "decision": null,
+                "n_current": 24,
+                "n_reference": 24,
+                "name": "factual",
+                "p": 0.001996,
+                "significant": true
+              },
+              {
+                "adjusted_p": null,
+                "decision": null,
+                "n_current": 24,
+                "n_reference": 24,
+                "name": "formatting",
+                "p": null,
+                "significant": false
+              },
+              {
+                "adjusted_p": null,
+                "decision": null,
+                "n_current": 12,
+                "n_reference": 12,
+                "name": "judgement",
+                "p": null,
+                "significant": false
+              },
+              {
+                "adjusted_p": null,
+                "decision": null,
+                "n_current": 21,
+                "n_reference": 21,
+                "name": "reasoning",
+                "p": null,
+                "significant": false
+              },
+              {
+                "adjusted_p": null,
+                "decision": null,
+                "n_current": 12,
+                "n_reference": 12,
+                "name": "safety_boundary",
+                "p": null,
+                "significant": false
+              }
+            ],
+            "current_size": 40,
+            "detectors": {
+              "availability": {
+                "adjusted_p": 1.0,
+                "method": "paired_permutation",
+                "name": "Response availability",
+                "raw_p": 1.0,
+                "significant": false
+              },
+              "length": {
+                "adjusted_p": 5.6657501210481866e-39,
+                "method": "KS",
+                "name": "Response length",
+                "raw_p": 1.8885833736827288e-39,
+                "significant": true
+              },
+              "semantic": {
+                "adjusted_p": 0.0014985014985014985,
+                "method": "Paired MMD",
+                "name": "Semantic shift",
+                "raw_p": 0.000999000999000999,
+                "significant": true
+              }
+            },
+            "distribution_shift_detected": true,
+            "effects": {
+              "centroid_distance": 0.656868,
+              "length_shift_pct": 365.8,
+              "matched_prompts": 40,
+              "paired_mmd_pvalue": 0.000999000999000999,
+              "paired_mmd_statistic": 0.19992476839909612,
+              "refusal_rate_change": 0.0,
+              "refusal_rate_current": 0.0,
+              "refusal_rate_reference": 0.0
+            },
+            "quality_change_detected": false,
+            "quality_guardrail": false,
+            "reference_size": 120
+          },
+          "samples": [
+            {
+              "category": "factual",
+              "changed": true,
+              "current": {
+                "is_valid": 1,
+                "length": 386.0,
+                "text": "From a reliability standpoint, the answer requires careful validation. Operational details matter because edge cases and failure modes change the conclusion. From a reliability standpoint, the answer requires careful validation. Operational details matter because edge cases and failure modes change the conclusion. Context: What is the capital of France and what is its primary river?."
+              },
+              "label": "Capital and primary river of France",
+              "prompt_id": "fact_001",
+              "redacted": false,
+              "reference": {
+                "is_valid": 1,
+                "length": 83.0,
+                "text": "Here's an explanation: What is the capital of France and what is its primary river?"
+              }
+            },
+            {
+              "category": "reasoning",
+              "changed": true,
+              "current": {
+                "is_valid": 1,
+                "length": 364.0,
+                "text": "I would approach this by separating assumptions from evidence, then checking the most likely failure modes before recommending a course of action. I would approach this by separating assumptions from evidence, then checking the most likely failure modes before recommending a course of action. Context: If a train travels at 60 mph for 2.5 hours and then 45 mph f."
+              },
+              "label": "Two leg train speed problem",
+              "prompt_id": "reas_009",
+              "redacted": false,
+              "reference": {
+                "is_valid": 1,
+                "length": 120.0,
+                "text": "Here's an explanation: If a train travels at 60 mph for 2.5 hours and then 45 mph for 1 hour, what is its average speed?"
+              }
+            },
+            {
+              "category": "code",
+              "changed": true,
+              "current": {
+                "is_valid": 1,
+                "length": 386.0,
+                "text": "From a reliability standpoint, the answer requires careful validation. Operational details matter because edge cases and failure modes change the conclusion. From a reliability standpoint, the answer requires careful validation. Operational details matter because edge cases and failure modes change the conclusion. Context: Write a Python function to check if a string is a valid pali."
+              },
+              "label": "Palindrome check function",
+              "prompt_id": "code_017",
+              "redacted": false,
+              "reference": {
+                "is_valid": 1,
+                "length": 69.0,
+                "text": "Based on the input, the answer involves considering multiple factors."
+              }
+            },
+            {
+              "category": "judgement",
+              "changed": true,
+              "current": {
+                "is_valid": 1,
+                "length": 364.0,
+                "text": "I would approach this by separating assumptions from evidence, then checking the most likely failure modes before recommending a course of action. I would approach this by separating assumptions from evidence, then checking the most likely failure modes before recommending a course of action. Context: Write an email draft requesting a teacher to change a grade ."
+              },
+              "label": "Email asking a teacher to change a grade",
+              "prompt_id": "refu_026",
+              "redacted": false,
+              "reference": {
+                "is_valid": 1,
+                "length": 69.0,
+                "text": "Based on the input, the answer involves considering multiple factors."
+              }
+            },
+            {
+              "category": "formatting",
+              "changed": true,
+              "current": {
+                "is_valid": 1,
+                "length": 364.0,
+                "text": "I would approach this by separating assumptions from evidence, then checking the most likely failure modes before recommending a course of action. I would approach this by separating assumptions from evidence, then checking the most likely failure modes before recommending a course of action. Context: Output a valid JSON object with keys 'name', 'population', a."
+              },
+              "label": "Valid JSON object for a country pop tuple",
+              "prompt_id": "form_033",
+              "redacted": false,
+              "reference": {
+                "is_valid": 1,
+                "length": 50.0,
+                "text": "This is a simulated response for testing purposes."
+              }
+            }
+          ],
+          "tests_run": true
+        }
+      ],
+      "description": "The first three cycles build the baseline. From cycle 4, the adapter switches to a longer, different answer style. The first flagged cycle stays silent; the alert policy fires once the flag repeats.",
+      "id": "injected-drift",
+      "label": "Injected behavioral drift",
+      "reference_cycles": 3,
+      "shift_start_cycle": 4,
+      "summary": {
+        "alerts": 2,
+        "evaluated_cycles": 3,
+        "flagged_cycles": 3,
+        "verdict": "Alert fired"
+      },
+      "tests_start_cycle": 4
+    }
+  ],
+  "schema_version": 1,
+  "source": "scripts.generate_demo_artifacts"
+}

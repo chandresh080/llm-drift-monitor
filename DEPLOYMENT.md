@@ -68,6 +68,18 @@ DRIFT_MONITOR_CONFIG=config/config.cloud.yaml uvicorn api:app --reload --port 80
 
 `GET /config` reports the SQLite backend as non-durable. This is expected for local work and demo data; it is not the hosted persistence path.
 
+## Demo dashboard artifact
+
+The Demo tab reads the committed, read-only `web/data/demo-scenarios.json` through `/static/data/demo-scenarios.json`. It makes no `/runs` call and never changes the live monitor, provider configuration or stored history. The artifact contains two deterministic scenarios whose synthetic responses were processed by the real `run_monitoring_cycle()` pipeline in a temporary SQLite database.
+
+Regenerate it deliberately after changing the detector pipeline or the synthetic scenario design:
+
+```bash
+python -m scripts.generate_demo_artifacts
+```
+
+The generator neutralises `DATABASE_URL`, provider keys and network model resolution, refuses any storage path outside its own temporary directory, and writes the output atomically. Commit the regenerated artifact only after reviewing the scenario summaries it prints.
+
 ## Tests
 
 Run `ruff check .`, `python -m pytest -q`, and `node web/smoke.test.js`. PostgreSQL integration tests are reported as skipped unless `TEST_DATABASE_URL` is set to a dedicated disposable database; run them separately with `python -m pytest -q -k postgres -rs`. Never point `TEST_DATABASE_URL` at a production database: those tests clear rows and recreate a legacy schema, then clean up their own test data. They do not establish that the real hosted deployment is durable; only the restart/redeploy verification above does.
