@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Drift Monitor</title>
-<meta name="description" content="Statistical monitoring of LLM response behaviour against a fixed canary baseline.">
+<meta name="description" content="Monitor changes in LLM responses against a fixed baseline.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2318181B'/%3E%3Cpath d='M6 21h6l4-13 4 13h6' fill='none' stroke='%236366F1' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/static/app.css">
 </head>
@@ -23,12 +23,10 @@
           <span class="ui-icon-host" data-icon="server" aria-hidden="true"></span>
           <span class="status-text">API Checking</span>
         </span>
-        <span class="status-sep" aria-hidden="true"></span>
         <span id="db-pill" class="status status-muted" title="Waiting for the readiness check.">
           <span class="ui-icon-host" data-icon="database" aria-hidden="true"></span>
           <span class="status-text">Database Checking</span>
         </span>
-        <span class="status-sep" aria-hidden="true"></span>
         <span id="provider-pill" class="status status-muted" title="Waiting for the readiness check.">
           <span class="ui-icon-host" data-icon="brain" aria-hidden="true"></span>
           <span class="status-text">Gemini Checking</span>
@@ -69,14 +67,14 @@
       <div class="intro-copy">
         <p class="eyebrow"><span class="ui-icon-host" data-icon="activity" aria-hidden="true"></span>Live monitoring</p>
         <h1 class="page-title">Monitor</h1>
-        <p class="page-sub">Each check compares a new canary cycle with the stored reference window.</p>
+        <p class="page-sub">Each check compares the latest responses with a fixed baseline.</p>
       </div>
       <div class="intro-action">
         <button id="run-btn" class="btn btn-primary" type="button">
           <span class="ui-icon-host" data-icon="play" aria-hidden="true"></span>
           <span>Run check</span>
         </button>
-        <p id="run-note" class="run-note">Loading configuration…</p>
+        <p id="run-note" class="run-note">Preparing…</p>
       </div>
     </section>
 
@@ -84,7 +82,7 @@
       <div class="summary-verdict">
         <div class="section-label" id="summary-heading">
           <span class="ui-icon-host" data-icon="radar" aria-hidden="true"></span>
-          Distribution
+          Response pattern
         </div>
         <p id="kpi-drift" class="verdict">…</p>
         <p id="verdict-sub" class="verdict-sub">…</p>
@@ -128,7 +126,7 @@
           <div class="panel-head">
             <div>
               <h2 class="section-title">Detector results</h2>
-              <p class="section-meta">Latest evaluated cycle</p>
+              <p class="section-meta">Latest check</p>
             </div>
             <span class="panel-icon" data-icon="radar" aria-hidden="true"></span>
           </div>
@@ -204,7 +202,7 @@
               <div><dt>Significance threshold</dt><dd id="cfg-alpha">…</dd></div>
               <div><dt>Alert persistence</dt><dd id="cfg-persist">…</dd></div>
               <div><dt>Storage</dt><dd id="cfg-storage">…</dd></div>
-              <div><dt>Probes evaluated</dt><dd id="kpi-runs">…</dd></div>
+              <div><dt>Responses checked</dt><dd id="kpi-runs">…</dd></div>
               <div><dt>Last completed cycle</dt><dd id="cfg-last-run">…</dd></div>
               <div><dt>Provider latency</dt><dd id="cfg-latency">…</dd></div>
               <div><dt>Provider tokens</dt><dd id="cfg-tokens">…</dd></div>
@@ -293,7 +291,7 @@
       </details>
 
       <details class="panel-disclosure">
-        <summary><span class="ui-icon-host" data-icon="layers" aria-hidden="true"></span>Distribution shift vs quality regression</summary>
+        <summary><span class="ui-icon-host" data-icon="layers" aria-hidden="true"></span>Pattern changes vs response failures</summary>
         <div id="eval-reliability" class="section-body table-scroll"></div>
       </details>
 
@@ -313,10 +311,10 @@
       <div class="intro-copy">
         <p class="eyebrow"><span class="ui-icon-host" data-icon="flask" aria-hidden="true"></span>Simulation</p>
         <h1 class="page-title">Controlled drift simulation</h1>
-        <p class="page-sub">Two deterministic synthetic scenarios run through the real pipeline.</p>
+        <p class="page-sub">Synthetic responses processed by the real monitoring pipeline.</p>
       </div>
       <div class="demo-provenance">
-        <span class="source-tag">Isolated static artifact</span>
+        <span class="source-tag">Synthetic data</span>
       </div>
     </section>
 
@@ -463,9 +461,7 @@
   <footer class="footer">
     <a href="https://github.com/chandresh080/llm-drift-monitor" target="_blank" rel="noopener">
       <span class="ui-icon-host" data-icon="github" aria-hidden="true"></span>GitHub</a>
-    <span class="footer-sep" aria-hidden="true"></span>
     <a href="/docs"><span class="ui-icon-host" data-icon="book" aria-hidden="true"></span>API</a>
-    <span class="footer-sep" aria-hidden="true"></span>
     <a href="https://github.com/chandresh080/llm-drift-monitor/blob/main/METRICS.md" target="_blank" rel="noopener">
       <span class="ui-icon-host" data-icon="book" aria-hidden="true"></span>Methodology</a>
   </footer>

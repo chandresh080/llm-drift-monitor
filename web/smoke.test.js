@@ -14,13 +14,13 @@
      only for the backend provider-ping TTL
    - a finished monitoring run refreshes readiness, not just data panels, so
      an earlier unchecked/failed result cannot survive a successful cycle
-   - recent activity is a real table: five newest cycles, newest first
+   - recent activity is a five-column table: five newest cycles, newest first
    - detector history needs at least three stored cycles; fewer is a compact
      message, never an empty chart or fabricated data
    - history breaks the line for missing adjusted p-values, marks the latest
      cycle, and draws the alpha threshold
-   - the split signal families render separately: a response availability
-     flag can never flip the distribution shift headline
+   - response problems stay separate from pattern changes and are never
+     hidden behind a generic no-change result
    - redacted safety boundary prompts show their public label and a
      withheld marker, never raw wording
    - response samples preview five changed-first rows and reveal the rest
@@ -35,6 +35,10 @@
    - Demo reads one committed static artifact, never a live data endpoint;
      scenario and cycle switches update charts, detectors and samples; a
      missing or malformed artifact is an explicit isolated error state
+   - primary copy is plain English with no decorative middle dots
+   - stored alert data is preserved while its presentation is translated
+   - activity distinguishes normal, empty, failed, pattern, response,
+     baseline, combined and interrupted cycles
 
    Used by CI; run locally with: node web/smoke.test.js */
 
@@ -200,7 +204,8 @@ const cycleRows = historyRows.map((r) => ({
 const twoCycles = cycleRows.filter((r) => r.cycle_number === 1 || r.cycle_number === 2);
 
 const storedAlert = {
-  id: 9, timestamp: "2026-11-17T08:05:00", alert_type: "drift",
+  id: 9, timestamp: "2026-11-17T08:05:00", cycle_id: "cycle-3",
+  alert_type: "drift", severity: "medium",
   message: "Semantic shift persisted for two consecutive cycles.",
 };
 
@@ -382,12 +387,12 @@ const settle = () => new Promise((r) => setImmediate(r));
       && requestedUrls.some((u) => u === "/health/live"),
     requestedUrls.filter((u) => u.startsWith("/health")).join(", "));
 
-  check("distribution headline follows the distribution family field",
-    getById("kpi-drift").textContent === "Shift detected",
+  check("pattern headline follows the pattern family field",
+    getById("kpi-drift").textContent === "Response pattern changed",
     getById("kpi-drift").textContent);
 
-  check("distribution count excludes the quality detector",
-    getById("verdict-sub").textContent === "1 of 2 distribution tests flagged",
+  check("pattern count excludes the response success detector",
+    getById("verdict-sub").textContent === "1 of 2 response pattern checks flagged",
     getById("verdict-sub").textContent);
 
   check("verdict meta is the check time only",
@@ -400,11 +405,12 @@ const settle = () => new Promise((r) => setImmediate(r));
       && getById("count-cur").textContent === "40",
     `${getById("count-ref").textContent} / ${getById("count-cur").textContent}`);
 
-  check("quality guardrail reported separately and not conflated with shift",
+  check("response failure is reported separately and not called a pattern change",
     getById("quality-strip").hidden === false
-      && getById("quality-strip").innerHTML.includes("Response availability")
-      && getById("quality-strip").innerHTML.includes("Degraded")
-      && getById("quality-strip").innerHTML.includes("availability guardrail triggered"),
+      && getById("quality-strip").innerHTML.includes("Responses")
+      && getById("quality-strip").innerHTML.includes("Response failures")
+      && getById("quality-strip").innerHTML.includes(
+        "Too many responses failed during this check."),
     getById("quality-strip").innerHTML.slice(0, 160));
 
   const detHtml = getById("detector-rows").innerHTML;
@@ -461,7 +467,7 @@ const settle = () => new Promise((r) => setImmediate(r));
     getById("cfg-tokens").textContent.includes("960"),
     getById("cfg-tokens").textContent);
 
-  check("total probes from /stats stays available in configuration",
+  check("stored response count from /stats stays available in configuration",
     getById("kpi-runs").textContent === "320",
     getById("kpi-runs").textContent);
 
@@ -478,7 +484,8 @@ const settle = () => new Promise((r) => setImmediate(r));
 
   check("run note uses the configured cycle size and interval",
     getById("run-note").textContent.includes("40 prompts per run")
-      && getById("run-note").textContent.includes("1 check per visitor / 10 min"),
+      && getById("run-note").textContent.includes(
+        "1 check per visitor every 10 min"),
     getById("run-note").textContent);
 
   check("run note shows the remaining daily quota from /config",
@@ -486,8 +493,8 @@ const settle = () => new Promise((r) => setImmediate(r));
     getById("run-note").textContent);
 
   check("threshold and persistence render as compact values, not sentences",
-    getById("cfg-alpha").textContent === "0.05 · Benjamini–Hochberg"
-      && getById("cfg-persist").textContent === "2 consecutive flagged cycles",
+    getById("cfg-alpha").textContent === "0.05, Benjamini–Hochberg"
+      && getById("cfg-persist").textContent === "2 changed cycles in a row",
     `${getById("cfg-alpha").textContent} / ${getById("cfg-persist").textContent}`);
 
   check("no em dash in any rendered UI copy",
@@ -505,10 +512,10 @@ const settle = () => new Promise((r) => setImmediate(r));
       && getById("model-label").className === "brand-model",
     getById("model-label").textContent);
 
-  check("header groups status with subtle vertical dividers",
-    fs.readFileSync(path.join(__dirname, "index.html"), "utf8")
+  check("header status labels need no decorative dividers",
+    !fs.readFileSync(path.join(__dirname, "index.html"), "utf8")
       .includes('class="status-sep"')
-      && fs.readFileSync(path.join(__dirname, "app.css"), "utf8")
+      && !fs.readFileSync(path.join(__dirname, "app.css"), "utf8")
         .includes(".status-sep"),
     "");
 
@@ -535,13 +542,16 @@ const settle = () => new Promise((r) => setImmediate(r));
   await settle();
 
   const actHtml = getById("activity-list").innerHTML;
-  check("activity is a real table with cycle, probes, status and outcome",
+  check("activity uses five fixed columns with plain English labels",
     actHtml.includes('class="activity-table"')
       && actHtml.includes("<th>Cycle</th>")
-      && actHtml.includes("<th>Time</th>")
-      && actHtml.includes("<th class=\"num\">Probes</th>")
+      && actHtml.includes("<th>Date</th>")
+      && actHtml.includes("<th class=\"num\">Requests</th>")
       && actHtml.includes("<th>Status</th>")
-      && actHtml.includes("<th>Shift outcome</th>"),
+      && actHtml.includes("<th>Result</th>")
+      && !actHtml.includes("<th>Time</th>")
+      && !actHtml.includes("<th>Probes</th>")
+      && !actHtml.includes("Shift outcome"),
     actHtml.slice(0, 260));
   check("activity shows exactly the five most recent cycles",
     (actHtml.match(/data-testid="activity-row"/g) || []).length === 5,
@@ -553,19 +563,24 @@ const settle = () => new Promise((r) => setImmediate(r));
       && actHtml.indexOf("#3") < actHtml.indexOf("#2")
       && !actHtml.includes("#1"),
     actHtml.slice(0, 300));
-  check("activity names probe count and shift outcome without badges",
-    actHtml.includes("No shift") && actHtml.includes("Shift flagged")
-      && actHtml.includes(">40<") && !actHtml.includes("chip"),
+  check("activity names request counts and results without badges",
+    /#2[\s\S]*?No significant change/.test(actHtml)
+      && /#3[\s\S]*?Fewer responses succeeded/.test(actHtml)
+      && actHtml.includes('<span class="act-count">40</span>')
+      && !actHtml.includes("chip"),
     actHtml.slice(0, 300));
   check("an incomplete cycle is marked Interrupted",
     /#4[\s\S]*?Interrupted/.test(actHtml),
     actHtml.slice(0, 200));
-  check("availability change is part of the detector outcome",
-    /#3[\s\S]*?Availability changed/.test(actHtml),
-    actHtml.slice(0, 320));
-  check("a stored alert names its family and decorates its cycle only",
-    /#3[\s\S]*?1 Distribution alert/.test(actHtml)
-      && !/#2[\s\S]*?Distribution alert/.test(actHtml),
+  const row3 = actHtml.split('<tr data-testid="activity-row"')
+    .find((part) => part.includes("#3")) || "";
+  check("a response problem is not hidden behind a no-change result",
+    row3.includes("Fewer responses succeeded")
+      && !row3.includes("No significant change"),
+    row3);
+  check("activity does not repeat alert counts in every result cell",
+    !actHtml.includes("Quality alert") && !actHtml.includes("Distribution alert")
+      && !/1 alert/.test(actHtml),
     actHtml.slice(0, 400));
   check("activity header counts the cycles shown",
     getById("activity-count").textContent === "5 of 6 cycles",
@@ -595,9 +610,9 @@ const settle = () => new Promise((r) => setImmediate(r));
       && histHtml.indexOf("#5<") < histHtml.indexOf("#6<"),
     "");
   check("a missing adjusted p leaves a gap, not a zero point",
-    (histHtml.match(/<title>Cycle #/g) || []).length === 17
+    (histHtml.match(/<title>Cycle /g) || []).length === 17
       && !histHtml.includes("adjusted p 0.000"),
-    String((histHtml.match(/<title>Cycle #/g) || []).length));
+    String((histHtml.match(/<title>Cycle /g) || []).length));
   check("the latest cycle has a dashed guide and a halo point",
     histHtml.includes('stroke-dasharray="2 3"')
       && histHtml.includes('r="5.4"')
@@ -607,19 +622,34 @@ const settle = () => new Promise((r) => setImmediate(r));
     histHtml.includes('stroke="#DC2626"'),
     "");
   check("history tooltips carry cycle, timestamp, detector and flag state",
-    histHtml.includes("Cycle #3") && histHtml.includes("adjusted p 0.022")
+    histHtml.includes("Cycle 3") && histHtml.includes("adjusted p 0.022")
       && histHtml.includes("(flagged)"),
     "");
-  check("history note stays compact and says evaluated cycles",
-    getById("history-note").textContent === "6 evaluated cycles · adjusted p-values.",
+  check("history note stays compact and uses plain English",
+    getById("history-note").textContent
+      === "6 checked cycles. Adjusted p-values shown.",
     getById("history-note").textContent);
 
   const alertsHtml = getById("alerts-list").innerHTML;
-  check("alerts panel renders the persisted alert with its family",
-    alertsHtml.includes("Semantic shift persisted")
-      && alertsHtml.includes("Distribution alert")
-      && getById("alert-count").textContent === "1 recent",
-    alertsHtml.slice(0, 200));
+  vmEval("globalThis.__storedMessage = state.alerts[0].message;");
+  check("alerts panel translates the stored alert into plain English",
+    alertsHtml.includes("Response pattern changed")
+      && alertsHtml.includes(
+        "The model&#39;s response patterns changed compared with the baseline.")
+      && alertsHtml.includes('data-alert-type="drift"')
+      && alertsHtml.includes('data-severity="medium"')
+      && getById("alert-count").textContent === "1 recent"
+      && global.__storedMessage === storedAlert.message,
+    JSON.stringify({
+      title: alertsHtml.includes("Response pattern changed"),
+      text: alertsHtml.includes(
+        "The model&#39;s response patterns changed compared with the baseline."),
+      type: alertsHtml.includes('data-alert-type="drift"'),
+      severity: alertsHtml.includes('data-severity="medium"'),
+      count: getById("alert-count").textContent,
+      stored: global.__storedMessage === storedAlert.message,
+      message: global.__storedMessage,
+    }));
 
   routeOverrides = {
     "/drift/comparison": () => resp(samplesReady),
@@ -629,7 +659,7 @@ const settle = () => new Promise((r) => setImmediate(r));
 
   const samplesHtml = getById("comparison-wrap").innerHTML;
   check("collapsed summary counts the stored prompts",
-    getById("sample-count").textContent === "· 8 prompts",
+    getById("sample-count").textContent === "8 prompts",
     getById("sample-count").textContent);
   check("samples preview five rows and count the rest",
     samplesHtml.includes("5 of 8 shown")
@@ -775,8 +805,9 @@ const settle = () => new Promise((r) => setImmediate(r));
     provCmpHtml.slice(0, 600));
 
   const provVerdict = getById("prov-cmp-verdict").innerHTML;
-  check("comparison verdict reports no corrected flag and no alert",
-    provVerdict.includes("No corrected test flagged") && provVerdict.includes("no alert fired"),
+  check("comparison verdict reports no flag and no alert plainly",
+    provVerdict.includes("No test flagged")
+      && provVerdict.includes("no alert was recorded"),
     provVerdict.slice(0, 160));
   check("comparison carries the paired diagnostic and differences",
     provVerdict.includes("matched prompts") && provVerdict.includes("reasoning"),
@@ -1029,22 +1060,23 @@ const settle = () => new Promise((r) => setImmediate(r));
   await settle();
 
   const baseHtml = getById("activity-list").innerHTML;
-  check("baseline cycles are labelled Reference baseline, not awaiting evaluation",
-    (baseHtml.match(/Reference baseline/g) || []).length === 3
-      && !baseHtml.includes("Awaiting evaluation"),
+  check("baseline cycles are labelled Baseline, not Waiting",
+    (baseHtml.match(/>Baseline</g) || []).length === 3
+      && !baseHtml.includes(">Waiting<"),
     baseHtml.slice(0, 400));
-  check("only the real detector result is shown as Evaluated",
-    (baseHtml.match(/Evaluated/g) || []).length === 1, baseHtml.slice(0, 400));
+  check("only the real detector result is shown as Complete",
+    (baseHtml.match(/>Complete</g) || []).length === 1, baseHtml.slice(0, 400));
   check("empty responses are described as empty, not failed",
     baseHtml.includes("1 empty response") && !baseHtml.includes("failed"),
     baseHtml.slice(0, 400));
   check("one evaluated cycle renders a compact one-point history svg",
     getById("history-chart").innerHTML.includes("<svg")
-      && getById("history-note").textContent === "1 evaluated cycle · adjusted p-values."
-      && !getById("history-note").textContent.includes("Awaiting"),
+      && getById("history-note").textContent
+        === "1 checked cycle. Adjusted p-values shown."
+      && !getById("history-note").textContent.includes("Waiting"),
     getById("history-note").textContent);
-  check("SQLite storage is shown as ephemeral, never durable",
-    getById("cfg-storage").textContent === "SQLite · Ephemeral"
+  check("SQLite storage is shown as temporary, never durable",
+    getById("cfg-storage").textContent === "Temporary SQLite"
       && !getById("cfg-storage").textContent.includes("Persistent"),
     getById("cfg-storage").textContent);
 
@@ -1392,7 +1424,7 @@ const settle = () => new Promise((r) => setImmediate(r));
   await loadAll();
   await settle();
   check("configured PostgreSQL is shown as persistent",
-    getById("cfg-storage").textContent === "PostgreSQL · Persistent",
+    getById("cfg-storage").textContent === "Persistent PostgreSQL",
     getById("cfg-storage").textContent);
 
   /* A configured PostgreSQL URL that fails to initialize is a read-only
@@ -1417,7 +1449,7 @@ const settle = () => new Promise((r) => setImmediate(r));
       && getById("run-note").textContent.includes("DATABASE_URL"),
     `${getById("run-btn").disabled} / ${getById("run-note").textContent}`);
   check("read-only fallback is never shown as persistent",
-    getById("cfg-storage").textContent === "SQLite · Ephemeral"
+    getById("cfg-storage").textContent === "Temporary SQLite"
       && getById("cfg-storage").title.includes("New checks are disabled")
       && !getById("db-pill").title.includes("New checks are disabled"),
     `${getById("cfg-storage").textContent} / ${getById("cfg-storage").title}`);
@@ -1429,8 +1461,8 @@ const settle = () => new Promise((r) => setImmediate(r));
 
   console.log("scenario 4: split signals, redacted prompts, rate limits");
 
-  /* availability fires, distribution does not: the headline must stay
-     "No shift" and the quality strip must name the real source. */
+  /* A success-rate change fires while patterns stay stable: the headline
+     must name the response problem instead of a clean pattern result. */
   routeOverrides = { "/drift/latest": () => resp({
     ...latestFull,
     drift_detected: 0, distribution_shift_detected: 0,
@@ -1441,17 +1473,19 @@ const settle = () => new Promise((r) => setImmediate(r));
   await loadAll();
   await settle();
 
-  check("availability flag cannot flip the distribution headline",
-    getById("kpi-drift").textContent === "No shift",
+  check("a response problem cannot be reported as a pattern change",
+    getById("kpi-drift").textContent === "Fewer responses succeeded",
     getById("kpi-drift").textContent);
 
-  check("availability change is reported as its own quality signal",
+  check("a success-rate change is reported in plain English",
     getById("quality-strip").hidden === false
       && getById("quality-strip").className.includes("is-bad")
-      && getById("quality-strip").innerHTML.includes("Response availability")
-      && getById("quality-strip").innerHTML.includes("Degraded")
-      && getById("quality-strip").innerHTML.includes("availability changed"),
-    getById("quality-strip").innerHTML.slice(0, 160));
+      && getById("quality-strip").innerHTML.includes("Responses")
+      && getById("quality-strip").innerHTML.includes("Response problem")
+      && getById("quality-strip").innerHTML.includes(
+        "Fewer responses succeeded than in the baseline.")
+      && !getById("quality-strip").innerHTML.includes("Degraded"),
+    getById("quality-strip").innerHTML.slice(0, 220));
 
   routeOverrides = {};
 
@@ -1648,11 +1682,12 @@ const settle = () => new Promise((r) => setImmediate(r));
     const html = global.__demoDecisionHtml;
     const insight = global.__demoInsight;
     const wantsShift = item.sig[0] === 1 || item.sig[2] === 1;
-    check(`Demo ${item.name} keeps availability out of the verdict`,
-      insight.includes(wantsShift ? "Distribution flag recorded" : "No distribution shift")
+    check(`Demo ${item.name} keeps response problems separate from patterns`,
+      insight.includes(wantsShift ? "Response pattern changed"
+        : (item.name === "availability only"
+          ? "Fewer responses succeeded" : "No significant change"))
         && !insight.includes("3 detectors flagged")
-        && (item.name === "availability only"
-          ? insight.includes("Availability is reported separately") : true),
+        && !insight.includes("Distribution flag recorded"),
       insight);
     check(`Demo ${item.name} matches the Live decision geometry`,
       count(html, 'data-testid="demo-detector-row"') === 3
@@ -1668,19 +1703,15 @@ const settle = () => new Promise((r) => setImmediate(r));
       html.slice(0, 320));
   }
 
-  vmEval('globalThis.__alertKinds = [alertKindLabel({alert_type:"drift"}), '
-    + 'alertKindLabel({alert_type:"quality_degradation"}), '
-    + 'alertKindClass({alert_type:"drift"}), '
-    + 'alertKindClass({alert_type:"quality_degradation"})];');
-  check("alert labels name distribution and quality families",
-    global.__alertKinds[0] === "Distribution alert"
-      && global.__alertKinds[1] === "Quality alert"
-      && global.__alertKinds[2] === ""
-      && global.__alertKinds[3] === "alert-quality",
-    JSON.stringify(global.__alertKinds));
+  vmEval('globalThis.__alertLabels = [alertKindLabel({alert_type:"drift"}), '
+    + 'alertKindLabel({alert_type:"quality_degradation"})];');
+  check("alert labels use plain result language",
+    global.__alertLabels[0] === "Response pattern changed"
+      && global.__alertLabels[1] === "Response problem",
+    JSON.stringify(global.__alertLabels));
   vmEval("demo.artifact = null; demo.scenarioId = null; demo.cycleNumber = null; "
     + "globalThis.__decisionHtml = null; globalThis.__demoDecisionHtml = null; "
-    + "globalThis.__alertKinds = null;");
+    + "globalThis.__alertLabels = null;");
 
   console.log("scenario 6: no stored history at all");
 
@@ -1693,8 +1724,8 @@ const settle = () => new Promise((r) => setImmediate(r));
   await loadAll();
   await settle();
 
-  check("no history shows the explicit not-evaluated verdict",
-    getById("kpi-drift").textContent === "Not evaluated",
+  check("no history shows the baseline-building verdict",
+    getById("kpi-drift").textContent === "Building baseline",
     getById("kpi-drift").textContent);
   check("no history hides the quality strip",
     getById("quality-strip").hidden === true,
@@ -1702,8 +1733,8 @@ const settle = () => new Promise((r) => setImmediate(r));
   check("no history shows a compact activity empty state",
     getById("activity-list").innerHTML.includes("No monitoring cycles recorded yet"),
     getById("activity-list").innerHTML);
-  check("no history shows a compact detector-history empty state",
-    getById("history-chart").innerHTML.includes("No evaluated cycles yet")
+  check("no history shows a compact baseline-building empty state",
+    getById("history-chart").innerHTML.includes("Building baseline")
       && !getById("history-chart").innerHTML.includes("<svg"),
     getById("history-chart").innerHTML.slice(0, 160));
   check("no alerts is a compact line, not an empty list",
@@ -1759,15 +1790,153 @@ const settle = () => new Promise((r) => setImmediate(r));
   await loadAll();
   await settle();
   const pendingHtml = getById("activity-list").innerHTML;
-  check("a cycle without a detector result is Awaiting evaluation",
-    /#3[\s\S]*?Awaiting evaluation[\s\S]*?Not evaluated/.test(pendingHtml),
+  check("a cycle without a detector result is Waiting with no result",
+    /#3[\s\S]*?Waiting[\s\S]*?No result/.test(pendingHtml),
     pendingHtml.slice(0, 300));
-  check("a fully failed cycle is Failed and shows its failed probe count",
+  check("a fully failed cycle is Failed and shows its failed request count",
     /#4[\s\S]*?40 failed[\s\S]*?Failed/.test(pendingHtml),
     pendingHtml.slice(0, 300));
   check("un-evaluated cycles are not charted as observations",
-    getById("history-chart").innerHTML.includes("No evaluated cycles yet"),
+    getById("history-chart").innerHTML.includes("Building baseline"),
     getById("history-chart").innerHTML.slice(0, 160));
+
+  console.log("scenario 6d: eight activity states stay distinct and compact");
+
+  const quietResult = {
+    overall_drift_detected: 0, proportion_z_significant: 0,
+    overall_quality_degradation: 0, ks_significant: 0, mmd_significant: 0,
+  };
+  const activityState = (n, overrides) => ({
+    cycle_id: `state-${n}`, cycle_number: n,
+    started_at: `2026-11-20T${String(8 + n).padStart(2, "0")}:00:00`,
+    ended_at: `2026-11-20T${String(8 + n).padStart(2, "0")}:01:00`,
+    probe_count: 40, success_count: 40, empty_count: 0, failed_count: 0,
+    expected_probes: 40, status: "evaluated", reference_baseline: false,
+    result: quietResult, ...overrides,
+  });
+  const activityStates = [
+    { name: "normal completed cycle", cycle: activityState(1, {}),
+      want: ["Complete", "No significant change"],
+      reject: ["failed", "Fewer responses succeeded"] },
+    { name: "one empty response", cycle: activityState(2, {
+      success_count: 39, empty_count: 1 }),
+      want: ["Complete", "1 empty response", "No significant change"],
+      reject: ["failed"] },
+    { name: "many failed responses", cycle: activityState(3, {
+      success_count: 1, failed_count: 39,
+      result: { ...quietResult, overall_quality_degradation: 1 } }),
+      want: ["Complete", "39 failed", "Too many responses failed"],
+      reject: ["Response pattern changed"] },
+    { name: "distribution change only", cycle: activityState(4, {
+      result: { ...quietResult, distribution_shift_detected: 1,
+        overall_drift_detected: 1, mmd_significant: 1 } }),
+      want: ["Complete", "Response pattern changed"],
+      reject: ["failed", "Fewer responses succeeded"] },
+    { name: "response failures only", cycle: activityState(5, {
+      success_count: 1, failed_count: 39,
+      result: { ...quietResult, overall_drift_detected: 1,
+        overall_quality_degradation: 1 } }),
+      want: ["Complete", "Too many responses failed"],
+      reject: ["Response pattern changed", "No significant change"] },
+    { name: "both issues", cycle: activityState(6, {
+      success_count: 1, failed_count: 39,
+      result: { ...quietResult, distribution_shift_detected: 1,
+        overall_drift_detected: 1, mmd_significant: 1,
+        overall_quality_degradation: 1 } }),
+      want: ["Complete", "Response pattern changed", "Too many responses failed"],
+      reject: ["No significant change"] },
+    { name: "reference baseline", cycle: activityState(7, {
+      status: "reference_baseline", reference_baseline: true, result: null }),
+      want: ["Baseline", "Reference data"],
+      reject: ["Complete", "No significant change"] },
+    { name: "failed cycle", cycle: activityState(8, {
+      status: "failed", success_count: 0, failed_count: 40, result: null }),
+      want: ["Failed", "40 failed", "No result"],
+      reject: ["Complete", "No significant change"] },
+  ];
+
+  for (const item of activityStates) {
+    vmEval(`state.cycles = ${JSON.stringify([item.cycle])}; state.alerts = []; `
+      + 'renderActivity(); '
+      + 'globalThis.__activityStateHtml = '
+      + 'document.getElementById("activity-list").innerHTML;');
+    const html = global.__activityStateHtml;
+    check(`activity state: ${item.name}`,
+      html.includes('class="activity-table"')
+        && ["<th>Cycle</th>", "<th>Date</th>",
+          '<th class="num">Requests</th>', "<th>Status</th>", "<th>Result</th>"]
+          .every((heading) => html.includes(heading))
+        && item.want.every((text) => html.includes(text))
+        && item.reject.every((text) => !html.includes(text))
+        && !html.includes("\u00B7"),
+      html.slice(0, 320));
+  }
+  vmEval("state.cycles = []; state.alerts = []; renderActivity();");
+
+  console.log("scenario 6e: alert copy follows structured result fields");
+
+  const alertCycle = activityState(9, {
+    success_count: 1, failed_count: 39,
+    result: { ...quietResult, overall_drift_detected: 1, mmd_significant: 1,
+      overall_quality_degradation: 1 },
+  });
+  const failureAlert = {
+    timestamp: alertCycle.ended_at, cycle_id: alertCycle.cycle_id,
+    alert_type: "quality_degradation", severity: "high",
+    message: "Quality signal: invalid response share reached the configured "
+      + "absolute threshold in the current window. Investigate the current window's answers.",
+    overall_quality_degradation: 1,
+  };
+  const patternAlert = {
+    timestamp: alertCycle.ended_at, cycle_id: alertCycle.cycle_id,
+    alert_type: "drift", severity: "medium",
+    message: "Behavioral drift detected. Distributional tests flagged: ['mmd']; streak: 2 cycles",
+    overall_drift_detected: 1,
+  };
+  vmEval(`state.cycles = ${JSON.stringify([alertCycle])}; `
+    + `state.alerts = ${JSON.stringify([failureAlert, patternAlert])}; `
+    + 'renderAlerts(); '
+    + 'globalThis.__alertHtml = document.getElementById("alerts-list").innerHTML; '
+    + 'globalThis.__alertMessages = state.alerts.map((a) => a.message); '
+    + 'globalThis.__alertSeverity = state.alerts.map((a) => a.severity);');
+  const alertHtml = global.__alertHtml;
+  check("response failures use actual counts in plain English",
+    global.__alertSeverity.join(",") === "high,medium"
+      && alertHtml.includes("Response failures")
+      && alertHtml.includes(
+        "39 of 40 responses failed during this check. Review the failed responses "
+        + "before interpreting the monitoring results.")
+      && alertHtml.includes('data-alert-type="quality_degradation"')
+      && alertHtml.includes('data-severity="high"'),
+    alertHtml.slice(0, 320));
+  check("pattern and response failures are shown as separate alert issues",
+    alertHtml.includes("Response pattern changed")
+      && alertHtml.includes(
+        "The model&#39;s response patterns changed compared with the baseline.")
+      && alertHtml.includes('data-alert-type="drift"')
+      && alertHtml.includes('data-severity="medium"')
+      && (alertHtml.match(/class="alert-item/g) || []).length === 2,
+    alertHtml.slice(0, 420));
+  check("stored alert messages survive presentation untouched",
+    global.__alertMessages[0] === failureAlert.message
+      && global.__alertMessages[1] === patternAlert.message
+      && !alertHtml.includes("invalid response share")
+      && !alertHtml.includes("Distributional tests flagged"),
+    global.__alertMessages.join(" | "));
+
+  vmEval(`state.alerts = ${JSON.stringify([{
+    ...failureAlert, overall_quality_degradation: 0,
+    quality_change_detected: 1,
+  }])}; renderAlerts(); `
+    + 'globalThis.__fewerHtml = '
+    + 'document.getElementById("alerts-list").innerHTML;');
+  check("a lower success rate gets its own plain-English wording",
+    global.__fewerHtml.includes("Fewer responses succeeded")
+      && global.__fewerHtml.includes(
+        "Fewer responses succeeded than in the baseline.")
+      && !global.__fewerHtml.includes("Response failures"),
+    global.__fewerHtml.slice(0, 260));
+  vmEval("state.cycles = []; state.alerts = []; renderAlerts();");
 
   routeOverrides = {};
 
@@ -1810,8 +1979,21 @@ const settle = () => new Promise((r) => setImmediate(r));
     css.includes("@media (max-width: 900px)")
       && /\.workspace\s*\{\s*grid-template-columns:\s*1fr;/.test(css),
     "");
-  check("mobile rules reflow the activity table and sample grid",
+  check("activity uses fixed proportions, full rows and right-aligned counts",
+    css.includes(".activity-table {")
+      && css.includes("table-layout: fixed;")
+      && css.includes(".activity-table th:nth-child(1) { width: 10%; }")
+      && css.includes(".activity-table th:nth-child(5) { width: 42%; }")
+      && css.includes(".activity-table td { height: 46px; }")
+      && css.includes("text-align: right;"),
+    "");
+  check("mobile rules give activity a deliberate compact row grid",
     css.includes(".activity-table thead { display: none; }")
+      && css.includes('grid-template-areas:')
+      && css.includes('"cycle status"')
+      && css.includes('"date requests"')
+      && css.includes('"result result"')
+      && css.includes(".activity-table td::before { content: none; }")
       && css.includes(".sample-head { display: none; }")
       && css.includes(".s-prompt { grid-column: 1 / -1; }"),
     "");
@@ -1819,8 +2001,36 @@ const settle = () => new Promise((r) => setImmediate(r));
     !css.includes("text-transform: uppercase")
       && !page.includes("chip") && !css.includes(".chip"),
     "");
-  check("the phrase No shift detected is not repeated across sections",
-    !page.includes("No shift detected") && !script.includes("No shift detected"),
+  check("the old No shift wording is gone from visible copy",
+    !page.includes("No shift") && !script.includes("No shift detected")
+      && !getById("kpi-drift").textContent.includes("No shift")
+      && !getById("activity-list").innerHTML.includes("No shift"),
+    "");
+
+  const forbiddenCopy = [
+    "Collecting the configured canary responses",
+    "No statistically significant distributional change",
+    "Availability changed",
+    "Guardrail tripped",
+    "Validity rate shifted",
+    "absolute threshold",
+    "invalid response share",
+    "Investigate the current window's answers",
+    "Two consecutive flagged cycles were observed",
+    "Behavioral drift detected",
+    "Distributional tests flagged",
+    "Alert fired",
+  ];
+  check("primary copy never exposes internal statistical language",
+    forbiddenCopy.every((phrase) => !page.includes(phrase) && !script.includes(phrase)),
+    forbiddenCopy.filter((phrase) => page.includes(phrase) || script.includes(phrase))
+      .join(", "));
+  check("no decorative middle dot ships in visible frontend assets",
+    !page.includes("\u00B7") && !script.includes("\u00B7") && !css.includes("\u00B7")
+      && !fs.readFileSync(path.join(__dirname, "data", "demo-scenarios.json"), "utf8")
+        .includes("\u00B7")
+      && !fs.readFileSync(path.join(__dirname, "provider_comparison.json"), "utf8")
+        .includes("\u00B7"),
     "");
   check("Monitor, Evaluation and Demo are separate views with Monitor default",
     page.includes('id="tab-btn-console"') && page.includes("Monitor")
@@ -1883,14 +2093,14 @@ const settle = () => new Promise((r) => setImmediate(r));
   check("both stored scenarios render as a segmented selector",
     (getById("demo-scenario-buttons").innerHTML.match(/data-testid="demo-scenario-btn"/g) || [])
       .length === 2
-      && getById("demo-scenario-buttons").innerHTML.includes("Injected behavioral drift"),
+      && getById("demo-scenario-buttons").innerHTML.includes("Changed responses"),
     getById("demo-scenario-buttons").innerHTML.slice(0, 200));
   check("the default view is the final stable cycle with no flags",
-    getById("demo-cycle-tag").textContent.includes("#6 · Stable")
-      && getById("demo-insight").innerHTML.includes("No distribution shift")
+    getById("demo-cycle-tag").textContent.includes("Cycle 6, Stable")
+      && getById("demo-insight").innerHTML.includes("No significant change")
       && !getById("demo-detector-rows").innerHTML.includes("Flagged")
       && getById("demo-samples").innerHTML.includes("unchanged"),
-    `noShift=${getById("demo-insight").innerHTML.includes("No distribution shift")} `
+    `noChange=${getById("demo-insight").innerHTML.includes("No significant change")} `
       + `flagged=${getById("demo-detector-rows").innerHTML.includes("Flagged")} `
       + `unchanged=${getById("demo-samples").innerHTML.includes("unchanged")}`);
   check("the p-value chart draws the alpha rule and three detector legends",
@@ -1901,19 +2111,20 @@ const settle = () => new Promise((r) => setImmediate(r));
     getById("demo-pvalues-chart").innerHTML.slice(-240));
   check("the method disclosure names synthetic data and the real pipeline",
     getById("demo-method-disclosure").textContent.includes("synthetic")
-      && getById("demo-method-pipeline").textContent.includes("run_monitoring_cycle()")
+      && getById("demo-method-pipeline").textContent.includes(
+        "processed by the real monitoring pipeline")
       && getById("demo-method-limitation").textContent.includes("Evaluation view"),
     getById("demo-method-disclosure").textContent.slice(0, 100));
 
   vmEval('selectDemoScenario("injected-drift")');
   check("switching scenarios updates detectors, charts and samples",
-    getById("demo-cycle-tag").textContent.includes("#6 · Shifted")
+    getById("demo-cycle-tag").textContent.includes("Cycle 6, Shifted")
       && getById("demo-detector-rows").innerHTML.includes("Flagged")
-      && getById("demo-pvalues-chart").innerHTML.includes("Cycle #6")
+      && getById("demo-pvalues-chart").innerHTML.includes("Cycle 6")
       && getById("demo-samples").innerHTML.includes("changed"),
     `tag=${getById("demo-cycle-tag").textContent} `
       + `flagged=${getById("demo-detector-rows").innerHTML.includes("Flagged")} `
-      + `chart=${getById("demo-pvalues-chart").innerHTML.includes("Cycle #6")} `
+      + `chart=${getById("demo-pvalues-chart").innerHTML.includes("Cycle 6")} `
       + `changed=${getById("demo-samples").innerHTML.includes("changed")}`);
   check("the timeline distinguishes flagged and alert cycles",
     getById("demo-cycle-list").innerHTML.includes('data-cycle="4"')
@@ -1922,21 +2133,24 @@ const settle = () => new Promise((r) => setImmediate(r));
     getById("demo-cycle-list").innerHTML.slice(0, 260));
 
   vmEval("selectDemoCycle(4)");
-  check("the first flagged cycle explains why no alert fired",
-    getById("demo-insight").innerHTML.includes("Distribution flag recorded")
-      && getById("demo-alert").innerHTML.includes("No alert was emitted yet")
+  check("the first changed cycle explains why no alert was recorded",
+    getById("demo-insight").innerHTML.includes("Response pattern changed")
+      && getById("demo-alert").innerHTML.includes("No alert yet")
       && !getById("demo-alert").innerHTML.includes("Behavioral drift detected"),
     getById("demo-alert").innerHTML.slice(0, 180));
   vmEval("selectDemoCycle(5)");
-  check("the repeated flag shows the stored alert and the two-cycle policy",
-    getById("demo-cycle-tag").textContent.includes("#5")
-      && getById("demo-detector-meta").textContent.includes("#5")
-      && getById("demo-pvalues-chart").innerHTML.includes("Cycle #5")
-      && getById("demo-insight").innerHTML.includes("Alert fired")
-      && getById("demo-alert").innerHTML.includes("Distribution alert")
-      && getById("demo-alert").innerHTML.includes("Behavioral drift detected")
-      && getById("demo-alert").innerHTML.includes("2 consecutive flagged cycles"),
-    `${getById("demo-cycle-tag").textContent} / ${getById("demo-alert").innerHTML.slice(0, 180)}`);
+  check("the repeated change shows the plain-English alert and policy",
+    getById("demo-cycle-tag").textContent.includes("Cycle 5")
+      && getById("demo-detector-meta").textContent.includes("Cycle 5")
+      && getById("demo-pvalues-chart").innerHTML.includes("Cycle 5")
+      && getById("demo-insight").innerHTML.includes("Response pattern changed")
+      && getById("demo-alert").innerHTML.includes("Response pattern changed")
+      && getById("demo-alert").innerHTML.includes(
+        "The model&#39;s response patterns changed compared with the baseline.")
+      && getById("demo-alert").innerHTML.includes(
+        "The alert fires after 2 consecutive changed cycles.")
+      && !getById("demo-alert").innerHTML.includes("Behavioral drift detected"),
+    `${getById("demo-cycle-tag").textContent} / ${getById("demo-alert").innerHTML.slice(0, 220)}`);
 
   console.log("scenario 8b: a missing or malformed artifact is an explicit state");
   vmEval("demo.loaded = false; demo.artifact = null; demo.error = null;");
