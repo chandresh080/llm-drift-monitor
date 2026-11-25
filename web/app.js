@@ -64,7 +64,6 @@ const DEFAULT_HEALTH_REFRESH_MS = 60000;
    Further retries use the normal TTL interval, so a broken deployment is not
    pinged in a tight loop. */
 const HEALTH_RETRY_MS = 5000;
-const NUM_TESTS = 3;      // detector family: KS, availability, MMD
 
 const $ = (id) => document.getElementById(id);
 
@@ -420,21 +419,9 @@ function renderPill(id, found) {
 
 function renderStatusGroup() {
   renderPill("health-pill", API_STATES[apiState()] || API_STATES.checking);
-  const db = [...(DB_STATES[dbState()] || DB_STATES.checking)];
-  const storage = storageLabel();
-  if (storage) {
-    db[2] = `${db[2]} ${storage}.`;
-    if (storage.indexOf("Persistent") !== -1) {
-      db[2] += " Confirm the managed plan is non-expiring; Render Free "
-        + "Postgres expires after 30 days.";
-    } else {
-      db[2] += " History is lost when the instance recycles.";
-    }
-  }
-  if (runBlockedReason()) {
-    db[2] += " New checks are disabled until the database is fixed.";
-  }
-  renderPill("db-pill", db);
+  /* The header pill reports readiness only. Storage durability and blocked
+     writes belong to the one collapsed methodology section, not a tooltip. */
+  renderPill("db-pill", DB_STATES[dbState()] || DB_STATES.checking);
   const states = providerStates();
   renderPill("provider-pill", states[providerState()] || states.checking);
 }
@@ -523,13 +510,9 @@ function latestSignals(l) {
 
 /* ---------- verdict ---------- */
 
-function flaggedCount(latest) {
+function distributionFlagCount(latest) {
   if (!latest) return null;
-  const raw = latest.flagged_tests;
-  if (Array.isArray(raw)) return raw.length;
-  if (typeof raw === "string") return raw ? raw.split(",").filter(Boolean).length : 0;
-  const flags = [latest.ks_significant, latest.proportion_z_significant,
-    latest.mmd_significant];
+  const flags = [latest.ks_significant, latest.mmd_significant];
   if (flags.some((v) => v != null)) {
     return flags.filter((v) => Number(v) === 1).length;
   }
@@ -554,20 +537,19 @@ function renderVerdict() {
     meta.textContent = "";
     if (refEl) refEl.textContent = "n/a";
     if (curEl) curEl.textContent = "n/a";
-    const flaggedEl = $("summary-flagged");
-    if (flaggedEl) flaggedEl.textContent = "n/a";
     strip.hidden = true;
+    strip.className = "quality-signal";
     strip.innerHTML = "";
     return;
   }
 
   const sig = latestSignals(latest);
-  const fired = flaggedCount(latest);
+  const fired = distributionFlagCount(latest);
   title.textContent = sig.dist === 1 ? "Shift detected" : "No shift";
   title.className = "verdict" + (sig.dist === 1 ? " verdict-alert" : "");
   sub.textContent = fired == null
-    ? `${NUM_TESTS} detector family`
-    : `${fired} of ${NUM_TESTS} tests flagged`;
+    ? "Distribution tests not evaluated"
+    : `${fired} of 2 distribution tests flagged`;
 
   meta.textContent = latest.timestamp ? `Last checked ${fmtTime(latest.timestamp)}` : "";
   if (refEl) {
@@ -578,21 +560,31 @@ function renderVerdict() {
     curEl.textContent = latest.current_size == null
       ? "n/a" : Number(latest.current_size).toLocaleString();
   }
-  const flaggedEl = $("summary-flagged");
-  if (flaggedEl) flaggedEl.textContent = fired == null ? "n/a" : String(fired);
 
-  /* Quality signals stay separate from the distribution verdict. */
-  const parts = [];
-  if (sig.qualityChange) parts.push("Response availability changed");
-  if (sig.guardrail) parts.push("Invalid-response guardrail tripped");
-  if (parts.length) {
-    strip.hidden = false;
-    strip.innerHTML = iconSvg("alert")
-      + `<span class="quality-label">Quality signal</span>`
-      + escapeHtml(parts.join(" · "));
-  } else {
+  /* Availability is a separate operational signal. State its status first,
+     then the reason, so "no distribution shift" cannot hide a quality fault. */
+  const reasons = [];
+  if (sig.qualityChange) reasons.push("availability changed");
+  if (sig.guardrail) reasons.push("availability guardrail triggered");
+  const qualityKnown = latest.quality_change_detected != null
+    || latest.quality_degradation != null;
+  if (!qualityKnown) {
     strip.hidden = true;
+    strip.className = "quality-signal";
     strip.innerHTML = "";
+  } else if (reasons.length) {
+    strip.hidden = false;
+    strip.className = "quality-signal is-bad";
+    strip.innerHTML = iconSvg("alert")
+      + '<span class="quality-name">Response availability</span>'
+      + '<span class="quality-state">Degraded</span>'
+      + `<span class="quality-reason">${escapeHtml(reasons.join(" · "))}</span>`;
+  } else {
+    strip.hidden = false;
+    strip.className = "quality-signal is-ok";
+    strip.innerHTML = iconSvg("check")
+      + '<span class="quality-name">Response availability</span>'
+      + '<span class="quality-state">Stable</span>';
   }
 }
 
@@ -607,10 +599,26 @@ function renderMetrics() {
 
 /* ---------- detector table ---------- */
 
-/* One row per detector: name with its method as secondary text, adjusted
-   p-value, decision. Absent values decide as "Not evaluated", never as
-   "No flag". Availability remains its own row, separate from the shift
-   headline. */
+/* One row per detector: name with its method as secondary text, raw and
+   adjusted p-values, decision. Absent values decide as "Not evaluated",
+   never as "No flag". Availability is a quality signal, so its flag is
+   labelled as such. Every state reserves the same icon slot so flagged,
+   unflagged and unevaluated rows share one geometry. */
+function decisionState(p, sig, quality) {
+  if (p == null || sig == null) {
+    return { text: "Not evaluated", cls: "decision decision-muted",
+      mark: iconSvg("dash") };
+  }
+  if (Number(sig) === 1) {
+    return {
+      text: quality ? "Flagged (quality)" : "Flagged",
+      cls: "decision decision-alert",
+      mark: iconSvg("alert"),
+    };
+  }
+  return { text: "No flag", cls: "decision", mark: iconSvg("check") };
+}
+
 function renderDetectors() {
   const l = state.latest;
   const rows = [
@@ -620,6 +628,7 @@ function renderDetectors() {
       raw: l ? l.ks_pvalue : null,
       p: l ? l.ks_adjusted_pvalue : null,
       sig: l ? l.ks_significant : null,
+      quality: false,
     },
     {
       name: "Response availability",
@@ -628,6 +637,7 @@ function renderDetectors() {
       raw: l ? l.proportion_z_pvalue : null,
       p: l ? l.proportion_z_adjusted_pvalue : null,
       sig: l ? l.proportion_z_significant : null,
+      quality: true,
     },
     {
       name: "Semantic shift",
@@ -635,23 +645,11 @@ function renderDetectors() {
       raw: l ? l.mmd_pvalue : null,
       p: l ? l.mmd_adjusted_pvalue : null,
       sig: l ? l.mmd_significant : null,
+      quality: false,
     },
   ];
   $("detector-rows").innerHTML = rows.map((r) => {
-    let decision;
-    let cls = "decision";
-    let mark = "";
-    if (r.p == null && r.sig == null) {
-      decision = "Not evaluated";
-      cls += " decision-muted";
-    } else if (Number(r.sig) === 1) {
-      decision = "Flagged";
-      cls += " decision-alert";
-      mark = iconSvg("alert");
-    } else {
-      decision = "No flag";
-      mark = iconSvg("check");
-    }
+    const d = decisionState(r.p, r.sig, r.quality);
     return `
       <tr data-testid="detector-row">
         <td>
@@ -660,7 +658,7 @@ function renderDetectors() {
         </td>
         <td class="num">${r.raw == null ? "n/a" : fmtP(r.raw)}</td>
         <td class="num">${r.p == null ? "n/a" : fmtP(r.p)}</td>
-        <td class="${cls}">${mark}${decision}</td>
+        <td><span class="${d.cls}">${d.mark}${d.text}</span></td>
       </tr>`;
   }).join("");
 }
@@ -767,7 +765,8 @@ function renderConfig() {
   const storageEl = $("cfg-storage");
   if (storageEl) {
     storageEl.textContent = storageLabel() || "unknown";
-    storageEl.title = (c.storage && c.storage.note) || "";
+    storageEl.title = [c.storage && c.storage.note, runBlockedReason()]
+      .filter(Boolean).join(" ");
   }
 
   const l = state.latest || {};
@@ -1057,6 +1056,20 @@ function alertsForCycle(cycle) {
     String(a.timestamp || "").slice(0, 19) === key);
 }
 
+/* Alert family is stored on every API alert. Name it explicitly so a quality
+   alert is never read as a distribution alert from its red styling alone. */
+function alertKindLabel(alert) {
+  const type = (alert && (alert.alert_type || alert.type)) || "";
+  if (type === "drift") return "Distribution alert";
+  if (type === "quality_degradation") return "Quality alert";
+  return "Alert";
+}
+
+function alertKindClass(alert) {
+  const type = (alert && (alert.alert_type || alert.type)) || "";
+  return type === "quality_degradation" ? "alert-quality" : "";
+}
+
 function renderActivity() {
   const el = $("activity-list");
   const count = $("activity-count");
@@ -1103,12 +1116,14 @@ function renderActivity() {
       if (s.availability) quality.push("Availability changed");
       if (s.guardrail) quality.push("Guardrail tripped");
       if (alerts.length) {
-        quality.push(`${alerts.length} alert${alerts.length > 1 ? "s" : ""}`);
+        const kinds = Array.from(new Set(alerts.map(alertKindLabel)));
+        const label = kinds.length === 1 ? kinds[0] : "Alerts";
+        quality.push(`${alerts.length} ${label}${alerts.length > 1 ? "s" : ""}`);
       }
       outcome = `<span class="act-result${s.dist === 1 ? " is-alert" : ""}">`
         + `${s.dist === 1 ? "Shift flagged" : "No shift"}</span>`
         + (quality.length
-          ? `<span class="act-signal">${escapeHtml(quality.join(" · "))}</span>`
+          ? `<span class="act-signal">Quality: ${escapeHtml(quality.join(" · "))}</span>`
           : "");
     }
     return `
@@ -1116,8 +1131,8 @@ function renderActivity() {
         <td class="act-cycle" data-label="Cycle">#${escapeHtml(c.cycle_number)}</td>
         <td class="act-time" data-label="Time">${fmtTime(c.ended_at || c.started_at || c.timestamp)}</td>
         <td class="num act-probes" data-label="Probes">${probeCell}</td>
-        <td class="${statusCls}" data-label="Status">${statusText}</td>
-        <td class="act-outcome" data-label="Detector outcome">${outcome}</td>
+        <td data-label="Status"><span class="${statusCls}">${statusText}</span></td>
+        <td class="act-outcome" data-label="Shift outcome">${outcome}</td>
       </tr>`;
   }).join("");
   el.innerHTML = `
@@ -1128,7 +1143,7 @@ function renderActivity() {
           <th>Time</th>
           <th class="num">Probes</th>
           <th>Status</th>
-          <th>Detector outcome</th>
+          <th>Shift outcome</th>
         </tr>
       </thead>
       <tbody>${body}</tbody>
@@ -1154,8 +1169,9 @@ function renderAlerts() {
     return;
   }
   el.innerHTML = rows.map((a) => `
-    <div class="alert-item">
+    <div class="alert-item ${alertKindClass(a)}">
       <span class="alert-time">${fmtTime(a.timestamp)}</span>
+      <span class="alert-type">${escapeHtml(alertKindLabel(a))}</span>
       <span class="alert-msg">${escapeHtml(a.message || "")}</span>
     </div>`).join("");
 }
@@ -1201,11 +1217,8 @@ function renderHistory() {
     return;
   }
   if (note) {
-    note.textContent = rows.length === 1
-      ? "1 evaluated cycle available · limited history; a trend appears "
-        + "after further cycles."
-      : `${rows.length} evaluated cycles · adjusted p-values from stored `
-        + "detector results.";
+    note.textContent = `${rows.length} evaluated ${rows.length === 1 ? "cycle" : "cycles"}`
+      + " · adjusted p-values.";
   }
   el.innerHTML = svgHistory(rows, alpha);
 }
@@ -1525,9 +1538,7 @@ function ensureAwake() {
       const waited = Date.now() - startedAt;
       if (!explained && waited > 75000) {
         explained = true;
-        banner("Still connecting: the free hosting plan pauses this service "
-          + "between visits and after deploys. The page keeps trying; nothing "
-          + "samples the model until you press Run check.");
+        banner("Still connecting. Data panels appear as endpoints answer.");
       }
       await new Promise((r) => setTimeout(r, WAKE_WAIT_MS));
     }
@@ -1579,9 +1590,12 @@ function renderPairedDiagnostic() {
    back to live data or to an invented verdict. */
 
 const DEMO_DETECTORS = [
-  { key: "length", name: "Length", shape: "circle", color: "#4F46E5" },
-  { key: "availability", name: "Availability", shape: "square", color: "#0F766E" },
-  { key: "semantic", name: "Semantic", shape: "triangle", color: "#A1A1AA" },
+  { key: "length", name: "Length", shape: "circle", color: "#4F46E5",
+    method: "KS" },
+  { key: "availability", name: "Availability", shape: "square", color: "#0F766E",
+    method: "Fisher / z", quality: true },
+  { key: "semantic", name: "Semantic", shape: "triangle", color: "#A1A1AA",
+    method: "Paired MMD" },
 ];
 
 function validateDemoArtifact(artifact) {
@@ -1734,9 +1748,7 @@ function renderDemo() {
 function renderDemoScenarios(scenario) {
   const cfg = demo.artifact.configuration || {};
   $("demo-scenario-meta").textContent =
-    `${cfg.prompt_panel_version || "panel"} panel · `
-    + `${cfg.reference_window || "?"} reference / ${cfg.prompts_per_cycle || "?"} current · `
-    + `alpha ${fmtP(cfg.alpha)}`;
+    `Prompt panel ${cfg.prompt_panel_version || "n/a"}`;
   $("demo-scenario-desc").textContent =
     `${scenario.description || ""} ${(scenario.summary || {}).verdict || ""}`.trim();
   $("demo-scenario-buttons").innerHTML = demo.artifact.scenarios.map((s) => {
@@ -1753,8 +1765,7 @@ function renderDemoCycles(scenario) {
   const list = $("demo-cycle-list");
   const evaluated = scenario.cycles.filter((c) => c.tests_run).length;
   $("demo-cycle-meta").textContent =
-    `${scenario.cycles.length} cycles · ${evaluated} evaluated · `
-    + `${scenario.summary ? scenario.summary.verdict : "no summary"}`;
+    `${scenario.cycles.length} cycles · ${evaluated} evaluated`;
   list.innerHTML = scenario.cycles.map((cycle) => {
     const active = Number(cycle.cycle_number) === Number(demo.cycleNumber);
     const result = cycle.results || {};
@@ -1867,12 +1878,8 @@ function renderDemoPValueChart() {
     + DEMO_DETECTORS.map((d) => `<span class="legend-item">`
       + `<span class="legend-marker mk-${d.shape}" style="color:${d.color}"></span>`
       + `${d.name}</span>`).join("")
-    + `<span class="legend-item"><span class="legend-dash"></span>${alpha} threshold</span>`
     + `</div>`;
-  const evaluated = cycles.filter((c) => c.tests_run).length;
-  $("demo-pvalues-note").textContent =
-    `${evaluated} evaluated cycles · baseline cycles have no p-values. `
-    + "The dotted guide marks the selected cycle.";
+  $("demo-pvalues-note").textContent = "Dotted guide: selected cycle.";
   $("demo-pvalues-chart").innerHTML = `<svg viewBox="0 0 ${w} ${h}" class="chart" `
     + `role="img" aria-label="Adjusted p-values by demo cycle">${parts.join("")}</svg>${legend}`;
 }
@@ -1919,9 +1926,7 @@ function renderDemoLengthChart() {
   });
   parts.push(`<text x="${m.left + iw / 2}" y="${h - 3}" font-size="10" fill="#71717A" `
     + `text-anchor="middle">cycle</text>`);
-  $("demo-length-note").textContent =
-    `Mean stored answer length from ${values.length} of ${cycles.length} cycles. `
-    + "The selected cycle is accented.";
+  $("demo-length-note").textContent = "";
   $("demo-length-chart").innerHTML = `<svg viewBox="0 0 ${w} ${h}" class="chart" `
     + `role="img" aria-label="Mean response length by demo cycle">${parts.join("")}</svg>`
     + '<div class="chart-legend"><span class="legend-item">'
@@ -1939,24 +1944,16 @@ function renderDemoDetectors() {
     const row = detectors[d.key];
     const raw = row ? row.raw_p : null;
     const adjusted = row ? row.adjusted_p : null;
-    let decision = "Not evaluated";
-    let cls = "decision decision-muted";
-    let mark = "";
-    if (row && Number(row.significant) === 1) {
-      decision = "Flagged";
-      cls = "decision decision-alert";
-      mark = iconSvg("alert");
-    } else if (row && raw != null) {
-      decision = "No flag";
-      cls = "decision";
-      mark = iconSvg("check");
-    }
+    const sig = row && row.significant != null ? Number(row.significant) : null;
+    const decision = decisionState(adjusted, sig, Boolean(d.quality));
+    const method = (row && row.method)
+      ? humanizeKey(row.method) : d.method;
     return `<tr data-testid="demo-detector-row">`
-      + `<td><span class="detector-name">${d.name}</span>`
-      + `<span class="detector-method">${escapeHtml(humanizeKey((row && row.method) || d.name))}</span></td>`
+      + `<td><span class="detector-name">${escapeHtml(d.name)}</span>`
+      + `<span class="detector-method">${escapeHtml(method)}</span></td>`
       + `<td class="num">${raw == null ? "n/a" : fmtP(Number(raw))}</td>`
       + `<td class="num">${adjusted == null ? "n/a" : fmtP(Number(adjusted))}</td>`
-      + `<td class="${cls}">${mark}${decision}</td></tr>`;
+      + `<td><span class="${decision.cls}">${decision.mark}${decision.text}</span></td></tr>`;
   }).join("");
 }
 
@@ -1971,7 +1968,14 @@ function renderDemoDecision() {
   }
   const result = cycle.results || {};
   const detectors = result.detectors || {};
-  const passed = Object.values(detectors).filter((row) => row && row.significant).length;
+  /* Availability is a quality guardrail; only KS and MMD can produce the
+     distribution verdict, as in the live view. */
+  const distributionKeys = DEMO_DETECTORS.filter((d) => !d.quality).map((d) => d.key);
+  const passed = distributionKeys.filter((key) => {
+    const row = detectors[key];
+    return row && Number(row.significant) === 1;
+  }).length;
+  const flagged = Boolean(result.distribution_shift_detected) || passed > 0;
   const alerts = cycle.alerts || [];
   $("demo-cycle-tag").textContent =
     `Cycle #${cycle.cycle_number} · ${humanizeKey(cycle.adapter_mode || "unspecified mode")}`;
@@ -2001,13 +2005,13 @@ function renderDemoDecision() {
   }
   const alert = alerts[0];
   insight.className = `demo-insight ${alert ? "alert" : "clear"}`;
-  const headline = alert ? "Alert fired" : (passed ? "Flag recorded" : "No shift");
+  const headline = alert ? "Alert fired"
+    : (flagged ? "Distribution flag recorded" : "No distribution shift");
   const detail = alert
-    ? "The distribution flag repeated in consecutive cycles, so the stored alert policy fired."
-    : (passed
-      ? `${passed} of ${DEMO_DETECTORS.length} detectors reached BH significance, `
-        + "but the consecutive-cycle rule did not fire in this cycle."
-      : "All BH adjusted p-values stayed above alpha.");
+    ? "The distribution flag repeated in consecutive cycles."
+    : (flagged
+      ? `${passed} of ${distributionKeys.length} distribution tests flagged this cycle.`
+      : "No distribution test flagged this cycle. Availability is reported separately.");
   insight.innerHTML = `<div class="demo-insight-icon">`
     + `${iconSvg(alert ? "alert" : "check")}</div>`
     + `<div><strong>${escapeHtml(headline)}</strong><p>${escapeHtml(detail)}</p></div>`;
@@ -2018,8 +2022,7 @@ function renderDemoAlert() {
   const cfg = (demo.artifact && demo.artifact.configuration) || {};
   const streak = cfg.min_consecutive_cycles == null ? 1
     : Number(cfg.min_consecutive_cycles);
-  const policy = `${streak} consecutive flagged cycles · `
-    + `${humanizeKey(cfg.correction || "Benjamini–Hochberg")} · alpha ${fmtP(cfg.alpha)}.`;
+  const policy = `${streak} consecutive flagged cycles.`;
   const alerts = (cycle && cycle.alerts) || [];
   const flagged = Boolean((cycle.results || {}).distribution_shift_detected);
   $("demo-alert-meta").textContent = cycle
@@ -2043,16 +2046,15 @@ function renderDemoAlert() {
   if (alerts.length) {
     $("demo-alert").innerHTML = alerts.map((alert) => `
       <div class="demo-alert-item">
-        <span class="demo-alert-type">${escapeHtml(humanizeKey(alert.type || "alert"))}</span>
+        <span class="demo-alert-type">${escapeHtml(alertKindLabel(alert))}</span>
         <p>${escapeHtml(alert.message || "")}</p>
       </div>`).join("") + steps;
     return;
   }
   $("demo-alert").innerHTML = (flagged
-    ? '<p class="empty-state">This cycle stored a distribution flag. No alert was '
-      + 'emitted yet; the stored alert list is empty for this cycle.</p>'
-    : '<p class="empty-state">No distribution flag in this cycle, so no alert was '
-      + 'considered.</p>') + steps;
+    ? '<p class="empty-state">No alert was emitted yet; the flag has not repeated.</p>'
+    : '<p class="empty-state">No flag in this cycle, so no alert was considered.</p>')
+    + steps;
 }
 
 function demoResponse(sample, side) {
@@ -2101,10 +2103,16 @@ function renderDemoSamples() {
 function renderDemoMethodology() {
   const method = (demo.artifact && demo.artifact.methodology) || {};
   const cfg = (demo.artifact && demo.artifact.configuration) || {};
+  const streak = cfg.min_consecutive_cycles == null ? 1
+    : Number(cfg.min_consecutive_cycles);
   $("demo-method-disclosure").textContent = method.disclosure || "";
   $("demo-method-pipeline").textContent = method.pipeline || "";
-  $("demo-method-limitation").textContent =
-    `${method.limitation || ""} ${cfg.embedding_model ? `Embeddings: ${cfg.embedding_model}.` : ""}`.trim();
+  $("demo-method-limitation").textContent = [
+    method.limitation || "",
+    `Decision rule: ${humanizeKey(cfg.correction || "Benjamini–Hochberg")}, `
+      + `alpha ${fmtP(cfg.alpha)}, ${streak} consecutive flagged cycles.`,
+    cfg.embedding_model ? `Embeddings: ${cfg.embedding_model}.` : "",
+  ].filter(Boolean).join(" ");
 }
 
 /* ---------- evaluation tab ---------- */
@@ -2506,9 +2514,8 @@ function setRunButton(label) {
 async function runCheck() {
   const blocked = runBlockedReason();
   if (blocked) {
-    const note = $("run-note");
-    note.dataset.active = "1";
-    note.textContent = blocked;
+    $("run-note").dataset.active = "1";
+    renderRunNote();
     $("run-btn").disabled = true;
     return;
   }
@@ -2560,9 +2567,8 @@ async function runCheck() {
       throw err;
     }
     const runId = started.run_id;
-    const cfg = state.config || {};
-    note.textContent = `Running: ${cfg.probes_per_cycle || 40} responses are `
-      + `collected and evaluated; this can take several minutes.`;
+    note.textContent = `Collecting the configured canary responses; `
+      + `this can take several minutes.`;
 
     /* Hosted cycles take minutes; poll patiently. A free tier recycle
        mid check erases the run record: consecutive misses stop the loop
@@ -2593,14 +2599,9 @@ async function runCheck() {
         const r = st.result || {};
         await refreshAfterRun();
         if (r.tests_run) {
-          const latest = state.latest || {};
-          const sig = latestSignals(latest);
-          note.textContent = sig.dist === 1
-            ? "Distribution shift flagged in this cycle; an alert fires only if it repeats next cycle."
-            : "Cycle complete. No statistically significant distributional change.";
+          note.textContent = "Cycle complete. The latest result is ready above.";
         } else {
-          note.textContent = `Cycle complete: ${cfg.current_window || 40} responses `
-            + `stored. Evaluation starts at ${cfg.tests_start_at_responses || 160}.`;
+          note.textContent = "Cycle complete. Evaluation begins once both windows are stored.";
         }
         return;
       }

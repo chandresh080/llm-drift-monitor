@@ -441,6 +441,7 @@ a { color: var(--accent-ink); }
 .section-label .ui-icon { width: 13px; height: 13px; color: var(--accent); }
 
 .section-meta {
+  margin: 0;
   color: var(--ink-3);
   font-size: 11.5px;
   font-variant-numeric: tabular-nums;
@@ -502,19 +503,33 @@ a { color: var(--accent-ink); }
 }
 
 .quality-signal {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
   margin-top: var(--space-2);
   padding: 5px 8px;
+  border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--warn-bg);
-  color: var(--warn);
+  background: var(--surface-quiet);
+  color: var(--ink-2);
   font-size: 11px;
 }
 
-.quality-label { font-weight: 650; }
+.quality-signal .ui-icon {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  color: var(--ink-4);
+}
+
+.quality-signal.is-ok .ui-icon { color: var(--ok); }
+.quality-signal.is-bad { border-color: var(--warn); background: var(--warn-bg); color: var(--warn); }
+.quality-signal.is-bad .ui-icon { color: var(--warn); }
+.quality-name { font-weight: 650; }
+.quality-state { font-weight: 600; }
+.quality-reason { color: var(--ink-3); }
+.quality-signal.is-bad .quality-reason { color: inherit; }
 
 .summary-metrics {
   display: grid;
@@ -623,11 +638,21 @@ a { color: var(--accent-ink); }
 .activity-table .num,
 .plain-table .num { text-align: right; white-space: nowrap; }
 
+/* Fixed tracks keep header and body aligned in every decision state. The
+   scroll wrapper handles narrow screens instead of squeezing the columns. */
+.detector-table { table-layout: fixed; min-width: 420px; }
+.detector-table th:nth-child(1) { width: 40%; }
+.detector-table th:nth-child(2),
+.detector-table th:nth-child(3) { width: 18%; }
+.detector-table th:nth-child(4) { width: 24%; }
+.detector-table td.num { font-variant-numeric: tabular-nums; }
+.plain-table th { white-space: normal; }
+
 .detector-name {
   display: block;
   color: var(--ink);
   font-weight: 600;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .detector-method {
@@ -635,7 +660,7 @@ a { color: var(--accent-ink); }
   margin-top: 1px;
   color: var(--ink-3);
   font-size: 10.5px;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .decision {
@@ -643,11 +668,13 @@ a { color: var(--accent-ink); }
   align-items: center;
   gap: 6px;
   color: var(--ink-2);
+  font-weight: 550;
+  vertical-align: middle;
   white-space: nowrap;
 }
 
 .decision .ui-icon { width: 14px; height: 14px; color: var(--ink-4); }
-.decision-alert { color: var(--alert); font-weight: 600; }
+.decision-alert { color: var(--alert); }
 .decision-alert .ui-icon { color: var(--alert); }
 .decision-muted { color: var(--ink-4); }
 
@@ -693,18 +720,20 @@ a { color: var(--accent-ink); }
 
 .act-result.is-alert { color: var(--alert); font-weight: 600; }
 
+.activity-table { table-layout: fixed; }
+
 .act-signal,
 .act-empty,
 .act-failed {
   display: block;
   color: var(--ink-3);
   font-size: 10.5px;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .act-failed { color: var(--alert); }
 
-.act-outcome { min-width: 160px; }
+.act-outcome { min-width: 0; }
 
 /* ---------- alerts ---------- */
 
@@ -726,7 +755,18 @@ a { color: var(--accent-ink); }
   font-variant-numeric: tabular-nums;
 }
 
+.alert-type {
+  color: var(--alert);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
 .alert-msg { color: var(--ink-2); font-size: 12px; line-height: 1.45; }
+
+.alert-item.alert-quality { border-left-color: var(--warn); background: var(--warn-bg); }
+.alert-item.alert-quality .alert-time,
+.alert-item.alert-quality .alert-type { color: var(--warn); }
 
 /* ---------- charts ---------- */
 
@@ -861,6 +901,8 @@ details[open] > summary::after { transform: rotate(225deg); }
 }
 
 .panel-disclosure[open] > summary { padding-bottom: var(--space-3); border-bottom: 1px solid var(--border); }
+.panel-disclosure[open] > .section-body,
+.panel-disclosure[open] > .activity { padding-top: var(--space-4); }
 
 .summary-count { color: var(--ink-4); font-weight: 500; }
 

@@ -84,14 +84,14 @@
       <div class="summary-verdict">
         <div class="section-label" id="summary-heading">
           <span class="ui-icon-host" data-icon="radar" aria-hidden="true"></span>
-          Latest result
+          Distribution
         </div>
         <p id="kpi-drift" class="verdict">…</p>
         <p id="verdict-sub" class="verdict-sub">…</p>
         <div id="quality-strip" class="quality-signal" hidden></div>
         <span id="verdict-meta" class="section-meta"></span>
       </div>
-      <div class="summary-metrics">
+      <div class="summary-metrics" aria-label="Latest result metrics">
         <div class="metric">
           <span class="metric-label">Reference</span>
           <span id="count-ref" class="metric-value">…</span>
@@ -101,11 +101,6 @@
           <span class="metric-label">Current</span>
           <span id="count-cur" class="metric-value">…</span>
           <span class="metric-unit">responses</span>
-        </div>
-        <div class="metric">
-          <span class="metric-label">Detectors flagged</span>
-          <span id="summary-flagged" class="metric-value">n/a</span>
-          <span class="metric-unit">of 3 tests</span>
         </div>
         <div class="metric">
           <span class="metric-label">Mean length change</span>
@@ -140,58 +135,27 @@
           <div class="table-scroll">
             <table class="data-table detector-table" data-testid="detector-table">
               <thead>
-                <tr><th>Detector</th><th class="num">Raw p</th><th class="num">Adjusted p</th><th>Decision</th></tr>
+                <tr><th scope="col">Detector</th><th class="num" scope="col">Raw p</th><th class="num" scope="col">Adjusted p</th><th scope="col">Decision</th></tr>
               </thead>
               <tbody id="detector-rows"></tbody>
             </table>
           </div>
-          <details class="disclosure">
-            <summary>Methodology</summary>
-            <div class="disclosure-body">
-              <p>Three tests compare the latest cycle with the reference window: a
-                Kolmogorov–Smirnov test on response lengths, a Fisher exact (or z) test on
-                the non-empty response rate, and a paired Maximum Mean Discrepancy
-                permutation on sentence embeddings. Benjamini–Hochberg controls the false
-                discovery rate across the family. Response availability is a quality
-                signal, not a distribution verdict.</p>
-              <div class="effect-row paired-row">
-                <div class="effect"><span class="effect-label">Paired MMD statistic</span>
-                  <span id="paired-stat" class="effect-value">n/a</span></div>
-                <div class="effect"><span class="effect-label">Raw permutation p</span>
-                  <span id="paired-p" class="effect-value">n/a</span></div>
-                <div class="effect"><span class="effect-label">Matched prompts</span>
-                  <span id="paired-pairs" class="effect-value">n/a</span></div>
-                <div class="effect"><span class="effect-label">Swap patterns</span>
-                  <span id="paired-patterns" class="effect-value">n/a</span></div>
-              </div>
-              <p class="section-note">Full methodology and measured performance are in the
-                repository's <a href="https://github.com/chandresh080/llm-drift-monitor/blob/main/METRICS.md"
-                  target="_blank" rel="noopener">METRICS.md</a>.</p>
-            </div>
-          </details>
         </section>
 
-        <section class="panel" data-testid="history-block">
-          <div class="panel-head">
-            <div>
-              <h2 class="section-title">Detector history</h2>
-              <p class="section-meta">Adjusted p-values · evaluated cycles only</p>
-            </div>
-            <span class="panel-icon" data-icon="history" aria-hidden="true"></span>
+        <details class="panel-disclosure" id="history-section">
+          <summary><span class="ui-icon-host" data-icon="history" aria-hidden="true"></span>Detector history</summary>
+          <div class="section-body" data-testid="history-block">
+            <div id="history-chart" class="chart-wrap"></div>
+            <p id="history-note" class="section-note"></p>
           </div>
-          <div id="history-chart" class="chart-wrap"></div>
-          <p id="history-note" class="section-note"></p>
-        </section>
+        </details>
 
-        <section class="activity">
-          <div class="section-head">
-            <div class="section-heading">
-              <h2 class="section-title">Recent activity</h2>
-              <span id="activity-count" class="section-meta"></span>
-            </div>
+        <details class="panel-disclosure" id="activity-section">
+          <summary><span class="ui-icon-host" data-icon="activity" aria-hidden="true"></span>Recent activity <span id="activity-count" class="summary-count"></span></summary>
+          <div class="activity">
+            <div id="activity-list" class="activity-list"></div>
           </div>
-          <div id="activity-list" class="activity-list"></div>
-        </section>
+        </details>
 
         <details class="panel-disclosure" id="samples-section">
           <summary><span class="ui-icon-host" data-icon="layers" aria-hidden="true"></span>Response samples <span id="sample-count" class="summary-count"></span></summary>
@@ -207,20 +171,31 @@
 
       <aside class="col-side">
 
-        <section class="panel">
-          <div class="panel-head">
-            <div>
-              <h2 class="section-title">Alerts</h2>
-              <p id="alert-count" class="section-meta"></p>
-            </div>
-            <span class="panel-icon" data-icon="bell" aria-hidden="true"></span>
-          </div>
-          <div id="alerts-list"></div>
-        </section>
+        <details class="panel-disclosure" id="alerts-section">
+          <summary><span class="ui-icon-host" data-icon="bell" aria-hidden="true"></span>Alerts <span id="alert-count" class="summary-count"></span></summary>
+          <div id="alerts-list" class="section-body"></div>
+        </details>
 
         <details class="panel-disclosure" id="config-section">
-          <summary><span class="ui-icon-host" data-icon="settings" aria-hidden="true"></span>Configuration</summary>
-          <div class="section-body">
+          <summary><span class="ui-icon-host" data-icon="book" aria-hidden="true"></span>Methodology and provenance</summary>
+          <div class="section-body prose-body">
+            <p>Three tests compare each cycle with the reference window: a
+              Kolmogorov–Smirnov test on response lengths, a Fisher exact (or z) test on
+              the non-empty response rate, and a paired Maximum Mean Discrepancy
+              permutation on embeddings. Benjamini–Hochberg controls the false discovery
+              rate across the family. Availability is a quality signal; only KS and MMD
+              contribute to the distribution verdict.</p>
+            <div class="effect-row paired-row">
+              <div class="effect"><span class="effect-label">Paired MMD statistic</span>
+                <span id="paired-stat" class="effect-value">n/a</span></div>
+              <div class="effect"><span class="effect-label">Raw permutation p</span>
+                <span id="paired-p" class="effect-value">n/a</span></div>
+              <div class="effect"><span class="effect-label">Matched prompts</span>
+                <span id="paired-pairs" class="effect-value">n/a</span></div>
+              <div class="effect"><span class="effect-label">Swap patterns</span>
+                <span id="paired-patterns" class="effect-value">n/a</span></div>
+            </div>
+            <p class="section-label">Run context</p>
             <dl class="config-list">
               <div><dt>Target model</dt><dd id="cfg-model">…</dd></div>
               <div><dt>Prompt panel</dt><dd id="cfg-panel">…</dd></div>
@@ -238,6 +213,11 @@
               <span id="cfg-embedding"></span>
               <span id="cfg-manifest"></span>
             </p>
+            <p class="section-note">Managed PostgreSQL may expire or recycle on a free
+              plan; the storage label above is the single source of truth for durability.
+              Full methodology and measured performance are in
+              <a href="https://github.com/chandresh080/llm-drift-monitor/blob/main/METRICS.md"
+                target="_blank" rel="noopener">METRICS.md</a>.</p>
           </div>
         </details>
 
@@ -333,11 +313,10 @@
       <div class="intro-copy">
         <p class="eyebrow"><span class="ui-icon-host" data-icon="flask" aria-hidden="true"></span>Simulation</p>
         <h1 class="page-title">Controlled drift simulation</h1>
-        <p class="page-sub">Two deterministic scenarios processed by the real detector pipeline.</p>
+        <p class="page-sub">Two deterministic synthetic scenarios run through the real pipeline.</p>
       </div>
       <div class="demo-provenance">
-        <span class="source-tag">Synthetic simulation</span>
-        <span>Read-only artifact · no live model calls</span>
+        <span class="source-tag">Isolated static artifact</span>
       </div>
     </section>
 
@@ -376,7 +355,7 @@
             <div class="panel-head">
               <div>
                 <h2 class="section-title">Detector trajectory</h2>
-                <p class="section-meta">Benjamini–Hochberg adjusted p · alpha 0.05</p>
+                <p class="section-meta">Adjusted p-values by cycle</p>
               </div>
               <span class="panel-icon" data-icon="radar" aria-hidden="true"></span>
             </div>
@@ -409,21 +388,12 @@
             <div class="table-scroll">
               <table class="data-table detector-table" data-testid="demo-detector-table">
                 <thead>
-                  <tr><th>Detector</th><th class="num">Raw p</th>
-                    <th class="num">Adjusted p</th><th>Decision</th></tr>
+                  <tr><th scope="col">Detector</th><th class="num" scope="col">Raw p</th>
+                    <th class="num" scope="col">Adjusted p</th><th scope="col">Decision</th></tr>
                 </thead>
                 <tbody id="demo-detector-rows"></tbody>
               </table>
             </div>
-            <details class="disclosure">
-              <summary>Correction and decision rule</summary>
-              <div class="disclosure-body">
-                <p>The three p-values are corrected together with Benjamini–Hochberg.
-                  Response availability is reported as a quality signal, not as a
-                  distribution verdict. A distribution flag must repeat for two
-                  consecutive cycles before a drift alert is emitted.</p>
-              </div>
-            </details>
           </section>
 
           <details class="panel-disclosure" id="demo-samples-section" open>
@@ -475,8 +445,8 @@
             <div id="demo-alert" class="demo-alert" data-testid="demo-alert"></div>
           </section>
 
-          <details class="panel-disclosure" id="demo-method-section" open>
-            <summary><span class="ui-icon-host" data-icon="book" aria-hidden="true"></span>How this demo is produced</summary>
+          <details class="panel-disclosure" id="demo-method-section">
+            <summary><span class="ui-icon-host" data-icon="book" aria-hidden="true"></span>Methodology and data provenance</summary>
             <div class="section-body prose-body">
               <p id="demo-method-disclosure"></p>
               <p id="demo-method-pipeline" class="section-note"></p>

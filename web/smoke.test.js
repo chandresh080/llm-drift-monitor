@@ -386,12 +386,9 @@ const settle = () => new Promise((r) => setImmediate(r));
     getById("kpi-drift").textContent === "Shift detected",
     getById("kpi-drift").textContent);
 
-  check("flagged count reads the canonical API field",
-    getById("verdict-sub").textContent === "1 of 3 tests flagged",
+  check("distribution count excludes the quality detector",
+    getById("verdict-sub").textContent === "1 of 2 distribution tests flagged",
     getById("verdict-sub").textContent);
-  check("summary metric repeats the flagged count as a value",
-    getById("summary-flagged").textContent === "1",
-    getById("summary-flagged").textContent);
 
   check("verdict meta is the check time only",
     getById("verdict-meta").textContent.startsWith("Last checked ")
@@ -405,8 +402,10 @@ const settle = () => new Promise((r) => setImmediate(r));
 
   check("quality guardrail reported separately and not conflated with shift",
     getById("quality-strip").hidden === false
-      && getById("quality-strip").innerHTML.includes("Invalid-response guardrail tripped"),
-    getById("quality-strip").innerHTML.slice(0, 80));
+      && getById("quality-strip").innerHTML.includes("Response availability")
+      && getById("quality-strip").innerHTML.includes("Degraded")
+      && getById("quality-strip").innerHTML.includes("availability guardrail triggered"),
+    getById("quality-strip").innerHTML.slice(0, 160));
 
   const detHtml = getById("detector-rows").innerHTML;
   check("detector table renders all three rows with methods as secondary text",
@@ -422,6 +421,10 @@ const settle = () => new Promise((r) => setImmediate(r));
     detHtml.includes("No flag"), detHtml.slice(0, 400));
   check("detector decisions are plain text, not chips",
     !detHtml.includes("chip"), detHtml.slice(0, 300));
+  check("decision styling stays on an inner span, leaving the td native",
+    detHtml.includes('<td><span class="decision')
+      && !detHtml.includes('<td class="decision'),
+    detHtml.slice(0, 400));
 
   check("refusal rate change takes its sign from the delta, not the reference",
     getById("eff-refusal").textContent.startsWith("-5.0"),
@@ -538,7 +541,7 @@ const settle = () => new Promise((r) => setImmediate(r));
       && actHtml.includes("<th>Time</th>")
       && actHtml.includes("<th class=\"num\">Probes</th>")
       && actHtml.includes("<th>Status</th>")
-      && actHtml.includes("<th>Detector outcome</th>"),
+      && actHtml.includes("<th>Shift outcome</th>"),
     actHtml.slice(0, 260));
   check("activity shows exactly the five most recent cycles",
     (actHtml.match(/data-testid="activity-row"/g) || []).length === 5,
@@ -560,9 +563,9 @@ const settle = () => new Promise((r) => setImmediate(r));
   check("availability change is part of the detector outcome",
     /#3[\s\S]*?Availability changed/.test(actHtml),
     actHtml.slice(0, 320));
-  check("a stored alert decorates its cycle only",
-    /#3[\s\S]*?1 alert/.test(actHtml)
-      && !/#2[\s\S]*?1 alert/.test(actHtml),
+  check("a stored alert names its family and decorates its cycle only",
+    /#3[\s\S]*?1 Distribution alert/.test(actHtml)
+      && !/#2[\s\S]*?Distribution alert/.test(actHtml),
     actHtml.slice(0, 400));
   check("activity header counts the cycles shown",
     getById("activity-count").textContent === "5 of 6 cycles",
@@ -607,16 +610,16 @@ const settle = () => new Promise((r) => setImmediate(r));
     histHtml.includes("Cycle #3") && histHtml.includes("adjusted p 0.022")
       && histHtml.includes("(flagged)"),
     "");
-  check("history note labels the source as evaluated stored cycles",
-    getById("history-note").textContent.includes("6 evaluated cycles")
-      && getById("history-note").textContent.includes("stored detector results"),
+  check("history note stays compact and says evaluated cycles",
+    getById("history-note").textContent === "6 evaluated cycles · adjusted p-values.",
     getById("history-note").textContent);
 
   const alertsHtml = getById("alerts-list").innerHTML;
-  check("alerts panel renders the persisted alert",
+  check("alerts panel renders the persisted alert with its family",
     alertsHtml.includes("Semantic shift persisted")
+      && alertsHtml.includes("Distribution alert")
       && getById("alert-count").textContent === "1 recent",
-    alertsHtml.slice(0, 160));
+    alertsHtml.slice(0, 200));
 
   routeOverrides = {
     "/drift/comparison": () => resp(samplesReady),
@@ -1037,7 +1040,7 @@ const settle = () => new Promise((r) => setImmediate(r));
     baseHtml.slice(0, 400));
   check("one evaluated cycle renders a compact one-point history svg",
     getById("history-chart").innerHTML.includes("<svg")
-      && getById("history-note").textContent.includes("1 evaluated cycle available")
+      && getById("history-note").textContent === "1 evaluated cycle · adjusted p-values."
       && !getById("history-note").textContent.includes("Awaiting"),
     getById("history-note").textContent);
   check("SQLite storage is shown as ephemeral, never durable",
@@ -1415,8 +1418,9 @@ const settle = () => new Promise((r) => setImmediate(r));
     `${getById("run-btn").disabled} / ${getById("run-note").textContent}`);
   check("read-only fallback is never shown as persistent",
     getById("cfg-storage").textContent === "SQLite · Ephemeral"
-      && getById("db-pill").title.includes("New checks are disabled"),
-    `${getById("cfg-storage").textContent} / ${getById("db-pill").title}`);
+      && getById("cfg-storage").title.includes("New checks are disabled")
+      && !getById("db-pill").title.includes("New checks are disabled"),
+    `${getById("cfg-storage").textContent} / ${getById("cfg-storage").title}`);
 
   getById("run-note").dataset.active = "";
   routeOverrides = {};
@@ -1443,8 +1447,11 @@ const settle = () => new Promise((r) => setImmediate(r));
 
   check("availability change is reported as its own quality signal",
     getById("quality-strip").hidden === false
-      && getById("quality-strip").innerHTML.includes("Response availability changed"),
-    getById("quality-strip").innerHTML.slice(0, 120));
+      && getById("quality-strip").className.includes("is-bad")
+      && getById("quality-strip").innerHTML.includes("Response availability")
+      && getById("quality-strip").innerHTML.includes("Degraded")
+      && getById("quality-strip").innerHTML.includes("availability changed"),
+    getById("quality-strip").innerHTML.slice(0, 160));
 
   routeOverrides = {};
 
@@ -1559,6 +1566,121 @@ const settle = () => new Promise((r) => setImmediate(r));
     getById("cfg-latency").textContent === "not recorded",
     getById("cfg-latency").textContent);
   routeOverrides = {};
+
+  /* Every detector state must occupy the same native table cell. The
+     decision class belongs to an inner span so row borders stay full width;
+     a reserved icon slot keeps the three states geometrically identical. */
+  console.log("scenario 5b: detector decision states and Demo parity");
+
+  const decisionCases = [
+    { name: "all unflagged", sig: [0, 0, 0], flags: 0, quality: 0, unevaluated: 0 },
+    { name: "availability only", sig: [0, 1, 0], flags: 1, quality: 1, unevaluated: 0 },
+    { name: "semantic only", sig: [0, 0, 1], flags: 1, quality: 0, unevaluated: 0 },
+    { name: "multiple flags", sig: [1, 0, 1], flags: 2, quality: 0, unevaluated: 0 },
+    { name: "all flagged", sig: [1, 1, 1], flags: 3, quality: 1, unevaluated: 0 },
+    { name: "not evaluated", sig: [null, null, null], flags: 0, quality: 0, unevaluated: 3 },
+  ];
+  const count = (text, needle) => (text.match(new RegExp(needle, "g")) || []).length;
+
+  for (const item of decisionCases) {
+    const [ks, availability, semantic] = item.sig;
+    const p = (v) => v == null ? null : 0.04;
+    vmEval(`state.latest = ${JSON.stringify({
+      ...latestFull,
+      ks_significant: ks, ks_adjusted_pvalue: p(ks),
+      proportion_z_significant: availability,
+      proportion_z_adjusted_pvalue: p(availability),
+      mmd_significant: semantic, mmd_adjusted_pvalue: p(semantic),
+    })}; renderDetectors(); globalThis.__decisionHtml = `
+      + `document.getElementById("detector-rows").innerHTML;`);
+    const html = global.__decisionHtml;
+    check(`Live ${item.name} keeps three aligned decision cells`,
+      count(html, 'data-testid="detector-row"') === 3
+        && count(html, '<td><span class="decision') === 3
+        && !html.includes('<td class="decision')
+        && count(html, 'class="ui-icon"') === 3,
+      html.slice(0, 240));
+    check(`Live ${item.name} labels its flags honestly`,
+      count(html, "Flagged") === item.flags
+        && count(html, "Flagged \\(quality\\)") === item.quality
+        && count(html, "Not evaluated") === item.unevaluated
+        && (item.unevaluated === 3 ? !html.includes("No flag") : true),
+      html.slice(0, 320));
+  }
+
+  const demoDecisionArtifact = {
+    schema_version: 1,
+    methodology: {},
+    configuration: {
+      prompt_panel_version: "test", correction: "Benjamini-Hochberg",
+      alpha: 0.05, min_consecutive_cycles: 2,
+    },
+    scenarios: [{
+      id: "states",
+      label: "Decision states",
+      cycles: decisionCases.map((item, i) => ({
+        cycle_number: i + 1,
+        tests_run: true,
+        results: {
+          distribution_shift_detected: item.sig[0] === 1 || item.sig[2] === 1 ? 1 : 0,
+          detectors: {
+            length: { raw_p: 0.04, adjusted_p: item.sig[0] == null ? null : 0.04,
+              significant: item.sig[0], method: "" },
+            availability: { raw_p: 0.04,
+              adjusted_p: item.sig[1] == null ? null : 0.04,
+              significant: item.sig[1], method: "" },
+            semantic: { raw_p: 0.04, adjusted_p: item.sig[2] == null ? null : 0.04,
+              significant: item.sig[2], method: "" },
+          },
+        },
+      })),
+    }],
+  };
+  vmEval(`demo.artifact = ${JSON.stringify(demoDecisionArtifact)}; `
+    + 'demo.scenarioId = "states";');
+  for (let i = 0; i < decisionCases.length; i++) {
+    const item = decisionCases[i];
+    vmEval(`demo.cycleNumber = ${i + 1}; renderDemoDetectors(); renderDemoDecision(); `
+      + 'globalThis.__demoDecisionHtml = '
+      + 'document.getElementById("demo-detector-rows").innerHTML; '
+      + 'globalThis.__demoInsight = '
+      + 'document.getElementById("demo-insight").innerHTML;');
+    const html = global.__demoDecisionHtml;
+    const insight = global.__demoInsight;
+    const wantsShift = item.sig[0] === 1 || item.sig[2] === 1;
+    check(`Demo ${item.name} keeps availability out of the verdict`,
+      insight.includes(wantsShift ? "Distribution flag recorded" : "No distribution shift")
+        && !insight.includes("3 detectors flagged")
+        && (item.name === "availability only"
+          ? insight.includes("Availability is reported separately") : true),
+      insight);
+    check(`Demo ${item.name} matches the Live decision geometry`,
+      count(html, 'data-testid="demo-detector-row"') === 3
+        && count(html, '<td><span class="decision') === 3
+        && !html.includes('<td class="decision')
+        && count(html, 'class="ui-icon"') === 3,
+      html.slice(0, 240));
+    check(`Demo ${item.name} matches the Live labels`,
+      count(html, "Flagged") === item.flags
+        && count(html, "Flagged \\(quality\\)") === item.quality
+        && count(html, "Not evaluated") === item.unevaluated
+        && (item.unevaluated === 3 ? !html.includes("No flag") : true),
+      html.slice(0, 320));
+  }
+
+  vmEval('globalThis.__alertKinds = [alertKindLabel({alert_type:"drift"}), '
+    + 'alertKindLabel({alert_type:"quality_degradation"}), '
+    + 'alertKindClass({alert_type:"drift"}), '
+    + 'alertKindClass({alert_type:"quality_degradation"})];');
+  check("alert labels name distribution and quality families",
+    global.__alertKinds[0] === "Distribution alert"
+      && global.__alertKinds[1] === "Quality alert"
+      && global.__alertKinds[2] === ""
+      && global.__alertKinds[3] === "alert-quality",
+    JSON.stringify(global.__alertKinds));
+  vmEval("demo.artifact = null; demo.scenarioId = null; demo.cycleNumber = null; "
+    + "globalThis.__decisionHtml = null; globalThis.__demoDecisionHtml = null; "
+    + "globalThis.__alertKinds = null;");
 
   console.log("scenario 6: no stored history at all");
 
@@ -1677,9 +1799,11 @@ const settle = () => new Promise((r) => setImmediate(r));
     page.indexOf('class="col-side"') < page.indexOf('id="alerts-list"')
       && page.indexOf('id="alerts-list"') < page.indexOf('id="config-section"'),
     "");
-  check("detector table exposes raw and adjusted p side by side",
-    page.indexOf('class="num">Raw p</th>') > page.indexOf("<th>Detector</th>")
-      && page.indexOf('class="num">Adjusted p</th>') > page.indexOf('class="num">Raw p</th>')
+  check("detector table exposes aligned raw and adjusted p columns",
+    page.indexOf('class="num" scope="col">Raw p</th>') > page.indexOf("<th>Detector</th>")
+      && page.indexOf('class="num" scope="col">Adjusted p</th>')
+        > page.indexOf('class="num" scope="col">Raw p</th>')
+      && css.includes(".detector-table { table-layout: fixed")
       && getById("detector-rows").innerHTML.includes("<td class=\"num\">0.010</td>"),
     getById("detector-rows").innerHTML.slice(0, 260));
   check("the CSS collapses the workspace to one column below 900px",
@@ -1763,10 +1887,10 @@ const settle = () => new Promise((r) => setImmediate(r));
     getById("demo-scenario-buttons").innerHTML.slice(0, 200));
   check("the default view is the final stable cycle with no flags",
     getById("demo-cycle-tag").textContent.includes("#6 · Stable")
-      && getById("demo-insight").innerHTML.includes("No shift")
+      && getById("demo-insight").innerHTML.includes("No distribution shift")
       && !getById("demo-detector-rows").innerHTML.includes("Flagged")
       && getById("demo-samples").innerHTML.includes("unchanged"),
-    `noShift=${getById("demo-insight").innerHTML.includes("No shift")} `
+    `noShift=${getById("demo-insight").innerHTML.includes("No distribution shift")} `
       + `flagged=${getById("demo-detector-rows").innerHTML.includes("Flagged")} `
       + `unchanged=${getById("demo-samples").innerHTML.includes("unchanged")}`);
   check("the p-value chart draws the alpha rule and three detector legends",
@@ -1799,7 +1923,7 @@ const settle = () => new Promise((r) => setImmediate(r));
 
   vmEval("selectDemoCycle(4)");
   check("the first flagged cycle explains why no alert fired",
-    getById("demo-insight").innerHTML.includes("Flag recorded")
+    getById("demo-insight").innerHTML.includes("Distribution flag recorded")
       && getById("demo-alert").innerHTML.includes("No alert was emitted yet")
       && !getById("demo-alert").innerHTML.includes("Behavioral drift detected"),
     getById("demo-alert").innerHTML.slice(0, 180));
@@ -1809,6 +1933,7 @@ const settle = () => new Promise((r) => setImmediate(r));
       && getById("demo-detector-meta").textContent.includes("#5")
       && getById("demo-pvalues-chart").innerHTML.includes("Cycle #5")
       && getById("demo-insight").innerHTML.includes("Alert fired")
+      && getById("demo-alert").innerHTML.includes("Distribution alert")
       && getById("demo-alert").innerHTML.includes("Behavioral drift detected")
       && getById("demo-alert").innerHTML.includes("2 consecutive flagged cycles"),
     `${getById("demo-cycle-tag").textContent} / ${getById("demo-alert").innerHTML.slice(0, 180)}`);
