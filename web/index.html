@@ -151,7 +151,8 @@
         <details class="panel-disclosure" id="activity-section">
           <summary><span class="ui-icon-host" data-icon="activity" aria-hidden="true"></span>Recent activity <span id="activity-count" class="summary-count"></span></summary>
           <div class="activity">
-            <div id="activity-list" class="activity-list"></div>
+            <div id="activity-list" class="activity-list" role="region"
+                 aria-label="Recent cycles" tabindex="0"></div>
           </div>
         </details>
 
@@ -177,22 +178,6 @@
         <details class="panel-disclosure" id="config-section">
           <summary><span class="ui-icon-host" data-icon="book" aria-hidden="true"></span>Methodology and provenance</summary>
           <div class="section-body prose-body">
-            <p>Three tests compare each cycle with the reference window: a
-              Kolmogorov–Smirnov test on response lengths, a Fisher exact (or z) test on
-              the non-empty response rate, and a paired Maximum Mean Discrepancy
-              permutation on embeddings. Benjamini–Hochberg controls the false discovery
-              rate across the family. Availability is a quality signal; only KS and MMD
-              contribute to the distribution verdict.</p>
-            <div class="effect-row paired-row">
-              <div class="effect"><span class="effect-label">Paired MMD statistic</span>
-                <span id="paired-stat" class="effect-value">n/a</span></div>
-              <div class="effect"><span class="effect-label">Raw permutation p</span>
-                <span id="paired-p" class="effect-value">n/a</span></div>
-              <div class="effect"><span class="effect-label">Matched prompts</span>
-                <span id="paired-pairs" class="effect-value">n/a</span></div>
-              <div class="effect"><span class="effect-label">Swap patterns</span>
-                <span id="paired-patterns" class="effect-value">n/a</span></div>
-            </div>
             <p class="section-label">Run context</p>
             <dl class="config-list">
               <div><dt>Target model</dt><dd id="cfg-model">…</dd></div>
@@ -207,15 +192,28 @@
               <div><dt>Provider latency</dt><dd id="cfg-latency">…</dd></div>
               <div><dt>Provider tokens</dt><dd id="cfg-tokens">…</dd></div>
             </dl>
+            <p class="section-label config-subhead">Provenance</p>
             <p class="config-meta">
               <span id="cfg-embedding"></span>
               <span id="cfg-manifest"></span>
             </p>
-            <p class="section-note">Managed PostgreSQL may expire or recycle on a free
-              plan; the storage label above is the single source of truth for durability.
-              Full methodology and measured performance are in
+            <p class="section-note">Retention depends on the managed database provider's plan.
+              Full methodology and benchmark results:
               <a href="https://github.com/chandresh080/llm-drift-monitor/blob/main/METRICS.md"
                 target="_blank" rel="noopener">METRICS.md</a>.</p>
+            <details class="tech-details" id="technical-details">
+              <summary>Technical details</summary>
+              <div class="effect-row paired-row">
+                <div class="effect"><span class="effect-label">Paired MMD statistic</span>
+                  <span id="paired-stat" class="effect-value">n/a</span></div>
+                <div class="effect"><span class="effect-label">Raw permutation p</span>
+                  <span id="paired-p" class="effect-value">n/a</span></div>
+                <div class="effect"><span class="effect-label">Matched prompts</span>
+                  <span id="paired-pairs" class="effect-value">n/a</span></div>
+                <div class="effect"><span class="effect-label">Swap patterns</span>
+                  <span id="paired-patterns" class="effect-value">n/a</span></div>
+              </div>
+            </details>
           </div>
         </details>
 

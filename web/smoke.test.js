@@ -14,7 +14,8 @@
      only for the backend provider-ping TTL
    - a finished monitoring run refreshes readiness, not just data panels, so
      an earlier unchecked/failed result cannot survive a successful cycle
-   - recent activity is a five-column table: five newest cycles, newest first
+   - recent activity is a five-column table with every loaded cycle, newest
+     first, inside one independently scrollable container
    - detector history needs at least three stored cycles; fewer is a compact
      message, never an empty chart or fabricated data
    - history breaks the line for missing adjusted p-values, marks the latest
@@ -407,10 +408,11 @@ const settle = () => new Promise((r) => setImmediate(r));
 
   check("response failure is reported separately and not called a pattern change",
     getById("quality-strip").hidden === false
-      && getById("quality-strip").innerHTML.includes("Responses")
+      && getById("quality-strip").className.includes("is-severe")
       && getById("quality-strip").innerHTML.includes("Response failures")
       && getById("quality-strip").innerHTML.includes(
-        "Too many responses failed during this check."),
+        "Too many responses failed during this check.")
+      && !getById("quality-strip").innerHTML.includes("Response availability decreased"),
     getById("quality-strip").innerHTML.slice(0, 160));
 
   const detHtml = getById("detector-rows").innerHTML;
@@ -553,19 +555,19 @@ const settle = () => new Promise((r) => setImmediate(r));
       && !actHtml.includes("<th>Probes</th>")
       && !actHtml.includes("Shift outcome"),
     actHtml.slice(0, 260));
-  check("activity shows exactly the five most recent cycles",
-    (actHtml.match(/data-testid="activity-row"/g) || []).length === 5,
+  check("activity shows every stored cycle, not a fixed five-row slice",
+    (actHtml.match(/data-testid="activity-row"/g) || []).length === 6,
     actHtml.slice(0, 120));
-  check("activity is newest first and drops the oldest cycle",
+  check("activity is newest first and keeps the oldest cycle reachable",
     actHtml.indexOf("#6") < actHtml.indexOf("#5")
       && actHtml.indexOf("#5") < actHtml.indexOf("#4")
       && actHtml.indexOf("#4") < actHtml.indexOf("#3")
       && actHtml.indexOf("#3") < actHtml.indexOf("#2")
-      && !actHtml.includes("#1"),
+      && actHtml.indexOf("#2") < actHtml.indexOf("#1"),
     actHtml.slice(0, 300));
   check("activity names request counts and results without badges",
     /#2[\s\S]*?No significant change/.test(actHtml)
-      && /#3[\s\S]*?Fewer responses succeeded/.test(actHtml)
+      && /#3[\s\S]*?Response availability decreased/.test(actHtml)
       && actHtml.includes('<span class="act-count">40</span>')
       && !actHtml.includes("chip"),
     actHtml.slice(0, 300));
@@ -575,7 +577,7 @@ const settle = () => new Promise((r) => setImmediate(r));
   const row3 = actHtml.split('<tr data-testid="activity-row"')
     .find((part) => part.includes("#3")) || "";
   check("a response problem is not hidden behind a no-change result",
-    row3.includes("Fewer responses succeeded")
+    row3.includes("Response availability decreased")
       && !row3.includes("No significant change"),
     row3);
   check("activity does not repeat alert counts in every result cell",
@@ -583,7 +585,7 @@ const settle = () => new Promise((r) => setImmediate(r));
       && !/1 alert/.test(actHtml),
     actHtml.slice(0, 400));
   check("activity header counts the cycles shown",
-    getById("activity-count").textContent === "5 of 6 cycles",
+    getById("activity-count").textContent === "6 cycles",
     getById("activity-count").textContent);
 
   const histHtml = getById("history-chart").innerHTML;
@@ -1474,16 +1476,17 @@ const settle = () => new Promise((r) => setImmediate(r));
   await settle();
 
   check("a response problem cannot be reported as a pattern change",
-    getById("kpi-drift").textContent === "Fewer responses succeeded",
-    getById("kpi-drift").textContent);
+    getById("kpi-drift").textContent === "No significant change"
+      && !getById("kpi-drift").className.includes("verdict-alert"),
+    `${getById("kpi-drift").textContent} / ${getById("kpi-drift").className}`);
 
-  check("a success-rate change is reported in plain English",
+  check("a lower non-empty rate is a quiet availability note",
     getById("quality-strip").hidden === false
-      && getById("quality-strip").className.includes("is-bad")
-      && getById("quality-strip").innerHTML.includes("Responses")
-      && getById("quality-strip").innerHTML.includes("Response problem")
+      && getById("quality-strip").className.includes("is-warn")
+      && !getById("quality-strip").className.includes("is-severe")
+      && getById("quality-strip").innerHTML.includes("Response availability decreased")
       && getById("quality-strip").innerHTML.includes(
-        "Fewer responses succeeded than in the baseline.")
+        "Fewer non-empty responses than in the reference window.")
       && !getById("quality-strip").innerHTML.includes("Degraded"),
     getById("quality-strip").innerHTML.slice(0, 220));
 
@@ -1685,7 +1688,7 @@ const settle = () => new Promise((r) => setImmediate(r));
     check(`Demo ${item.name} keeps response problems separate from patterns`,
       insight.includes(wantsShift ? "Response pattern changed"
         : (item.name === "availability only"
-          ? "Fewer responses succeeded" : "No significant change"))
+          ? "Response availability decreased" : "No significant change"))
         && !insight.includes("3 detectors flagged")
         && !insight.includes("Distribution flag recorded"),
       insight);
@@ -1817,7 +1820,7 @@ const settle = () => new Promise((r) => setImmediate(r));
   const activityStates = [
     { name: "normal completed cycle", cycle: activityState(1, {}),
       want: ["Complete", "No significant change"],
-      reject: ["failed", "Fewer responses succeeded"] },
+      reject: ["failed", "Response availability decreased"] },
     { name: "one empty response", cycle: activityState(2, {
       success_count: 39, empty_count: 1 }),
       want: ["Complete", "1 empty response", "No significant change"],
@@ -1827,11 +1830,16 @@ const settle = () => new Promise((r) => setImmediate(r));
       result: { ...quietResult, overall_quality_degradation: 1 } }),
       want: ["Complete", "39 failed", "Too many responses failed"],
       reject: ["Response pattern changed"] },
+    { name: "availability decrease only", cycle: activityState(9, {
+      success_count: 35, empty_count: 5,
+      result: { ...quietResult, quality_change_detected: 1 } }),
+      want: ["Complete", "5 empty responses", "Response availability decreased"],
+      reject: ["failed", "Too many responses failed", "No significant change"] },
     { name: "distribution change only", cycle: activityState(4, {
       result: { ...quietResult, distribution_shift_detected: 1,
         overall_drift_detected: 1, mmd_significant: 1 } }),
       want: ["Complete", "Response pattern changed"],
-      reject: ["failed", "Fewer responses succeeded"] },
+      reject: ["failed", "Response availability decreased"] },
     { name: "response failures only", cycle: activityState(5, {
       success_count: 1, failed_count: 39,
       result: { ...quietResult, overall_drift_detected: 1,
@@ -1924,19 +1932,38 @@ const settle = () => new Promise((r) => setImmediate(r));
       && !alertHtml.includes("Distributional tests flagged"),
     global.__alertMessages.join(" | "));
 
-  vmEval(`state.alerts = ${JSON.stringify([{
+  vmEval(`state.latest = null; state.alerts = ${JSON.stringify([{
     ...failureAlert, overall_quality_degradation: 0,
     quality_change_detected: 1,
   }])}; renderAlerts(); `
     + 'globalThis.__fewerHtml = '
     + 'document.getElementById("alerts-list").innerHTML;');
-  check("a lower success rate gets its own plain-English wording",
-    global.__fewerHtml.includes("Fewer responses succeeded")
+  check("a lower non-empty rate gets its own plain-English wording",
+    global.__fewerHtml.includes("Response availability decreased")
       && global.__fewerHtml.includes(
-        "Fewer responses succeeded than in the baseline.")
+        "Fewer non-empty responses than in the reference window.")
+      && global.__fewerHtml.includes('class="alert-item alert-response"')
       && !global.__fewerHtml.includes("Response failures"),
     global.__fewerHtml.slice(0, 260));
-  vmEval("state.cycles = []; state.alerts = []; renderAlerts();");
+  vmEval(`state.latest = ${JSON.stringify({
+    ...quietResult,
+    distribution_shift_detected: 0,
+    cycle_id: alertCycle.cycle_id,
+    timestamp: alertCycle.ended_at,
+    quality_change_detected: 1,
+  })}; `
+    + `state.alerts = ${JSON.stringify([{
+      ...failureAlert, overall_quality_degradation: 0,
+      quality_change_detected: 1,
+    }])}; renderVerdict(); renderAlerts(); `
+    + 'globalThis.__dedupedHtml = '
+    + 'document.getElementById("alerts-list").innerHTML;');
+  check("the current availability note is not repeated as an alert",
+    global.__dedupedHtml.includes("No other alerts.")
+      && !global.__dedupedHtml.includes("Response availability decreased"),
+    global.__dedupedHtml.slice(0, 200));
+  vmEval("state.cycles = []; state.alerts = []; state.latest = null; renderActivity(); "
+    + "renderAlerts(); renderVerdict();");
 
   routeOverrides = {};
 
@@ -1997,6 +2024,40 @@ const settle = () => new Promise((r) => setImmediate(r));
       && css.includes(".sample-head { display: none; }")
       && css.includes(".s-prompt { grid-column: 1 / -1; }"),
     "");
+  check("activity history scrolls inside a bounded keyboard-focusable region",
+    page.includes('id="activity-list" class="activity-list" role="region"')
+      && page.includes('aria-label="Recent cycles" tabindex="0"')
+      && css.includes("max-height: 328px;")
+      && css.includes("overflow-y: auto;")
+      && css.includes("overscroll-behavior: contain;")
+      && css.includes("scrollbar-width: thin;")
+      && css.includes(".activity-table thead th {")
+      && css.includes("position: sticky;")
+      && css.includes("top: 0;"),
+    "");
+  check("availability copy is a quiet note and failures keep the strong styling",
+    css.includes(".quality-signal.is-warn .ui-icon,")
+      && css.includes("color: var(--warn);")
+      && css.includes(".quality-signal.is-severe .ui-icon,")
+      && css.includes(".alert-item.alert-response {")
+      && css.includes("background: transparent;")
+      && css.includes(".alert-item.alert-failures {")
+      && css.includes("border-left-color: var(--alert);")
+      && !script.includes("Fewer responses succeeded"),
+    "");
+  check("methodology opens on run context with diagnostics behind a disclosure",
+    !page.includes("Three tests compare each cycle")
+      && page.includes('<summary>Technical details</summary>')
+      && page.includes('id="technical-details"')
+      && !page.includes('id="technical-details" open')
+      && page.includes('<span class="effect-label">Paired MMD statistic</span>')
+      && page.includes('<span class="effect-label">Raw permutation p</span>')
+      && page.includes('<span class="effect-label">Matched prompts</span>')
+      && page.includes('<span class="effect-label">Swap patterns</span>')
+      && page.includes('<p class="section-label config-subhead">Provenance</p>')
+      && page.includes("Retention depends on the managed database provider's plan.")
+      && page.includes("Full methodology and benchmark results:"),
+    "");
   check("no decorative chip, badge or uppercase label system remains",
     !css.includes("text-transform: uppercase")
       && !page.includes("chip") && !css.includes(".chip"),
@@ -2020,6 +2081,7 @@ const settle = () => new Promise((r) => setImmediate(r));
     "Behavioral drift detected",
     "Distributional tests flagged",
     "Alert fired",
+    "Fewer responses succeeded",
   ];
   check("primary copy never exposes internal statistical language",
     forbiddenCopy.every((phrase) => !page.includes(phrase) && !script.includes(phrase)),

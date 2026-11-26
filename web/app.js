@@ -547,12 +547,10 @@ function renderVerdict() {
 
   const sig = latestSignals(latest);
   const fired = distributionFlagCount(latest);
-  const qualityIssue = sig.guardrail || sig.qualityChange;
   title.textContent = sig.dist === 1 ? "Response pattern changed"
-    : (sig.guardrail ? "Too many responses failed"
-      : (sig.qualityChange ? "Fewer responses succeeded"
-        : "No significant change"));
-  title.className = "verdict" + (sig.dist === 1 || qualityIssue ? " verdict-alert" : "");
+    : (sig.guardrail ? "Too many responses failed" : "No significant change");
+  title.className = "verdict"
+    + (sig.dist === 1 || sig.guardrail ? " verdict-alert" : "");
   sub.textContent = fired == null
     ? "Response pattern checks not run"
     : `${fired} of 2 response pattern checks flagged`;
@@ -567,31 +565,35 @@ function renderVerdict() {
       ? "n/a" : Number(latest.current_size).toLocaleString();
   }
 
-  /* Response problems stay separate from the pattern verdict. State the
-     problem first so a stable pattern cannot hide failed requests. */
-  const reasons = [];
-  if (sig.qualityChange) reasons.push("Fewer responses succeeded than in the baseline.");
-  if (sig.guardrail) reasons.push("Too many responses failed during this check.");
+  /* Response problems stay separate from the pattern verdict. A lower
+     non-empty rate is a quiet availability note; only failed requests get
+     the stronger treatment. */
   const qualityKnown = latest.quality_change_detected != null
     || latest.quality_degradation != null || latest.overall_quality_degradation != null;
   if (!qualityKnown) {
     strip.hidden = true;
     strip.className = "quality-signal";
     strip.innerHTML = "";
-  } else if (reasons.length) {
+  } else if (sig.guardrail) {
     strip.hidden = false;
-    strip.className = "quality-signal is-bad";
+    strip.className = "quality-signal is-severe";
     strip.innerHTML = iconSvg("alert")
-      + '<span class="quality-name">Responses</span>'
-      + `<span class="quality-state">${sig.guardrail
-        ? "Response failures" : "Response problem"}</span>`
-      + `<span class="quality-reason">${escapeHtml(reasons.join(" "))}</span>`;
+      + '<span class="quality-name">Response failures</span>'
+      + '<span class="quality-reason">Too many responses failed during this check.</span>';
+  } else if (sig.qualityChange) {
+    strip.hidden = false;
+    strip.className = "quality-signal is-warn";
+    strip.innerHTML = iconSvg("alert")
+      + '<span class="quality-name">Response availability decreased</span>'
+      + '<span class="quality-reason">'
+      + 'Fewer non-empty responses than in the reference window.'
+      + '</span>';
   } else {
     strip.hidden = false;
     strip.className = "quality-signal is-ok";
     strip.innerHTML = iconSvg("check")
       + '<span class="quality-name">Responses</span>'
-      + '<span class="quality-state">Working</span>';
+      + '<span class="quality-reason">Working</span>';
   }
 }
 
@@ -1081,6 +1083,16 @@ function cycleForAlert(alert) {
   }) || null;
 }
 
+function isCurrentCycle(cycle) {
+  const latest = state.latest;
+  if (!cycle || !latest) return false;
+  if (cycle.cycle_id && latest.cycle_id) return cycle.cycle_id === latest.cycle_id;
+  const cycleTime = cycle.ended_at || cycle.started_at || cycle.timestamp;
+  const latestTime = latest.timestamp || latest.ended_at || latest.started_at;
+  return Boolean(cycleTime && latestTime
+    && String(cycleTime).slice(0, 19) === String(latestTime).slice(0, 19));
+}
+
 function alertType(alert) {
   return String((alert && (alert.alert_type || alert.type)) || "").toLowerCase();
 }
@@ -1118,8 +1130,8 @@ function alertCopy(alert, sourceCycle) {
   if (type === "quality_degradation") {
     if (fewerSucceeded) {
       items.push({
-        title: "Fewer responses succeeded",
-        text: "Fewer responses succeeded than in the baseline.",
+        title: "Response availability decreased",
+        text: "Fewer non-empty responses than in the reference window.",
         kind: "response",
       });
     }
@@ -1140,8 +1152,8 @@ function alertCopy(alert, sourceCycle) {
     }
     if (!items.length) {
       items.push({
-        title: "Fewer responses succeeded",
-        text: "Fewer responses succeeded than in the baseline.",
+        title: "Response availability decreased",
+        text: "Fewer non-empty responses than in the reference window.",
         kind: "response",
       });
     }
@@ -1169,7 +1181,7 @@ function activityResult(c, s) {
   if (s.guardrail) {
     out.push('<span class="act-result is-alert">Too many responses failed</span>');
   } else if (s.availability) {
-    out.push('<span class="act-result is-warn">Fewer responses succeeded</span>');
+    out.push('<span class="act-result is-warn">Response availability decreased</span>');
   }
   if (!out.length) {
     out.push('<span class="act-result">No significant change</span>');
@@ -1186,13 +1198,11 @@ function renderActivity() {
     el.innerHTML = '<p class="empty-state">Recent cycles unavailable.</p>';
     return;
   }
-  const all = [...(state.cycles || [])]
+  const rows = [...(state.cycles || [])]
     .sort((a, b) => Number(b.cycle_number) - Number(a.cycle_number));
-  const rows = all.slice(0, 5);
   if (count) {
     count.textContent = rows.length
-      ? `${rows.length} of ${all.length} ${all.length === 1 ? "cycle" : "cycles"}`
-      : "";
+      ? `${rows.length} ${rows.length === 1 ? "cycle" : "cycles"}` : "";
   }
   if (!rows.length) {
     el.innerHTML = '<p class="empty-state">No monitoring cycles recorded yet.</p>';
@@ -1249,18 +1259,29 @@ function renderAlerts() {
     el.innerHTML = '<p class="empty-state">Alerts unavailable.</p>';
     return;
   }
-  const rows = (state.alerts || []).slice(0, 3);
-  if (count) count.textContent = rows.length
-    ? `${rows.length} recent` : "";
-  if (!rows.length) {
-    el.innerHTML = '<p class="empty-state">No alerts.</p>';
+  const strip = $("quality-strip");
+  const availabilityShown = Boolean(strip && !strip.hidden
+    && strip.innerHTML.includes("Response availability decreased"));
+  const visible = (state.alerts || []).slice(0, 3).map((a) => {
+    const cycle = cycleForAlert(a);
+    let items = alertCopy(a, cycle);
+    if (availabilityShown && isCurrentCycle(cycle)) {
+      items = items.filter((item) => item.kind !== "response");
+    }
+    return { alert: a, items };
+  }).filter((entry) => entry.items.length);
+  if (count) count.textContent = visible.length ? `${visible.length} recent` : "";
+  if (!visible.length) {
+    el.innerHTML = (state.alerts || []).length
+      ? '<p class="empty-state">No other alerts.</p>'
+      : '<p class="empty-state">No alerts.</p>';
     return;
   }
-  el.innerHTML = rows.map((a) => {
+  el.innerHTML = visible.map(({ alert: a, items }) => {
     const detectors = Array.isArray(a.flagged_tests)
       ? a.flagged_tests.join(",")
       : (Array.isArray(a.bh_significant_tests) ? a.bh_significant_tests.join(",") : "");
-    return alertCopy(a).map((item) => `
+    return items.map((item) => `
       <div class="alert-item alert-${item.kind}"
            data-alert-type="${escapeHtml(alertType(a))}"
            data-severity="${escapeHtml(a.severity || "")}"
@@ -2138,8 +2159,8 @@ function renderDemoDecision() {
     }
     if (availabilityFlag) {
       findings.push({
-        title: "Fewer responses succeeded",
-        text: "Fewer responses succeeded than in the baseline.",
+        title: "Response availability decreased",
+        text: "Fewer non-empty responses than in the reference window.",
       });
     }
   }
@@ -2661,7 +2682,7 @@ function completionNote(result) {
     : "No significant change in response patterns.");
   if (sig.guardrail) bits.push("Too many responses failed during this check.");
   else if (sig.qualityChange) {
-    bits.push("Fewer responses succeeded than in the baseline.");
+    bits.push("Fewer non-empty responses than in the reference window.");
   }
   return bits.join(" ");
 }

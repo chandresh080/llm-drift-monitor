@@ -495,34 +495,36 @@ a { color: var(--accent-ink); }
   font-variant-numeric: tabular-nums;
 }
 
+/* A quality signal is a note under the verdict, not a second verdict. It
+   carries no surface of its own, so red stays reserved for failed checks. */
 .quality-signal {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-top: var(--space-2);
-  padding: 5px 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface-quiet);
+  gap: 2px 6px;
+  margin-top: 6px;
   color: var(--ink-2);
   font-size: 11px;
+  line-height: 1.45;
 }
 
 .quality-signal .ui-icon {
-  width: 13px;
-  height: 13px;
+  width: 12px;
+  height: 12px;
   flex: none;
+  align-self: center;
   color: var(--ink-4);
 }
 
 .quality-signal.is-ok .ui-icon { color: var(--ok); }
-.quality-signal.is-bad { border-color: var(--warn); background: var(--warn-bg); color: var(--warn); }
-.quality-signal.is-bad .ui-icon { color: var(--warn); }
-.quality-name { font-weight: 650; }
-.quality-state { font-weight: 600; }
+.quality-signal.is-warn .ui-icon,
+.quality-signal.is-warn .quality-name { color: var(--warn); }
+.quality-signal.is-severe .ui-icon,
+.quality-signal.is-severe .quality-name { color: var(--alert); }
+.quality-name { font-weight: 600; }
 .quality-reason { color: var(--ink-3); }
-.quality-signal.is-bad .quality-reason { color: inherit; }
+.quality-signal.is-warn .quality-reason,
+.quality-signal.is-severe .quality-reason { color: var(--ink-2); }
 
 .summary-metrics {
   display: grid;
@@ -680,7 +682,32 @@ a { color: var(--accent-ink); }
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 0 var(--space-4);
+  max-height: 328px;
   overflow-x: auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.activity-list:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.activity-list::-webkit-scrollbar { width: 8px; height: 8px; }
+.activity-list::-webkit-scrollbar-track { background: transparent; }
+.activity-list::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border: 2px solid var(--surface);
+  border-radius: 8px;
+}
+
+.activity-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface);
 }
 
 .activity-table {
@@ -773,15 +800,27 @@ a { color: var(--accent-ink); }
 
 .alert-msg { color: var(--ink-2); font-size: 12px; line-height: 1.45; }
 
-.alert-item.alert-failures,
-.alert-item.alert-response,
-.alert-item.alert-other { border-left-color: var(--warn); background: var(--warn-bg); }
+.alert-item.alert-failures { border-left-color: var(--alert); background: var(--alert-bg); }
 .alert-item.alert-failures .alert-time,
-.alert-item.alert-failures .alert-type,
-.alert-item.alert-response .alert-time,
-.alert-item.alert-response .alert-type,
+.alert-item.alert-failures .alert-type { color: var(--alert); }
+
+.alert-item.alert-other { border-left-color: var(--warn); background: var(--warn-bg); }
 .alert-item.alert-other .alert-time,
 .alert-item.alert-other .alert-type { color: var(--warn); }
+
+/* Availability degradation is a quiet note, not a second failure card. */
+.alert-item.alert-response {
+  padding: 0;
+  border-left: 0;
+  background: transparent;
+}
+.alert-item.alert-response .alert-time { color: var(--ink-4); font-size: 10px; }
+.alert-item.alert-response .alert-type { color: var(--warn); font-size: 11px; }
+.alert-item.alert-response .alert-msg {
+  color: var(--ink-3);
+  font-size: 11px;
+  line-height: 1.4;
+}
 
 /* ---------- charts ---------- */
 
@@ -1194,16 +1233,48 @@ details[open] > summary::after { transform: rotate(225deg); }
   overflow-wrap: anywhere;
 }
 
+.config-subhead { margin-top: var(--space-4); }
+
 .config-meta {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  margin: var(--space-4) 0 0;
-  padding-top: var(--space-3);
-  border-top: 1px solid var(--border);
+  margin: var(--space-2) 0 0;
   color: var(--ink-4);
   font-size: 10.5px;
 }
+
+.tech-details {
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.tech-details > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+
+.tech-details > summary::-webkit-details-marker { display: none; }
+
+.tech-details > summary::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-right: 1.5px solid var(--ink-4);
+  border-bottom: 1.5px solid var(--ink-4);
+  transform: rotate(45deg);
+}
+
+.tech-details[open] > summary::before { transform: rotate(225deg); }
+.tech-details[open] > summary { margin-bottom: var(--space-3); }
+.tech-details .effect-row { margin-top: 0; }
 
 /* ---------- evaluation ---------- */
 
