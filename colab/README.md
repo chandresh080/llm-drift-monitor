@@ -23,6 +23,10 @@ written to a config file. If no credential is available, the notebook
 explicitly switches to the repository's `FakeLLMAdapter` and labels all output
 as a **controlled simulation**, not a live provider measurement.
 
+The checked-in notebook includes executed outputs from a clean, no-credential
+simulation run so the workflow and plots are visible on GitHub. Re-run it with
+your own credential to replace those outputs with live provider results.
+
 ## What the notebook does, in order
 
 1. Clones `https://github.com/chandresh080/llm-drift-monitor.git` and installs
