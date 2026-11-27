@@ -1,31 +1,65 @@
+# Local Colab runtime configuration.
+#
+# This is deliberately NOT a copy of the hosted Render configuration.
+# The hosted demo uses config/config.gemini.yaml (40 probes, 120-run
+# reference, PostgreSQL via DATABASE_URL). This file is sized for a free
+# Colab CPU runtime and uses a runtime-local SQLite file.
+#
+# The notebook clones the repository and patches data.db_path and the
+# provider selection at runtime. Never put a real API key in this file.
+
 target:
-  type: 'openai-compatible'
-  model_id: 'gemini-2.0-flash'
-  base_url: 'https://generativelanguage.googleapis.com/v1beta/openai/'
-  timeout_seconds: 180
+  # Native Gemini generateContent adapter. This is the verified path for
+  # gemini-3.1-flash-lite; it is not the OpenAI-compatible endpoint.
+  # Optional alternatives the notebook can select at runtime:
+  #   type: "openai-compatible" with GROQ_API_KEY / GROQ_MODEL
+  #   type: "openai-compatible" with XAI_API_KEY or OPENAI_API_KEY
+  #   type: "fake" for an explicitly labelled offline simulation
+  type: "gemini"
+  model_id: "gemini-3.1-flash-lite"
+  base_url: "https://generativelanguage.googleapis.com/v1beta"
+  timeout_seconds: 60
   temperature: 0.0
   max_tokens: 256
+  max_workers: 2
+  # Free-tier quotas are call-start allowances. 12 s keeps the notebook
+  # under the observed 5 requests/minute budget; lower it only if your
+  # own quota permits. The notebook disables spacing in fake mode.
+  call_spacing_seconds: 12.0
 
 embeddings:
-  model_name: 'sentence-transformers/all-MiniLM-L6-v2'
-  device: 'cpu'
+  model_name: "sentence-transformers/all-MiniLM-L6-v2"
+  device: "cpu"
 
 reference:
-  window_size: 50
+  # 3 complete 10-prompt cycles supply the reference window; the next
+  # cycle supplies the disjoint current window. This is enough to run the
+  # detectors, not to estimate false-positive rates or detection delay.
+  window_size: 30
+  auto_create: true
   min_runs: 10
 
 monitoring:
   batch_size: 10
   random_seed: 42
+  # Category-localized tests need a much wider current window. Keep them
+  # off in the small Colab walkthrough so the headline tests can run with
+  # a fresh runtime and a modest number of provider calls.
+  run_category_tests: false
+  category_window_cycles: 3
+  min_samples_per_category: 8
 
 alerts:
   significance_threshold: 0.05
   quality_degradation_threshold: 0.3
   min_sample_size: 10
+  # A drift alert requires two consecutive stored distribution flags.
+  min_consecutive_cycles: 2
+  use_alpha_spending: false
+  planning_horizon_cycles: 30
 
 data:
-  db_path: '/content/drift_monitor.db'
-
-dashboard:
-  port: 8501
-  host: '127.0.0.1'
+  # Absolute path: a fresh Colab runtime starts with an empty local file.
+  # This is runtime-local SQLite, not durable storage. It disappears when
+  # the runtime is reset.
+  db_path: "/content/drift_monitor.db"
